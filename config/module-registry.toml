@@ -1,0 +1,18 @@
+version = 1
+request_timeout_seconds = 4
+
+[modules."geeagent.intent.router"]
+enabled = true
+refresh_mode = "simulated"
+
+[modules."content.youtube.monitor"]
+enabled = true
+refresh_mode = "simulated"
+base_url = "http://127.0.0.1:47821/gee/v1"
+status_path_template = "/runs/{module_run_id}"
+
+[modules."social.x.publisher"]
+enabled = true
+refresh_mode = "simulated"
+base_url = "http://127.0.0.1:47822/gee/v1"
+status_path_template = "/runs/{module_run_id}"

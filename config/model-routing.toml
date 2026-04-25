@@ -1,0 +1,81 @@
+version = 1
+default_route_class = "balanced"
+allow_user_overrides = true
+
+[continuation]
+min_confidence_to_resume = 0.85
+fallback_action = "new_conversation"
+
+[route_classes.cheap]
+provider = "openai"
+model = "gpt-4.1-mini"
+reasoning_effort = "low"
+fallback_model = "gpt-4.1-mini"
+
+[route_classes.balanced]
+provider = "openai"
+model = "gpt-5"
+reasoning_effort = "medium"
+fallback_model = "gpt-4.1-mini"
+
+[route_classes.strong]
+provider = "openai"
+model = "gpt-5"
+reasoning_effort = "high"
+fallback_model = "gpt-4.1-mini"
+
+[profiles.main]
+default_route_class = "balanced"
+upgrade_when = [
+  "public_output",
+  "approval_required",
+  "complex_plan",
+]
+
+[profiles.worker]
+default_route_class = "balanced"
+downgrade_when = [
+  "simple_status_refresh",
+  "simple_module_poll",
+]
+upgrade_when = [
+  "multi_step_recovery",
+  "complex_execution_reasoning",
+]
+
+[profiles.planner]
+default_route_class = "strong"
+
+[profiles.digest]
+default_route_class = "cheap"
+upgrade_when = [
+  "conflicting_signals",
+  "public_facing_summary",
+]
+
+[profiles.adapter_builder]
+default_route_class = "strong"
+
+[task_types.conversation]
+default_profile = "main"
+default_route_class = "balanced"
+
+[task_types.ability_run]
+default_profile = "worker"
+default_route_class = "balanced"
+
+[task_types.scheduled_run]
+default_profile = "worker"
+default_route_class = "balanced"
+
+[task_types.digest_run]
+default_profile = "digest"
+default_route_class = "cheap"
+
+[task_types.approval_waiting]
+default_profile = "main"
+default_route_class = "balanced"
+
+[task_types.background_agent]
+default_profile = "worker"
+default_route_class = "balanced"

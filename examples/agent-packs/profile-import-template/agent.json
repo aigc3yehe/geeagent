@@ -1,0 +1,27 @@
+{
+  "definition_version": "2",
+  "id": "my-agent-profile",
+  "name": "My Agent Profile",
+  "tagline": "A file-driven GeeAgent persona",
+  "identity_prompt_path": "identity-prompt.md",
+  "soul_path": "soul.md",
+  "playbook_path": "playbook.md",
+  "tools_context_path": "tools.md",
+  "memory_seed_path": "memory.md",
+  "heartbeat_path": "heartbeat.md",
+  "appearance": {
+    "kind": "static_image",
+    "asset_path": "appearance/hero.png"
+  },
+  "skills": [
+    {
+      "id": "workspace.chat"
+    }
+  ],
+  "allowed_tool_ids": [
+    "navigate.openSection",
+    "clipboard.read"
+  ],
+  "source": "module_pack",
+  "version": "1.0.0"
+}

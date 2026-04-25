@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GeeAgent Live2D Host</title>
+    <style>
+      :root { color-scheme: dark; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+        pointer-events: none;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      #stage {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+      }
+      #stage > canvas {
+        position: absolute;
+        inset: 0;
+      }
+      canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      #loading-overlay {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 1;
+        transition: opacity 180ms ease;
+      }
+      #loading-overlay.hidden {
+        opacity: 0;
+      }
+      .loading-indicator {
+        width: 32px;
+        height: 32px;
+        border-radius: 999px;
+        border: 2px solid rgba(255, 255, 255, 0.16);
+        border-top-color: rgba(255, 255, 255, 0.82);
+        animation: gee-spin 0.9s linear infinite;
+        box-shadow: 0 0 24px rgba(255, 255, 255, 0.08);
+      }
+      @keyframes gee-spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+      #debug-status {
+        position: fixed;
+        left: 16px;
+        bottom: 16px;
+        z-index: 20;
+        max-width: min(560px, calc(100vw - 32px));
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: rgba(8, 10, 14, 0.78);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        color: rgba(255, 255, 255, 0.92);
+        font: 500 12px/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
+        white-space: pre-wrap;
+        opacity: 0;
+        transition: opacity 120ms ease;
+      }
+      #debug-status.visible {
+        opacity: 1;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <div id="loading-overlay" aria-hidden="true">
+      <div class="loading-indicator"></div>
+    </div>
+    <div id="debug-status" aria-live="polite"></div>
+    <script src="app.js"></script>
+  </body>
+</html>

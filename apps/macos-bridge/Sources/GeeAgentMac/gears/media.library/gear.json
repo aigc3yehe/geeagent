@@ -1,0 +1,39 @@
+{
+  "schema": "gee.gear.v1",
+  "id": "media.library",
+  "name": "Media Library",
+  "description": "Eagle-compatible local media manager with folders, previews, stars, filters, Quick Look, and agent-ready controls.",
+  "developer": "Gee",
+  "version": "0.1.0",
+  "category": "Media",
+  "kind": "atmosphere",
+  "display_mode": "full_canvas",
+  "entry": {
+    "type": "native",
+    "native_id": "media.library"
+  },
+  "agent": {
+    "enabled": true,
+    "capabilities": [
+      {
+        "id": "media.filter",
+        "title": "Filter media",
+        "description": "Change the visible media set by folder, media kind, star state, duration, or search text.",
+        "examples": [
+          "Show videos only",
+          "Show starred images only",
+          "Show only mp4 files longer than 3 minutes"
+        ]
+      },
+      {
+        "id": "media.focus_folder",
+        "title": "Focus folder",
+        "description": "Switch the media browser to a named folder or uncategorized view.",
+        "examples": [
+          "Switch to the Assets folder",
+          "Show uncategorized files only"
+        ]
+      }
+    ]
+  }
+}

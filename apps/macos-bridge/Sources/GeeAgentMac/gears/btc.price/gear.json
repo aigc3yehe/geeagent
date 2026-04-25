@@ -1,0 +1,19 @@
+{
+  "schema": "gee.gear.v1",
+  "id": "btc.price",
+  "name": "BTC Pulse",
+  "description": "Home widget that periodically fetches the BTC/USD spot price.",
+  "developer": "Gee",
+  "version": "0.1.0",
+  "category": "Market",
+  "kind": "widget",
+  "display_mode": "in_nav",
+  "entry": {
+    "type": "widget",
+    "native_id": "btc.price"
+  },
+  "agent": {
+    "enabled": false,
+    "capabilities": []
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "GeeAgent",
+  "version": "0.1.0",
+  "identifier": "io.geeagent.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://127.0.0.1:4173",
+    "beforeDevCommand": "npm run dev -- --host 127.0.0.1 --port 4173",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "GeeAgent Workspace",
+        "width": 1440,
+        "height": 920,
+        "minWidth": 1180,
+        "minHeight": 760,
+        "center": true,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "macOSPrivateApi": true,
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

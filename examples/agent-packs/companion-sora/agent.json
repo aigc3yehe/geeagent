@@ -1,0 +1,20 @@
+{
+  "definition_version": "2",
+  "id": "companion-sora",
+  "name": "Sora Companion",
+  "tagline": "Demo agent definition for import and validation",
+  "identity_prompt_path": "identity-prompt.md",
+  "soul_path": "soul.md",
+  "playbook_path": "playbook.md",
+  "appearance": {
+    "kind": "static_image",
+    "asset_path": "appearance/hero.png"
+  },
+  "skills": [
+    {
+      "id": "workspace.chat"
+    }
+  ],
+  "source": "module_pack",
+  "version": "1.0.0"
+}

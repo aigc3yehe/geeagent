@@ -1,0 +1,98 @@
+{
+  "schema": "gee.gear.v1",
+  "id": "hyperframes.studio",
+  "name": "Hyperframes Studio",
+  "description": "HTML-to-video production app for creating projects, importing video, opening the timeline, rendering, and reviewing results.",
+  "developer": "Gee",
+  "version": "0.1.0",
+  "category": "Video",
+  "kind": "atmosphere",
+  "display_mode": "full_canvas",
+  "entry": {
+    "type": "native",
+    "native_id": "hyperframes.studio"
+  },
+  "dependencies": {
+    "install_strategy": "on_open",
+    "items": [
+      {
+        "id": "node",
+        "kind": "runtime",
+        "scope": "global",
+        "required": true,
+        "detect": {
+          "command": "node",
+          "args": ["--version"],
+          "min_version": "22.0.0"
+        },
+        "installer": {
+          "type": "recipe",
+          "id": "brew.install.node"
+        }
+      },
+      {
+        "id": "npm",
+        "kind": "runtime",
+        "scope": "global",
+        "required": true,
+        "detect": {
+          "command": "npm",
+          "args": ["--version"]
+        },
+        "installer": {
+          "type": "recipe",
+          "id": "brew.install.node"
+        }
+      },
+      {
+        "id": "hyperframes",
+        "kind": "binary",
+        "scope": "global",
+        "required": true,
+        "detect": {
+          "command": "hyperframes",
+          "args": ["--version"],
+          "min_version": "0.4.20"
+        },
+        "installer": {
+          "type": "recipe",
+          "id": "npm.install.global.hyperframes",
+          "package": "hyperframes",
+          "version": "0.4.20"
+        }
+      },
+      {
+        "id": "ffmpeg",
+        "kind": "binary",
+        "scope": "global",
+        "required": true,
+        "detect": {
+          "command": "ffmpeg",
+          "args": ["-version"]
+        },
+        "installer": {
+          "type": "recipe",
+          "id": "brew.install.ffmpeg"
+        }
+      },
+      {
+        "id": "ffprobe",
+        "kind": "binary",
+        "scope": "global",
+        "required": true,
+        "detect": {
+          "command": "ffprobe",
+          "args": ["-version"]
+        },
+        "installer": {
+          "type": "recipe",
+          "id": "brew.install.ffmpeg"
+        }
+      }
+    ]
+  },
+  "agent": {
+    "enabled": false,
+    "capabilities": []
+  }
+}

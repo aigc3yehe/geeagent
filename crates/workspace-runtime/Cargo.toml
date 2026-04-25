@@ -1,0 +1,12 @@
+[package]
+name = "workspace-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+experience-registry = { path = "../experience-registry" }
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

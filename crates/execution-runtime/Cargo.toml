@@ -1,0 +1,16 @@
+[package]
+name = "execution-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+automation-engine = { path = "../automation-engine" }
+module-gateway = { path = "../module-gateway" }
+task-engine = { path = "../task-engine" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { version = "0.3", features = ["macros", "parsing"] }
+
+[dev-dependencies]
+tempfile = "3.21"

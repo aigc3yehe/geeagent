@@ -1,0 +1,19 @@
+{
+  "schema": "gee.gear.v1",
+  "id": "system.monitor",
+  "name": "System Monitor",
+  "description": "Home widget for lightweight local CPU load and memory pressure monitoring.",
+  "developer": "Gee",
+  "version": "0.1.0",
+  "category": "System",
+  "kind": "widget",
+  "display_mode": "in_nav",
+  "entry": {
+    "type": "widget",
+    "native_id": "system.monitor"
+  },
+  "agent": {
+    "enabled": false,
+    "capabilities": []
+  }
+}

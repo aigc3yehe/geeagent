@@ -1,0 +1,10 @@
+[package]
+name = "model-router"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+serde.workspace = true
+toml.workspace = true
+
