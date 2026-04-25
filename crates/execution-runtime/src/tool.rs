@@ -1352,9 +1352,16 @@ mod tests {
     }
 
     #[test]
-    fn v1_catalog_contains_expected_eight_tools() {
+    fn v1_catalog_contains_expected_tools() {
         let ids: Vec<&str> = V1_TOOL_CATALOG.iter().map(|spec| spec.id).collect();
         let expected = vec![
+            "core.read",
+            "core.write",
+            "core.edit",
+            "core.bash",
+            "core.grep",
+            "core.find",
+            "core.ls",
             "navigate.openSection",
             "navigate.openModule",
             "files.readText",

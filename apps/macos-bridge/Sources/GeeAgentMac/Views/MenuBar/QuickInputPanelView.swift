@@ -1,10 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// Centered 720-wide floating quick-input, port of
-/// `apps/desktop-shell/src/surfaces/QuickInputWindow.tsx`. Visual language
-/// matches the Home launcher cards: dark underlay + `.ultraThinMaterial`
-/// highlight, top→bottom light/dark sheen, thin white stroke.
+/// Centered 720-wide floating quick-input. Visual language matches the Home
+/// launcher cards: dark underlay + `.ultraThinMaterial` highlight,
+/// top→bottom light/dark sheen, thin white stroke.
 ///
 /// The input itself is an NSTextField wrapper (`FocusAwareTextField`) rather
 /// than SwiftUI's `TextField(.plain)` — the SwiftUI variant installs a field

@@ -142,12 +142,12 @@ fn dispatch_command(
         "perform-task-action" if args.len() == 2 => {
             native_bridge_perform_task_action_json(&args[0], &args[1], config_dir)
         }
-        "submit-workspace-message" if args.len() == 1 => tauri::async_runtime::block_on(
-            native_bridge_submit_workspace_message_json(&args[0], config_dir),
-        ),
-        "submit-quick-prompt" if args.len() == 1 => tauri::async_runtime::block_on(
-            native_bridge_submit_quick_prompt_json(&args[0], config_dir),
-        ),
+        "submit-workspace-message" if args.len() == 1 => {
+            native_bridge_submit_workspace_message_json(&args[0], config_dir)
+        }
+        "submit-quick-prompt" if args.len() == 1 => {
+            native_bridge_submit_quick_prompt_json(&args[0], config_dir)
+        }
         "invoke-tool" if args.len() == 1 => native_bridge_invoke_tool_json(&args[0], config_dir),
         _ => Err("unsupported command or wrong argument count".to_string()),
     }

@@ -266,7 +266,7 @@ struct WorkbenchSnapshot {
     /// has not yet typed anything. Plumbed through from the Rust snapshot.
     var quickInputHint: String = "Ask GeeAgent to review a draft, check your queue, or run a task."
     /// One-liner the menu-bar panel renders as the idle "ready for the next
-    /// request" detail (React surface's `model.quickReply`).
+    /// request" detail.
     var quickReply: String = "Ready for the next request."
     var contextBudget: ContextBudgetRecord = .empty
     var lastOutcome: WorkbenchRequestOutcome? = nil
@@ -361,9 +361,8 @@ struct TerminalPermissionRuleRecord: Identifiable, Hashable {
     var updatedAt: String
 }
 
-/// Menu-bar state ring — the single source of truth for the menu-bar panel's
-/// pill and primary CTA. Mirrors the TypeScript `MenuState` in the legacy
-/// shell (`apps/desktop-shell/src/shell-state.ts`).
+/// Menu-bar state ring: the single source of truth for the menu-bar panel's
+/// pill and primary CTA.
 enum WorkbenchMenuBarState: String, Hashable {
     case idle
     case working

@@ -337,21 +337,25 @@ status_path_template = "/runs/{{module_run_id}}"
         let runtime =
             super::ModuleStatusRuntime::from_config(config).expect("runtime should build");
 
-        let response = tauri::async_runtime::block_on(runtime.fetch_status(&ModuleRun {
-            module_run_id: "run_42".to_string(),
-            task_id: "task_42".to_string(),
-            module_id: "content.youtube.monitor".to_string(),
-            capability_id: "digest_recent_uploads".to_string(),
-            status: ModuleRunStatus::Running,
-            stage: ModuleRunStage::WaitingUpstream,
-            attempt_count: 1,
-            result_summary: None,
-            artifacts: vec![],
-            created_at: "now".to_string(),
-            updated_at: "now".to_string(),
-        }))
-        .expect("request should succeed")
-        .expect("http module should return a live status");
+        let response = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime should build")
+            .block_on(runtime.fetch_status(&ModuleRun {
+                module_run_id: "run_42".to_string(),
+                task_id: "task_42".to_string(),
+                module_id: "content.youtube.monitor".to_string(),
+                capability_id: "digest_recent_uploads".to_string(),
+                status: ModuleRunStatus::Running,
+                stage: ModuleRunStage::WaitingUpstream,
+                attempt_count: 1,
+                result_summary: None,
+                artifacts: vec![],
+                created_at: "now".to_string(),
+                updated_at: "now".to_string(),
+            }))
+            .expect("request should succeed")
+            .expect("http module should return a live status");
 
         assert_eq!(response.module_run.status, ModuleRunStatus::Completed);
         assert_eq!(response.module_run.stage, ModuleRunStage::Finalized);

@@ -1,8 +1,7 @@
 import SwiftUI
 
-/// Compact 380×420 panel anchored under the status item. Port of the React
-/// `MenuBarPanel.tsx` (see `apps/desktop-shell/src/surfaces/MenuBarPanel.tsx`)
-/// using native SwiftUI primitives and the design-v2 token set.
+/// Compact 380×420 panel anchored under the status item, implemented with
+/// native SwiftUI primitives and the design-v2 token set.
 struct MenuBarPanelView: View {
     let store: WorkbenchStore
     var onOpenQuickInput: () -> Void

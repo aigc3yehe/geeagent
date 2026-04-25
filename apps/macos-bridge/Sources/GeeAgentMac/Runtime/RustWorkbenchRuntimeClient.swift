@@ -373,15 +373,17 @@ private final class ShellRuntimeBridgeProcess {
         return url
     }
 
-    private var cargoManifestURL: URL {
+    private var runtimeBridgeRootURL: URL {
         repoRootURL
             .appendingPathComponent("apps")
-            .appendingPathComponent("desktop-shell")
-            .appendingPathComponent("src-tauri")
-            .appendingPathComponent("Cargo.toml")
+            .appendingPathComponent("runtime-bridge")
     }
 
-    private var bridgeBinaryCandidates: [URL] {
+    private var bridgeCargoManifestURL: URL {
+        runtimeBridgeRootURL.appendingPathComponent("Cargo.toml")
+    }
+
+    private var externallyProvidedBridgeBinaryCandidates: [URL] {
         var candidates = [URL]()
 
         if let overridePath = ProcessInfo.processInfo.environment["GEEAGENT_NATIVE_BRIDGE_BIN"],
@@ -393,17 +395,21 @@ private final class ShellRuntimeBridgeProcess {
             candidates.append(resourceURL.appendingPathComponent("shell_runtime_bridge"))
         }
 
-        let tauriRoot = repoRootURL
-            .appendingPathComponent("apps")
-            .appendingPathComponent("desktop-shell")
-            .appendingPathComponent("src-tauri")
-        candidates.append(tauriRoot.appendingPathComponent("target/debug/shell_runtime_bridge"))
-        candidates.append(tauriRoot.appendingPathComponent("target/release/shell_runtime_bridge"))
-
         return candidates
     }
 
+    private var runtimeBridgeBinaryCandidates: [URL] {
+        [
+            runtimeBridgeRootURL.appendingPathComponent("target/debug/shell_runtime_bridge"),
+            runtimeBridgeRootURL.appendingPathComponent("target/release/shell_runtime_bridge")
+        ]
+    }
+
     deinit {
+        stopServer()
+    }
+
+    func shutdown() {
         stopServer()
     }
 
@@ -794,13 +800,14 @@ private final class ShellRuntimeBridgeProcess {
     private static func readServerLineBlocking(from stdout: FileHandle) throws -> Data {
         var buffer = Data()
         while true {
-            let chunk = stdout.readData(ofLength: 1)
+            let chunk = stdout.availableData
             if chunk.isEmpty {
                 throw RustWorkbenchRuntimeError.bridgeInvocation(
                     "The Rust runtime bridge server exited before replying."
                 )
             }
-            if chunk == Data([0x0A]) {
+            if let newlineIndex = chunk.firstIndex(of: 0x0A) {
+                buffer.append(chunk[..<newlineIndex])
                 return buffer
             }
             buffer.append(chunk)
@@ -830,13 +837,17 @@ private final class ShellRuntimeBridgeProcess {
     }
 
     private func ensureBridgeExecutableURL() throws -> URL {
-        if let executableURL = bridgeBinaryCandidates.first(where: isExecutable) {
+        if let executableURL = externallyProvidedBridgeBinaryCandidates.first(where: isExecutable) {
+            return executableURL
+        }
+
+        if let executableURL = runtimeBridgeBinaryCandidates.first(where: isExecutable) {
             return executableURL
         }
 
         try buildBridgeBinary()
 
-        if let executableURL = bridgeBinaryCandidates.first(where: isExecutable) {
+        if let executableURL = runtimeBridgeBinaryCandidates.first(where: isExecutable) {
             return executableURL
         }
 
@@ -849,8 +860,15 @@ private final class ShellRuntimeBridgeProcess {
         buildLock.lock()
         defer { buildLock.unlock() }
 
-        if bridgeBinaryCandidates.contains(where: isExecutable) {
+        if externallyProvidedBridgeBinaryCandidates.contains(where: isExecutable)
+            || runtimeBridgeBinaryCandidates.contains(where: isExecutable) {
             return
+        }
+
+        guard fileManager.fileExists(atPath: bridgeCargoManifestURL.path) else {
+            throw RustWorkbenchRuntimeError.bridgeUnavailable(
+                "Could not find the native Rust runtime bridge manifest at \(bridgeCargoManifestURL.path)."
+            )
         }
 
         let process = Process()
@@ -861,7 +879,7 @@ private final class ShellRuntimeBridgeProcess {
             "cargo",
             "build",
             "--manifest-path",
-            cargoManifestURL.path,
+            bridgeCargoManifestURL.path,
             "--bin",
             "shell_runtime_bridge",
         ]
@@ -873,7 +891,7 @@ private final class ShellRuntimeBridgeProcess {
             try process.run()
         } catch {
             throw RustWorkbenchRuntimeError.bridgeUnavailable(
-                "Failed to start cargo while building the Rust runtime bridge: \(error.localizedDescription)"
+                "Failed to start cargo while building the native Rust runtime bridge: \(error.localizedDescription)"
             )
         }
 
@@ -889,7 +907,7 @@ private final class ShellRuntimeBridgeProcess {
             )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             throw RustWorkbenchRuntimeError.bridgeUnavailable(
                 stderr.isEmpty
-                    ? "cargo build failed for the Rust runtime bridge."
+                    ? "cargo build failed for the native Rust runtime bridge."
                     : stderr
             )
         }
@@ -954,6 +972,10 @@ final class RustWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Senda
     private let bridge = ShellRuntimeBridgeProcess()
     private let rawSnapshotLock = NSLock()
     private var rawSnapshot: RuntimeSnapshotDTO?
+
+    func shutdown() {
+        bridge.shutdown()
+    }
 
     func loadSnapshot() -> WorkbenchSnapshot {
         do {

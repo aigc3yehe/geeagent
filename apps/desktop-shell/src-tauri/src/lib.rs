@@ -1,17 +1,13 @@
 mod chat_runtime;
-mod module_runtime;
 
 use agent_kernel::{
     validate_pack, AgentAppearance, AgentProfile, AgentProfileRegistry, PackError, ProfileSource,
     ValidatedAgentPack,
 };
-use automation_engine::{
-    AutomationDefinition, AutomationStatus, LockPolicy, ScheduleCadence, TriggerKind,
-};
+use automation_engine::AutomationDefinition;
 use chat_runtime::{
-    clear_chat_runtime_provider, load_chat_routing_settings, persist_chat_routing_settings,
-    persist_chat_runtime_setup, ChatReadiness, ChatRoutingSettings, ChatRuntime,
-    ChatRuntimeSetupInput, RuntimeFacts, WorkspaceChatMessage,
+    load_chat_routing_settings, persist_chat_routing_settings, ChatReadiness, ChatRoutingSettings,
+    ChatRuntime, RuntimeFacts, WorkspaceChatMessage,
 };
 use chrono::Utc;
 use execution_runtime::{
@@ -23,16 +19,16 @@ use experience_registry::{
     AgentSkinManifest, ExperienceRegistry, InstallState, InstalledAppManifest, ModuleDisplayMode,
 };
 use module_gateway::{
-    ArtifactEnvelope, ModuleRun, ModuleRunStage, ModuleRunStatus, ModuleStatusResponse,
-    Recoverability,
+    ArtifactEnvelope, ModuleRun, ModuleRunStage, ModuleRunStatus, Recoverability,
 };
-use module_runtime::ModuleStatusRuntime;
+#[cfg(test)]
 use runtime_kernel::{
-    classify_first_party_execution, invoke_tool, AgentSessionRuntime, ArtifactRecord,
-    ExecutionPlanCondition, FirstPartyDetectionContext, FirstPartyRoutingDecision, KernelRun,
-    KernelRunStatus, KernelSession, KernelSessionStatus, KernelSurfaceKind, KernelToolInvocation,
-    KernelToolInvocationStatus, KernelToolResult, KernelToolResultStatus, QueuedRuntimeMessage,
-    RunStep, RunStepOutcome, RunStepPhase, ToolOutcome, ToolRequest,
+    classify_first_party_execution, FirstPartyDetectionContext, FirstPartyRoutingDecision,
+    KernelRun, KernelRunStatus,
+};
+use runtime_kernel::{
+    invoke_tool, AgentSessionRuntime, KernelSession, KernelSessionStatus, KernelSurfaceKind,
+    QueuedRuntimeMessage, ToolOutcome, ToolRequest,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -43,43 +39,15 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
     sync::{Mutex, OnceLock},
-    time::{Duration, Instant},
 };
 use task_engine::{
     ArtifactRef, ExecutionMode, ExecutionSession, ExecutionSurface, ImportanceLevel,
     SessionPersistencePolicy, TaskRun, TaskStage, TaskStatus, TaskType, ToolInvocation,
     ToolInvocationStatus, TranscriptEvent, TranscriptEventPayload,
 };
-use tauri::{
-    menu::{Menu, MenuItem},
-    tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    App, AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
-};
-#[cfg(desktop)]
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
-#[cfg(desktop)]
-use tauri_plugin_positioner::{Position, WindowExt};
-use workspace_runtime::{WorkbenchSection, WorkspaceRuntime, WorkspaceSnapshot};
-
-const WINDOW_MAIN: &str = "main";
-const WINDOW_MENU_BAR: &str = "menu-bar";
-const WINDOW_QUICK_INPUT: &str = "quick-input";
-const WINDOW_PET_OVERLAY: &str = "pet-overlay";
-const MODULE_REFRESH_MIN_INTERVAL_MS: u64 = 3900;
-const TRAY_PANEL_CLICK_DEBOUNCE_MS: u64 = 280;
+use workspace_runtime::{WorkspaceRuntime, WorkspaceSnapshot};
 const ITERATIVE_TURN_MAX_STEPS: usize = 8;
 const PERSONA_SKILL_PROMPT_CHAR_LIMIT: usize = 20_000;
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum WorkspacePage {
-    Home,
-    Chat,
-    Tasks,
-    Automations,
-    Apps,
-    Settings,
-}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct RuntimeTaskRecord {
@@ -231,16 +199,16 @@ struct RuntimeRunStateRecord {
     module_run_id: Option<String>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 struct RunStatusFollowUpDecision {
     assistant_reply: String,
-    quick_reply: String,
     run_state: RuntimeRunStateRecord,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 struct GroundedRuntimeFactReplyDecision {
-    assistant_reply: String,
     quick_reply: String,
     run_state: RuntimeRunStateRecord,
 }
@@ -268,9 +236,6 @@ struct TurnRoute {
 #[derive(Clone, Debug)]
 struct PreparedTurnContext {
     active_agent_profile: AgentProfile,
-    first_party_routing_decision: Option<FirstPartyRoutingDecision>,
-    run_status_follow_up: Option<RunStatusFollowUpDecision>,
-    grounded_runtime_fact_reply: Option<GroundedRuntimeFactReplyDecision>,
     workspace_messages: Vec<WorkspaceChatMessage>,
     should_reuse_active_conversation: bool,
 }
@@ -396,17 +361,6 @@ enum ClaudeSdkBridgeObservedToolEvent {
 struct ControlledTerminalObservation {
     step: ControlledTerminalStep,
     outcome: ToolOutcome,
-}
-
-#[derive(Clone, Debug)]
-enum ControlledTerminalPlannerDecision {
-    Dispatch {
-        step: ControlledTerminalStep,
-        rationale: String,
-    },
-    Finalize {
-        rationale: String,
-    },
 }
 
 fn desktop_interaction_capabilities() -> RuntimeInteractionCapabilitiesRecord {
@@ -589,15 +543,6 @@ fn load_runtime_agent_profile_registry(config_dir: Option<&Path>) -> AgentProfil
     }
 
     registry
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AutomationDraftInput {
-    name: String,
-    goal_prompt: String,
-    cadence: ScheduleCadence,
-    time_of_day: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1382,54 +1327,6 @@ impl RuntimeStore {
         }
     }
 
-    fn is_valid_time_of_day(time_of_day: &str) -> bool {
-        let Some((hour, minute)) = time_of_day.split_once(':') else {
-            return false;
-        };
-
-        if hour.len() != 2 || minute.len() != 2 {
-            return false;
-        }
-
-        matches!(
-            (hour.parse::<u8>(), minute.parse::<u8>()),
-            (Ok(hour), Ok(minute)) if hour < 24 && minute < 60
-        )
-    }
-
-    fn create_automation(&mut self, draft: AutomationDraftInput) -> Result<(), String> {
-        let name = draft.name.trim();
-        let goal_prompt = draft.goal_prompt.trim();
-        let time_of_day = draft.time_of_day.trim();
-
-        if name.is_empty() {
-            return Err("automation name cannot be empty".to_string());
-        }
-        if goal_prompt.is_empty() {
-            return Err("automation goal cannot be empty".to_string());
-        }
-        if !Self::is_valid_time_of_day(time_of_day) {
-            return Err("time of day must be a real 24-hour clock value".to_string());
-        }
-
-        self.automations.insert(
-            0,
-            AutomationDefinition {
-                automation_id: self.next_automation_id(),
-                name: name.to_string(),
-                status: AutomationStatus::Active,
-                trigger_kind: TriggerKind::Schedule,
-                goal_prompt: goal_prompt.to_string(),
-                lock_policy: LockPolicy::SkipIfRunning,
-                cadence: draft.cadence,
-                time_of_day: time_of_day.to_string(),
-                schedule_hint: None,
-            },
-        );
-        self.quick_reply = format!("Created scheduled task {}.", name);
-        Ok(())
-    }
-
     fn insert_execution_automation_draft(&mut self, draft: ExecutionAutomationDraft) {
         self.automations.insert(
             0,
@@ -1446,65 +1343,6 @@ impl RuntimeStore {
             },
         );
     }
-
-    fn set_automation_status(
-        &mut self,
-        automation_id: &str,
-        status: AutomationStatus,
-    ) -> Result<(), String> {
-        let automation = self
-            .automations
-            .iter_mut()
-            .find(|automation| automation.automation_id == automation_id)
-            .ok_or_else(|| "automation not found".to_string())?;
-        automation.status = status.clone();
-        self.quick_reply = match status {
-            AutomationStatus::Active => format!("Resumed scheduled task {}.", automation.name),
-            AutomationStatus::Paused => format!("Paused scheduled task {}.", automation.name),
-        };
-        Ok(())
-    }
-
-    fn delete_automation(&mut self, automation_id: &str) -> Result<(), String> {
-        let index = self
-            .automations
-            .iter()
-            .position(|automation| automation.automation_id == automation_id)
-            .ok_or_else(|| "automation not found".to_string())?;
-        let removed = self.automations.remove(index);
-        self.quick_reply = format!("Deleted scheduled task {}.", removed.name);
-        Ok(())
-    }
-}
-
-struct ShellRuntimeState(Mutex<RuntimeStore>);
-struct AppConfigState {
-    config_dir: Option<PathBuf>,
-}
-struct SnapshotStoreState {
-    snapshot_path: Option<PathBuf>,
-}
-
-#[derive(Clone)]
-struct ChatRuntimeHandle {
-    runtime: Option<ChatRuntime>,
-    startup_error: Option<String>,
-}
-
-struct ChatRuntimeState(Mutex<ChatRuntimeHandle>);
-
-struct ModuleStatusRuntimeState {
-    runtime: Option<ModuleStatusRuntime>,
-    startup_error: Option<String>,
-}
-
-struct ModuleRefreshGateState(Mutex<Option<Instant>>);
-struct PendingWorkspaceRouteState(Mutex<Option<WorkspacePage>>);
-struct TrayPanelGateState(Mutex<Option<Instant>>);
-
-#[cfg(desktop)]
-fn quick_input_shortcut() -> Shortcut {
-    Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyK)
 }
 
 #[cfg(test)]
@@ -1808,66 +1646,6 @@ fn ensure_workspace_runtime_catalog(store: &mut RuntimeStore) {
     }
 
     store.workspace_runtime = Some(reconciled);
-}
-
-fn workspace_section_for_page(page: &WorkspacePage) -> WorkbenchSection {
-    match page {
-        WorkspacePage::Home => WorkbenchSection::Home,
-        WorkspacePage::Chat => WorkbenchSection::Chat,
-        WorkspacePage::Tasks => WorkbenchSection::Tasks,
-        WorkspacePage::Automations => WorkbenchSection::Automations,
-        WorkspacePage::Apps => WorkbenchSection::Apps,
-        WorkspacePage::Settings => WorkbenchSection::Settings,
-    }
-}
-
-fn set_workspace_runtime_active_section(store: &mut RuntimeStore, page: &WorkspacePage) {
-    let workspace_runtime = store
-        .workspace_runtime
-        .get_or_insert_with(bootstrap_workspace_snapshot);
-    workspace_runtime.active_section = workspace_section_for_page(page);
-}
-
-fn sync_workspace_navigation(
-    store: &mut RuntimeStore,
-    pending_route_state: &PendingWorkspaceRouteState,
-    page: WorkspacePage,
-) -> Result<(), String> {
-    set_workspace_runtime_active_section(store, &page);
-    set_pending_workspace_route(pending_route_state, page)
-}
-
-fn update_workspace_active_section(
-    state: &State<'_, ShellRuntimeState>,
-    snapshot_store_state: &State<'_, SnapshotStoreState>,
-    page: &WorkspacePage,
-) -> Result<RuntimeSnapshot, String> {
-    let next_snapshot = {
-        let mut store = state.0.lock().map_err(|error| error.to_string())?;
-        set_workspace_runtime_active_section(&mut store, page);
-        let next_snapshot = store.snapshot();
-        persist_snapshot_if_possible(snapshot_store_state, &store);
-        next_snapshot
-    };
-
-    Ok(next_snapshot)
-}
-
-fn update_workspace_navigation(
-    state: &State<'_, ShellRuntimeState>,
-    snapshot_store_state: &State<'_, SnapshotStoreState>,
-    pending_route_state: &PendingWorkspaceRouteState,
-    page: WorkspacePage,
-) -> Result<RuntimeSnapshot, String> {
-    let next_snapshot = {
-        let mut store = state.0.lock().map_err(|error| error.to_string())?;
-        sync_workspace_navigation(&mut store, pending_route_state, page)?;
-        let next_snapshot = store.snapshot();
-        persist_snapshot_if_possible(snapshot_store_state, &store);
-        next_snapshot
-    };
-
-    Ok(next_snapshot)
 }
 
 fn default_runtime_store() -> RuntimeStore {
@@ -2470,9 +2248,8 @@ fn collect_agent_runtime_bridge_events_until_pause_or_result(
 
     loop {
         let Some(event) = read_agent_runtime_bridge_event(&mut bridge.reader)? else {
-            turn.failed_reason = Some(
-                "SDK bridge exited before the active run reached a result.".to_string(),
-            );
+            turn.failed_reason =
+                Some("SDK bridge exited before the active run reached a result.".to_string());
             break;
         };
 
@@ -2629,9 +2406,7 @@ fn collect_agent_runtime_bridge_events_until_pause_or_result(
                 let invocation_id = event
                     .get("toolUseId")
                     .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| {
-                        "SDK bridge tool result was missing toolUseId".to_string()
-                    })?
+                    .ok_or_else(|| "SDK bridge tool result was missing toolUseId".to_string())?
                     .to_string();
                 let raw_status = event
                     .get("status")
@@ -3039,6 +2814,7 @@ fn tool_invocation_status_from_module_run_status(status: &ModuleRunStatus) -> To
     }
 }
 
+#[cfg(test)]
 fn append_first_party_trace_for_outcome(
     store: &mut RuntimeStore,
     cursor: &TurnReplayCursor,
@@ -3203,6 +2979,7 @@ fn default_clarification_turn_steps() -> Vec<String> {
     ]
 }
 
+#[cfg(test)]
 fn record_first_party_turn_with_steps(
     store: &mut RuntimeStore,
     surface: ExecutionSurface,
@@ -3312,106 +3089,16 @@ fn chat_runtime_record_from_readiness(readiness: ChatReadiness) -> RuntimeChatRu
     }
 }
 
-fn startup_chat_runtime_record(chat_runtime_state: &ChatRuntimeState) -> RuntimeChatRuntimeRecord {
-    match chat_runtime_state.0.lock() {
-        Ok(runtime_state) => match &runtime_state.runtime {
-            Some(runtime) => chat_runtime_record_from_readiness(runtime.readiness()),
-            None => RuntimeChatRuntimeRecord {
-                status: "needs_setup".to_string(),
-                active_provider: None,
-                detail: runtime_state.startup_error.clone().unwrap_or_else(|| {
-                    "Live chat is waiting for provider configuration.".to_string()
-                }),
-            },
-        },
-        Err(_) => RuntimeChatRuntimeRecord {
-            status: "degraded".to_string(),
-            active_provider: None,
-            detail: "Chat runtime state is currently unavailable.".to_string(),
-        },
-    }
-}
-
-fn chat_runtime_record_from_handle(handle: &ChatRuntimeHandle) -> RuntimeChatRuntimeRecord {
-    match &handle.runtime {
-        Some(runtime) => chat_runtime_record_from_readiness(runtime.readiness()),
-        None => RuntimeChatRuntimeRecord {
-            status: "needs_setup".to_string(),
-            active_provider: None,
-            detail: handle
-                .startup_error
-                .clone()
-                .unwrap_or_else(|| "Live chat is waiting for provider configuration.".to_string()),
-        },
-    }
-}
-
-fn chat_runtime_handle_from_config_dir(config_dir: Option<&Path>) -> ChatRuntimeHandle {
-    match ChatRuntime::from_config_dir(config_dir) {
-        Ok(runtime) => ChatRuntimeHandle {
-            runtime: Some(runtime),
-            startup_error: None,
-        },
-        Err(error) => ChatRuntimeHandle {
-            runtime: None,
-            startup_error: Some(error),
-        },
-    }
-}
-
 fn startup_chat_runtime_record_from_config_dir(
     config_dir: Option<&Path>,
 ) -> RuntimeChatRuntimeRecord {
-    let handle = chat_runtime_handle_from_config_dir(config_dir);
-    match handle.runtime {
-        Some(runtime) => chat_runtime_record_from_readiness(runtime.readiness()),
-        None => RuntimeChatRuntimeRecord {
+    match ChatRuntime::from_config_dir(config_dir) {
+        Ok(runtime) => chat_runtime_record_from_readiness(runtime.readiness()),
+        Err(error) => RuntimeChatRuntimeRecord {
             status: "needs_setup".to_string(),
             active_provider: None,
-            detail: handle
-                .startup_error
-                .unwrap_or_else(|| "Live chat is waiting for provider configuration.".to_string()),
+            detail: error,
         },
-    }
-}
-
-fn reload_chat_runtime_state(
-    chat_runtime_state: &ChatRuntimeState,
-    config_dir: Option<&Path>,
-) -> RuntimeChatRuntimeRecord {
-    match ChatRuntime::from_config_dir(config_dir) {
-        Ok(runtime) => {
-            let readiness = runtime.readiness();
-            let record = chat_runtime_record_from_readiness(readiness);
-            if let Ok(mut runtime_state) = chat_runtime_state.0.lock() {
-                *runtime_state = ChatRuntimeHandle {
-                    runtime: Some(runtime),
-                    startup_error: None,
-                };
-            }
-            record
-        }
-        Err(error) => {
-            if let Ok(mut runtime_state) = chat_runtime_state.0.lock() {
-                *runtime_state = ChatRuntimeHandle {
-                    runtime: None,
-                    startup_error: Some(error.clone()),
-                };
-            }
-            RuntimeChatRuntimeRecord {
-                status: "needs_setup".to_string(),
-                active_provider: None,
-                detail: "Live chat is waiting for provider configuration.".to_string(),
-            }
-        }
-    }
-}
-
-fn persist_snapshot_if_possible(snapshot_store_state: &SnapshotStoreState, store: &RuntimeStore) {
-    if let Some(snapshot_path) = &snapshot_store_state.snapshot_path {
-        if let Err(error) = persist_store_to_disk(store, snapshot_path) {
-            log::warn!("failed to persist runtime store: {error}");
-        }
     }
 }
 
@@ -4233,6 +3920,7 @@ fn quick_module_run_id(store: &RuntimeStore) -> String {
     format!("run_quick_{:02}", store.module_runs.len().saturating_add(1))
 }
 
+#[cfg(test)]
 fn detect_first_party_execution_from_store(
     store: &RuntimeStore,
     message: &str,
@@ -4269,6 +3957,7 @@ fn active_conversation_id(store: &RuntimeStore) -> Option<String> {
         .map(|conversation| conversation.conversation_id.clone())
 }
 
+#[cfg(test)]
 fn looks_like_runtime_facts_time_request(text: &str) -> bool {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -4294,17 +3983,14 @@ fn looks_like_runtime_facts_time_request(text: &str) -> bool {
         || lowered.contains("what date")
 }
 
+#[cfg(test)]
 fn grounded_runtime_fact_reply(
     store: &RuntimeStore,
     surface: ExecutionSurface,
     profile: &AgentProfile,
 ) -> GroundedRuntimeFactReplyDecision {
+    let _ = profile;
     let facts = runtime_facts_for_surface(surface);
-    let assistant_reply = format!(
-        "{} answered this directly from the current turn's local runtime facts. The current local time is {}.",
-        agent_display_name(profile),
-        facts.local_time
-    );
     let quick_reply = format!("Current local time: {}.", facts.local_time);
     let run_state = runtime_run_state(
         active_conversation_id(store),
@@ -4317,7 +4003,6 @@ fn grounded_runtime_fact_reply(
     );
 
     GroundedRuntimeFactReplyDecision {
-        assistant_reply,
         quick_reply,
         run_state,
     }
@@ -4325,39 +4010,12 @@ fn grounded_runtime_fact_reply(
 
 fn prepare_turn_context(store: &RuntimeStore, route: TurnRoute, text: &str) -> PreparedTurnContext {
     let active_agent_profile = resolved_active_agent_profile(store);
-    let first_party_routing_decision = match route.mode {
-        TurnMode::QuickPrompt => {
-            let empty_messages = Vec::new();
-            classify_first_party_execution(&FirstPartyDetectionContext {
-                message: text,
-                focused_task_id: None,
-                focused_task_title: None,
-                recent_user_messages: &empty_messages,
-            })
-        }
-        TurnMode::WorkspaceMessage => detect_first_party_execution_from_store(store, text),
-    };
-
     let workspace_messages = matches!(route.mode, TurnMode::WorkspaceMessage)
         .then(|| workspace_messages_from_store(store))
         .unwrap_or_default();
-    let run_status_follow_up = first_party_routing_decision
-        .is_none()
-        .then(|| detect_run_status_follow_up(store, text))
-        .flatten();
-    let grounded_runtime_fact_reply = first_party_routing_decision
-        .is_none()
-        .then(|| looks_like_runtime_facts_time_request(text))
-        .and_then(|matched| {
-            matched
-                .then(|| grounded_runtime_fact_reply(store, route.surface, &active_agent_profile))
-        });
 
     PreparedTurnContext {
         active_agent_profile,
-        first_party_routing_decision,
-        run_status_follow_up,
-        grounded_runtime_fact_reply,
         workspace_messages,
         should_reuse_active_conversation: should_reuse_active_conversation(store, text),
     }
@@ -4383,6 +4041,7 @@ fn runtime_run_state(
     }
 }
 
+#[cfg(test)]
 fn looks_like_run_status_follow_up(text: &str) -> bool {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -4414,6 +4073,7 @@ fn looks_like_run_status_follow_up(text: &str) -> bool {
     })
 }
 
+#[cfg(test)]
 fn describe_task_status_for_follow_up(
     task: &RuntimeTaskRecord,
     module_run_id: Option<&str>,
@@ -4428,24 +4088,36 @@ fn describe_task_status_for_follow_up(
             true,
         ),
         "waiting_review" => (
-            format!("The previous run is waiting for approval: {}. Review it to continue.", task.title),
+            format!(
+                "The previous run is waiting for approval: {}. Review it to continue.",
+                task.title
+            ),
             "Run is paused for approval.".to_string(),
             true,
         ),
         "waiting_input" => (
-            format!("The previous run is waiting for more input: {}. {}", task.title, task.summary),
+            format!(
+                "The previous run is waiting for more input: {}. {}",
+                task.title, task.summary
+            ),
             "Run is waiting for more input.".to_string(),
             true,
         ),
         "completed" => (
-            format!("The previous run completed: {}. {}", task.title, task.summary),
+            format!(
+                "The previous run completed: {}. {}",
+                task.title, task.summary
+            ),
             module_run_id
                 .map(|module_run_id| format!("Completed run {module_run_id}."))
                 .unwrap_or_else(|| "Completed the previous run.".to_string()),
             false,
         ),
         "failed" | "cancelled" => (
-            format!("The previous run did not complete successfully: {}. {}", task.title, task.summary),
+            format!(
+                "The previous run did not complete successfully: {}. {}",
+                task.title, task.summary
+            ),
             "Previous run did not complete successfully.".to_string(),
             false,
         ),
@@ -4460,6 +4132,7 @@ fn describe_task_status_for_follow_up(
     }
 }
 
+#[cfg(test)]
 fn active_kernel_session(store: &RuntimeStore) -> Option<&AgentSessionRuntime> {
     let conversation_id = store.active_conversation()?.conversation_id.clone();
     let session_id = kernel_session_id_for_conversation(&conversation_id);
@@ -4469,6 +4142,7 @@ fn active_kernel_session(store: &RuntimeStore) -> Option<&AgentSessionRuntime> {
         .find(|session| session.session.session_id == session_id)
 }
 
+#[cfg(test)]
 fn latest_kernel_run_for_active_conversation(
     store: &RuntimeStore,
 ) -> Option<(&AgentSessionRuntime, &KernelRun)> {
@@ -4484,10 +4158,12 @@ fn latest_kernel_run_for_active_conversation(
     session.runs.get(&run_id).map(|run| (session, run))
 }
 
+#[cfg(test)]
 fn kernel_task_id_for_run(run: &KernelRun) -> Option<String> {
     run.run_id.strip_prefix("krun_").map(|id| id.to_string())
 }
 
+#[cfg(test)]
 fn module_run_id_for_task(store: &RuntimeStore, task_id: &str) -> Option<String> {
     store
         .module_runs
@@ -4496,6 +4172,7 @@ fn module_run_id_for_task(store: &RuntimeStore, task_id: &str) -> Option<String>
         .map(|module_run| module_run.module_run.module_run_id.clone())
 }
 
+#[cfg(test)]
 fn kernel_run_status_follow_up(store: &RuntimeStore) -> Option<RunStatusFollowUpDecision> {
     let active_conversation_id = active_conversation_id(store);
     let (session, run) = latest_kernel_run_for_active_conversation(store)?;
@@ -4506,11 +4183,10 @@ fn kernel_run_status_follow_up(store: &RuntimeStore) -> Option<RunStatusFollowUp
 
     if let Some(task_id) = task_id.as_deref() {
         if let Some(task) = store.tasks.iter().find(|task| task.task_id == task_id) {
-            let (assistant_reply, quick_reply, resumable) =
+            let (assistant_reply, _quick_reply, resumable) =
                 describe_task_status_for_follow_up(task, module_run_id.as_deref());
             return Some(RunStatusFollowUpDecision {
                 assistant_reply,
-                quick_reply: quick_reply.clone(),
                 run_state: runtime_run_state(
                     active_conversation_id,
                     task.status.clone(),
@@ -4531,7 +4207,7 @@ fn kernel_run_status_follow_up(store: &RuntimeStore) -> Option<RunStatusFollowUp
         .as_deref()
         .and_then(|interrupt_id| session.interruptions.get(interrupt_id));
 
-    let (status, stop_reason, detail, assistant_reply, quick_reply, resumable) = match run.status {
+    let (status, stop_reason, detail, assistant_reply, _quick_reply, resumable) = match run.status {
         KernelRunStatus::Queued | KernelRunStatus::Running => (
             "running".to_string(),
             run.stop_reason
@@ -4610,7 +4286,6 @@ fn kernel_run_status_follow_up(store: &RuntimeStore) -> Option<RunStatusFollowUp
 
     Some(RunStatusFollowUpDecision {
         assistant_reply,
-        quick_reply,
         run_state: runtime_run_state(
             active_conversation_id,
             status,
@@ -4623,6 +4298,7 @@ fn kernel_run_status_follow_up(store: &RuntimeStore) -> Option<RunStatusFollowUp
     })
 }
 
+#[cfg(test)]
 fn detect_run_status_follow_up(
     store: &RuntimeStore,
     text: &str,
@@ -4644,11 +4320,10 @@ fn detect_run_status_follow_up(
     {
         if let Some(task_id) = run_state.task_id.as_deref() {
             if let Some(task) = store.tasks.iter().find(|task| task.task_id == task_id) {
-                let (assistant_reply, quick_reply, resumable) =
+                let (assistant_reply, _quick_reply, resumable) =
                     describe_task_status_for_follow_up(task, run_state.module_run_id.as_deref());
                 return Some(RunStatusFollowUpDecision {
                     assistant_reply,
-                    quick_reply: quick_reply.clone(),
                     run_state: runtime_run_state(
                         active_conversation_id.clone(),
                         task.status.clone(),
@@ -4667,7 +4342,6 @@ fn detect_run_status_follow_up(
                 assistant_reply:
                     "The previous reply did not start a local run, so there is no execution result to report yet."
                         .to_string(),
-                quick_reply: "No active run to report.".to_string(),
                 run_state: runtime_run_state(
                     active_conversation_id.clone(),
                     "idle",
@@ -4685,7 +4359,6 @@ fn detect_run_status_follow_up(
                 assistant_reply:
                     "The previous turn did not start a local run because the chat runtime is not configured, so there is no new execution result yet."
                         .to_string(),
-                quick_reply: "Chat runtime still needs setup.".to_string(),
                 run_state: runtime_run_state(
                     active_conversation_id.clone(),
                     "idle",
@@ -4703,7 +4376,6 @@ fn detect_run_status_follow_up(
                 assistant_reply:
                     "The previous turn also did not start a local run because the chat runtime was degraded, so there is no follow-up execution result to report."
                         .to_string(),
-                quick_reply: "Chat runtime is still degraded.".to_string(),
                 run_state: runtime_run_state(
                     active_conversation_id.clone(),
                     "idle",
@@ -4718,7 +4390,6 @@ fn detect_run_status_follow_up(
 
         return Some(RunStatusFollowUpDecision {
             assistant_reply: run_state.detail.clone(),
-            quick_reply: run_state.detail.clone(),
             run_state,
         });
     }
@@ -4726,7 +4397,6 @@ fn detect_run_status_follow_up(
     Some(RunStatusFollowUpDecision {
         assistant_reply: "There is no ongoing local run in this conversation right now, so there is no new execution result to report."
             .to_string(),
-        quick_reply: "No active run to continue.".to_string(),
         run_state: runtime_run_state(
             active_conversation_id,
             "idle",
@@ -4813,37 +4483,6 @@ fn activate_conversation_for_task(
     Ok(Some(target_conversation_id))
 }
 
-fn execution_request_meta_for_plan(
-    store: &RuntimeStore,
-    plan: &runtime_kernel::DetectedExecutionPlan,
-) -> ExecutionRequestMeta {
-    let task_id = plan
-        .target_task_id
-        .clone()
-        .unwrap_or_else(|| quick_task_id(store));
-    let module_run_id = store
-        .module_runs
-        .iter()
-        .find(|module_run| module_run.module_run.task_id == task_id)
-        .map(|module_run| module_run.module_run.module_run_id.clone())
-        .unwrap_or_else(|| quick_module_run_id(store));
-
-    ExecutionRequestMeta {
-        task_id,
-        module_run_id,
-        conversation_id: store
-            .active_conversation()
-            .map(|conversation| conversation.conversation_id.clone()),
-        title: format!(
-            "Quick request: {}",
-            summarize_prompt(&plan.canonical_prompt, 44)
-        ),
-        prompt: plan.canonical_prompt.clone(),
-        created_at: "now".to_string(),
-        updated_at: "now".to_string(),
-    }
-}
-
 fn controlled_terminal_meta_for_request(
     store: &RuntimeStore,
     request: &ControlledTerminalRequest,
@@ -4891,14 +4530,6 @@ fn controlled_terminal_meta_for_request(
     }
 }
 
-fn approval_token_for_task(store: &RuntimeStore, task_id: &str) -> Option<String> {
-    let approval = store
-        .approval_requests
-        .iter()
-        .find(|approval| approval.task_id == task_id && approval.status == "open")?;
-    Some(format!("approved:{}", approval.approval_request_id))
-}
-
 fn build_terminal_tool_request(
     step: &ControlledTerminalStep,
     approval_token: Option<String>,
@@ -4932,148 +4563,11 @@ fn execute_controlled_terminal_step(
     }
 }
 
-fn same_controlled_terminal_step(
-    left: &ControlledTerminalStep,
-    right: &ControlledTerminalStep,
-) -> bool {
-    left.command == right.command && left.args == right.args && left.cwd == right.cwd
-}
-
-fn observation_for_terminal_step<'a>(
-    observations: &'a [ControlledTerminalObservation],
-    step: &ControlledTerminalStep,
-) -> Option<&'a ControlledTerminalObservation> {
-    observations
-        .iter()
-        .find(|observation| same_controlled_terminal_step(&observation.step, step))
-}
-
-fn first_unobserved_terminal_step(
-    request: &ControlledTerminalRequest,
-    observations: &[ControlledTerminalObservation],
-) -> Option<ControlledTerminalStep> {
-    request
-        .steps
-        .iter()
-        .find(|step| observation_for_terminal_step(observations, step).is_none())
-        .cloned()
-}
-
 fn shell_stdout_contains_running_python_processes(stdout: &str) -> bool {
     stdout.lines().any(|line| {
         let lowered = line.to_ascii_lowercase();
         lowered.contains("python") && !lowered.trim().is_empty()
     })
-}
-
-fn host_diagnostics_terminal_planner(
-    request: &ControlledTerminalRequest,
-    observations: &[ControlledTerminalObservation],
-) -> ControlledTerminalPlannerDecision {
-    let python_step = request
-        .steps
-        .iter()
-        .find(|step| step.command == "ps")
-        .cloned();
-    let port_step = request
-        .steps
-        .iter()
-        .find(|step| step.command == "lsof")
-        .cloned();
-
-    let python_observation = python_step
-        .as_ref()
-        .and_then(|step| observation_for_terminal_step(observations, step));
-    let port_observation = port_step
-        .as_ref()
-        .and_then(|step| observation_for_terminal_step(observations, step));
-
-    if let Some(step) = python_step {
-        if python_observation.is_none() {
-            return ControlledTerminalPlannerDecision::Dispatch {
-                step,
-                rationale:
-                    "planning the next host-diagnostics step by first checking running Python processes before deciding whether more local inspection is needed"
-                        .to_string(),
-            };
-        }
-    }
-
-    if let Some(step) = port_step {
-        if port_observation.is_none() {
-            let python_empty = python_observation
-                .and_then(shell_completed_output)
-                .map(|(stdout, _)| !shell_stdout_contains_running_python_processes(&stdout))
-                .unwrap_or(true);
-
-            match step.condition {
-                execution_runtime::ControlledTerminalStepCondition::Always => {
-                    return ControlledTerminalPlannerDecision::Dispatch {
-                        step,
-                        rationale:
-                            "planning the next host-diagnostics step by checking the requested local port after reading the current process state"
-                                .to_string(),
-                    };
-                }
-                execution_runtime::ControlledTerminalStepCondition::IfPreviousPythonInspectionEmpty => {
-                    if python_empty {
-                        return ControlledTerminalPlannerDecision::Dispatch {
-                            step,
-                            rationale:
-                                "the Python inspection came back empty, so the next step is to inspect the requested port before finalizing the diagnosis"
-                                    .to_string(),
-                        };
-                    }
-                }
-            }
-        }
-    }
-
-    ControlledTerminalPlannerDecision::Finalize {
-        rationale:
-            "the host-diagnostics investigation has gathered enough grounded observations to finalize this run"
-                .to_string(),
-    }
-}
-
-fn next_controlled_terminal_planner_decision(
-    request: &ControlledTerminalRequest,
-    observations: &[ControlledTerminalObservation],
-) -> ControlledTerminalPlannerDecision {
-    if observations
-        .iter()
-        .any(|observation| terminal_observation_error(observation).is_some())
-    {
-        return ControlledTerminalPlannerDecision::Finalize {
-            rationale:
-                "the latest terminal observation requires the run to stop and finalize from the grounded shell output"
-                    .to_string(),
-        };
-    }
-
-    match request.kind {
-        ControlledTerminalPlanKind::HostDiagnostics { .. } => {
-            host_diagnostics_terminal_planner(request, observations)
-        }
-        _ => {
-            if let Some(step) = first_unobserved_terminal_step(request, observations) {
-                ControlledTerminalPlannerDecision::Dispatch {
-                    rationale: format!(
-                        "planning the next terminal step for the goal \"{}\" by dispatching: {}",
-                        summarize_prompt(&request.goal, 80),
-                        step.title
-                    ),
-                    step,
-                }
-            } else {
-                ControlledTerminalPlannerDecision::Finalize {
-                    rationale:
-                        "the controlled terminal plan has no remaining steps, so the run can finalize from the collected observations"
-                            .to_string(),
-                }
-            }
-        }
-    }
 }
 
 fn shell_completed_output(observation: &ControlledTerminalObservation) -> Option<(String, String)> {
@@ -5307,7 +4801,10 @@ fn summarize_generic_shell_plan(
 
     if completed_steps.is_empty() {
         return (
-            format!("I tried to run {}, but there was no usable terminal output.", subject),
+            format!(
+                "I tried to run {}, but there was no usable terminal output.",
+                subject
+            ),
             "Terminal command produced no usable output.".to_string(),
             "generic shell produced no usable output".to_string(),
         );
@@ -5359,7 +4856,10 @@ fn summarize_host_diagnostics_plan(
     let mut port_label = "target port".to_string();
 
     if let Some(current_time_label) = current_time_label {
-        parts.push(format!("First I recorded the current local time: {}.", current_time_label));
+        parts.push(format!(
+            "First I recorded the current local time: {}.",
+            current_time_label
+        ));
     }
 
     for observation in observations {
@@ -5419,7 +4919,9 @@ fn summarize_host_diagnostics_plan(
     }
 
     if python_lines.is_empty() && !port_checked && parts.is_empty() {
-        parts.push("This local diagnostic run did not produce any usable shell observations.".to_string());
+        parts.push(
+            "This local diagnostic run did not produce any usable shell observations.".to_string(),
+        );
     }
 
     let assistant = parts.join(" ");
@@ -6060,6 +5562,7 @@ fn is_transient_quick_prompt(prompt: &str) -> bool {
         && trimmed.chars().count() <= 120
 }
 
+#[cfg(test)]
 fn should_queue_quick_prompt_as_task(prompt: &str) -> bool {
     let trimmed = prompt.trim();
     if trimmed.is_empty() {
@@ -6143,114 +5646,13 @@ fn quick_conversation_title(prompt: &str) -> String {
     summarize_prompt(prompt, 64)
 }
 
-fn focus_open_approval(store: &mut RuntimeStore) {
-    let task_id = store
-        .approval_requests
-        .iter()
-        .find(|approval| approval.status == "open")
-        .map(|approval| approval.task_id.clone())
-        .or_else(|| {
-            store
-                .tasks
-                .iter()
-                .find(|task| task.status == "waiting_review")
-                .map(|task| task.task_id.clone())
-        })
-        .or_else(|| store.tasks.first().map(|task| task.task_id.clone()));
-
-    store.workspace_focus = RuntimeWorkspaceFocus {
-        mode: if task_id.is_some() {
-            "approval".to_string()
-        } else {
-            "default".to_string()
-        },
-        task_id,
-    };
-}
-
-fn set_workspace_focus(store: &mut RuntimeStore, task_id: &str) -> Result<(), String> {
-    let exists = store.tasks.iter().any(|task| task.task_id == task_id);
-    if !exists {
-        return Err("task not found".to_string());
-    }
-
-    let _ = activate_conversation_for_task(store, task_id)?;
-
-    store.workspace_focus = RuntimeWorkspaceFocus {
-        mode: "task".to_string(),
-        task_id: Some(task_id.to_string()),
-    };
-
-    Ok(())
-}
-
-fn emit_shell_snapshot_changed(app: &AppHandle, snapshot: &RuntimeSnapshot) -> Result<(), String> {
-    app.emit("shell-snapshot-changed", snapshot.clone())
-        .map_err(|error| error.to_string())
-}
-
-fn emit_workspace_route_requested(app: &AppHandle, page: WorkspacePage) -> Result<(), String> {
-    app.emit(
-        "workspace-route-requested",
-        serde_json::json!({ "page": page }),
-    )
-    .map_err(|error| error.to_string())
-}
-
-fn set_pending_workspace_route(
-    pending_route_state: &PendingWorkspaceRouteState,
-    page: WorkspacePage,
-) -> Result<(), String> {
-    let mut pending_route = pending_route_state
-        .0
-        .lock()
-        .map_err(|error| error.to_string())?;
-    *pending_route = Some(page);
-    Ok(())
-}
-
-fn take_pending_workspace_route(
-    pending_route_state: &PendingWorkspaceRouteState,
-) -> Result<Option<WorkspacePage>, String> {
-    let mut pending_route = pending_route_state
-        .0
-        .lock()
-        .map_err(|error| error.to_string())?;
-    Ok(pending_route.take())
-}
-
-fn show_workspace_window_for_page(
-    app: &AppHandle,
-    state: &State<'_, ShellRuntimeState>,
-    snapshot_store_state: &State<'_, SnapshotStoreState>,
-    page: WorkspacePage,
-) -> Result<(), String> {
-    let next_snapshot = update_workspace_navigation(
-        state,
-        snapshot_store_state,
-        app.state::<PendingWorkspaceRouteState>().inner(),
-        page.clone(),
-    )?;
-    let window = window_by_label(app, WINDOW_MAIN)?;
-    show_and_focus(&window)?;
-    emit_shell_snapshot_changed(app, &next_snapshot)?;
-    emit_workspace_route_requested(app, page)
-}
-
-fn should_refresh_module_runs(
-    last_refresh_at: &mut Option<Instant>,
-    now: Instant,
-    min_interval: Duration,
-) -> bool {
-    let should_refresh = last_refresh_at
-        .map(|last| now.duration_since(last) >= min_interval)
-        .unwrap_or(true);
-
-    if should_refresh {
-        *last_refresh_at = Some(now);
-    }
-
-    should_refresh
+fn controlled_terminal_kernel_final_output_ref(
+    conversation_id: Option<String>,
+    task_id: &str,
+) -> Option<String> {
+    conversation_id.map(|conversation_id| {
+        format!("assistant://conversation/{conversation_id}/task/{task_id}/final-output")
+    })
 }
 
 fn sync_kernel_approval_resolution(
@@ -6423,9 +5825,6 @@ fn resolve_sdk_bridge_terminal_approval(
         source,
         surface: surface.clone(),
     };
-    if matches!(decision, TerminalAccessDecision::Allow) && !allow_only_this_turn {
-        let _ = (config_dir, scope.clone());
-    }
 
     let resume_result = resume_agent_runtime_bridge_approval(
         &bridge_session_id,
@@ -6436,25 +5835,16 @@ fn resolve_sdk_bridge_terminal_approval(
         Ok(turn) => turn,
         Err(error)
             if matches!(decision, TerminalAccessDecision::Allow)
-                && (error.contains("has no pending approval")
-                    || error.contains("no pending approval")
-                    || error.contains("no longer alive")) =>
+                && is_lost_sdk_approval_resume_error(&error) =>
         {
-            let prepared = prepare_turn_context(store, route.clone(), &user_prompt);
-            run_agent_runtime_bridge_turn(
-                &bridge_session_id,
-                &route,
-                &prepared,
-                &user_prompt,
-                config_dir,
-                &[scope.clone()],
-            )?
+            ClaudeSdkBridgeTurnResult {
+                failed_reason: Some(error),
+                ..ClaudeSdkBridgeTurnResult::default()
+            }
         }
         Err(error)
             if matches!(decision, TerminalAccessDecision::Deny)
-                && (error.contains("has no pending approval")
-                    || error.contains("no pending approval")
-                    || error.contains("no longer alive")) =>
+                && is_lost_sdk_approval_resume_error(&error) =>
         {
             ClaudeSdkBridgeTurnResult::default()
         }
@@ -6711,6 +6101,12 @@ fn resolve_sdk_bridge_terminal_approval(
     let _ = (user_prompt, cwd, scope, config_dir, allow_only_this_turn);
 
     Ok(())
+}
+
+fn is_lost_sdk_approval_resume_error(error: &str) -> bool {
+    error.contains("has no pending approval")
+        || error.contains("no pending approval")
+        || error.contains("no longer alive")
 }
 
 fn resolve_controlled_terminal_approval(
@@ -7309,6 +6705,7 @@ fn apply_module_recovery(
     Ok(())
 }
 
+#[cfg(test)]
 fn record_live_chat_turn_with_steps(
     store: &mut RuntimeStore,
     surface: ExecutionSurface,
@@ -7757,9 +7154,7 @@ fn install_follow_up_claude_sdk_terminal_approval(
         module_run.recoverability = Some(Recoverability {
             retry_safe: false,
             resume_supported: true,
-            hint: Some(
-                "Review this terminal request to let the SDK loop continue.".to_string(),
-            ),
+            hint: Some("Review this terminal request to let the SDK loop continue.".to_string()),
         });
     }
 
@@ -8063,6 +7458,7 @@ fn record_control_follow_up(
     Ok(())
 }
 
+#[cfg(test)]
 fn apply_quick_prompt_with_steps(
     store: &mut RuntimeStore,
     surface: ExecutionSurface,
@@ -8179,22 +7575,7 @@ fn apply_quick_prompt(
     )
 }
 
-fn should_open_tray_panel(
-    last_click_at: &mut Option<Instant>,
-    now: Instant,
-    debounce_window: Duration,
-) -> bool {
-    let should_open = last_click_at
-        .map(|last| now.duration_since(last) >= debounce_window)
-        .unwrap_or(true);
-
-    if should_open {
-        *last_click_at = Some(now);
-    }
-
-    should_open
-}
-
+#[cfg(test)]
 fn workspace_quick_reply(provider_name: &str, content: &str, profile: &AgentProfile) -> String {
     format!(
         "Live reply via {provider_name} as {}. {}",
@@ -8203,441 +7584,13 @@ fn workspace_quick_reply(provider_name: &str, content: &str, profile: &AgentProf
     )
 }
 
+#[cfg(test)]
 fn quick_input_reply(provider_name: &str, content: &str, profile: &AgentProfile) -> String {
     format!(
         "Quick reply via {provider_name} as {}. {}",
         agent_display_name(profile),
         summarize_prompt(content, 120)
     )
-}
-
-fn kernel_tool_invocation_status_from_outcome(outcome: &ToolOutcome) -> KernelToolInvocationStatus {
-    match outcome {
-        ToolOutcome::Completed { payload, .. } => {
-            match payload.get("exit_code").and_then(serde_json::Value::as_i64) {
-                Some(0) | None => KernelToolInvocationStatus::Completed,
-                Some(_) => KernelToolInvocationStatus::Failed,
-            }
-        }
-        ToolOutcome::Error { .. } => KernelToolInvocationStatus::Failed,
-        ToolOutcome::Denied { .. } | ToolOutcome::NeedsApproval { .. } => {
-            KernelToolInvocationStatus::Blocked
-        }
-    }
-}
-
-fn kernel_tool_result_status_from_outcome(outcome: &ToolOutcome) -> KernelToolResultStatus {
-    match outcome {
-        ToolOutcome::Completed { payload, .. } => {
-            match payload.get("exit_code").and_then(serde_json::Value::as_i64) {
-                Some(0) | None => KernelToolResultStatus::Success,
-                Some(_) => KernelToolResultStatus::Error,
-            }
-        }
-        ToolOutcome::Error { .. } => KernelToolResultStatus::Error,
-        ToolOutcome::Denied { .. } | ToolOutcome::NeedsApproval { .. } => {
-            KernelToolResultStatus::Blocked
-        }
-    }
-}
-
-fn kernel_run_step_outcome_from_task_status(status: &TaskStatus) -> RunStepOutcome {
-    match status {
-        TaskStatus::WaitingReview
-        | TaskStatus::WaitingInput
-        | TaskStatus::Running
-        | TaskStatus::Queued => RunStepOutcome::Interrupted,
-        TaskStatus::Completed => RunStepOutcome::Finalized,
-        TaskStatus::Failed | TaskStatus::Cancelled => RunStepOutcome::Failed,
-    }
-}
-
-fn kernel_result_payload_from_outcome(outcome: &ToolOutcome) -> Option<serde_json::Value> {
-    match outcome {
-        ToolOutcome::Completed { payload, .. } => Some(payload.clone()),
-        ToolOutcome::Error { message, .. } => Some(serde_json::json!({ "error": message })),
-        ToolOutcome::Denied { reason, .. } => Some(serde_json::json!({ "denied": reason })),
-        ToolOutcome::NeedsApproval { prompt, .. } => {
-            Some(serde_json::json!({ "approval_prompt": prompt }))
-        }
-    }
-}
-
-fn kernel_result_error_summary_from_outcome(outcome: &ToolOutcome) -> Option<String> {
-    match outcome {
-        ToolOutcome::Completed { payload, .. } => payload
-            .get("exit_code")
-            .and_then(serde_json::Value::as_i64)
-            .filter(|exit_code| *exit_code != 0)
-            .map(|exit_code| format!("terminal step exited with code {exit_code}"))
-            .or_else(|| {
-                payload
-                    .get("stderr")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::trim)
-                    .filter(|stderr| !stderr.is_empty())
-                    .map(|stderr| summarize_prompt(stderr, 180))
-            }),
-        ToolOutcome::Error { message, .. } => Some(message.clone()),
-        ToolOutcome::Denied { reason, .. } => Some(reason.clone()),
-        ToolOutcome::NeedsApproval { prompt, .. } => Some(prompt.clone()),
-    }
-}
-
-fn kernel_interruption_reason_for_task_status(
-    status: &TaskStatus,
-) -> Option<runtime_kernel::RunInterruptReason> {
-    match status {
-        TaskStatus::WaitingReview => Some(runtime_kernel::RunInterruptReason::ApprovalRequired),
-        TaskStatus::WaitingInput => Some(runtime_kernel::RunInterruptReason::UserInputRequired),
-        _ => None,
-    }
-}
-
-fn controlled_terminal_kernel_summary(request: &ControlledTerminalRequest) -> String {
-    format!(
-        "Dispatch controlled terminal lane for: {}",
-        summarize_prompt(&request.plan_summary, 140)
-    )
-}
-
-fn controlled_terminal_kernel_final_output_ref(
-    conversation_id: Option<String>,
-    task_id: &str,
-) -> Option<String> {
-    conversation_id.map(|conversation_id| {
-        format!("assistant://conversation/{conversation_id}/task/{task_id}/final-output")
-    })
-}
-
-fn record_kernel_controlled_terminal_lineage(
-    store: &mut RuntimeStore,
-    surface: ExecutionSurface,
-    meta: &ExecutionRequestMeta,
-    request: &ControlledTerminalRequest,
-    observations: &[ControlledTerminalObservation],
-    outcome: &ExecutionOutcome,
-) -> Result<(), String> {
-    let session_id = store
-        .ensure_kernel_session_for_active_conversation(surface)
-        .ok_or_else(|| "active conversation not found".to_string())?;
-    let conversation_id = active_conversation_id(store);
-    let origin_message_id = store
-        .active_conversation()
-        .and_then(|conversation| {
-            conversation
-                .messages
-                .iter()
-                .rev()
-                .find(|message| message.role == "user")
-                .map(|message| message.message_id.clone())
-        })
-        .unwrap_or_else(|| format!("origin_{}", meta.task_id));
-    let run_id = format!("krun_{}", meta.task_id);
-    let step_id = format!("kstep_{}_01", meta.task_id);
-    let cwd = runtime_project_path();
-    let final_output_ref =
-        controlled_terminal_kernel_final_output_ref(conversation_id.clone(), &meta.task_id);
-    let interruption_reason = kernel_interruption_reason_for_task_status(&outcome.task_run.status);
-    let interruption_id = interruption_reason
-        .as_ref()
-        .map(|_| format!("kinterrupt_{}", meta.task_id));
-
-    {
-        let runtime = store
-            .kernel_session_runtime_mut(&session_id)
-            .ok_or_else(|| "kernel session runtime not found".to_string())?;
-
-        runtime.start_run(
-            KernelRun {
-                run_id: run_id.clone(),
-                session_id: session_id.clone(),
-                origin_message_id,
-                status: KernelRunStatus::Running,
-                started_at: "now".to_string(),
-                updated_at: "now".to_string(),
-                step_count: 0,
-                max_steps: ITERATIVE_TURN_MAX_STEPS as u32,
-                run_kind: Some("controlled_terminal".to_string()),
-                active_step_id: Some(step_id.clone()),
-                parent_run_id: None,
-                interrupt_id: interruption_id.clone(),
-                stop_reason: None,
-                final_output_ref: None,
-                error_summary: None,
-            },
-            format!("kevent_run_created_{}", meta.task_id),
-        );
-
-        runtime.start_step(
-            RunStep {
-                step_id: step_id.clone(),
-                run_id: run_id.clone(),
-                index: 1,
-                phase: RunStepPhase::Dispatch,
-                started_at: "now".to_string(),
-                updated_at: "now".to_string(),
-                outcome: RunStepOutcome::Continued,
-                model_decision_ref: None,
-                dispatch_target: Some("terminal".to_string()),
-                tool_invocation_id: None,
-                interrupt_id: interruption_id.clone(),
-                summary: Some(controlled_terminal_kernel_summary(request)),
-            },
-            format!("kevent_step_started_{}", meta.task_id),
-        );
-
-        runtime.record_model_output(
-            &step_id,
-            "now",
-            format!("kevent_step_model_{}", meta.task_id),
-            Some(request.plan_summary.clone()),
-        );
-
-        let mut last_invocation_id = None;
-        for (index, observation) in observations.iter().enumerate() {
-            let invocation_id = if observations.len() == 1 {
-                format!("ktool_{}", meta.module_run_id)
-            } else {
-                format!("ktool_{}_{}", meta.module_run_id, index + 1)
-            };
-            last_invocation_id = Some(invocation_id.clone());
-            let result_id = if observations.len() == 1 {
-                format!("kresult_{}", meta.module_run_id)
-            } else {
-                format!("kresult_{}_{}", meta.module_run_id, index + 1)
-            };
-            let artifact_ids = if index + 1 == observations.len() {
-                outcome
-                    .module_run
-                    .artifacts
-                    .iter()
-                    .enumerate()
-                    .map(|(artifact_index, _)| {
-                        format!("kartifact_{}_{}", meta.task_id, artifact_index + 1)
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-            let input_summary = format!(
-                "{} {}",
-                observation.step.command,
-                observation.step.args.join(" ")
-            )
-            .trim()
-            .to_string();
-            runtime.record_tool_invocation(
-                KernelToolInvocation {
-                    tool_invocation_id: invocation_id.clone(),
-                    run_id: run_id.clone(),
-                    step_id: step_id.clone(),
-                    capability_family: "terminal".to_string(),
-                    tool_name: "shell.run".to_string(),
-                    status: KernelToolInvocationStatus::Admitted,
-                    started_at: "now".to_string(),
-                    updated_at: "now".to_string(),
-                    input_summary: Some(summarize_prompt(&input_summary, 180)),
-                    approval_policy: Some("runtime_guarded".to_string()),
-                    execution_backend: Some("local_shell".to_string()),
-                    cwd: cwd.clone(),
-                    command_preview: Some(input_summary.clone()),
-                    correlation_id: Some(meta.module_run_id.clone()),
-                },
-                format!("kevent_tool_created_{}_{}", meta.task_id, index + 1),
-            );
-            runtime.mark_tool_execution_started(
-                &invocation_id,
-                "now",
-                format!("kevent_tool_started_{}_{}", meta.task_id, index + 1),
-            );
-            runtime.mark_tool_execution_finished(
-                &invocation_id,
-                "now",
-                format!("kevent_tool_finished_{}_{}", meta.task_id, index + 1),
-                kernel_tool_invocation_status_from_outcome(&observation.outcome),
-            );
-            runtime.record_tool_result(
-                KernelToolResult {
-                    tool_result_id: result_id,
-                    tool_invocation_id: invocation_id.clone(),
-                    run_id: run_id.clone(),
-                    status: kernel_tool_result_status_from_outcome(&observation.outcome),
-                    created_at: "now".to_string(),
-                    content_ref: Some(format!("terminal://{}/step/{}", meta.task_id, index + 1)),
-                    structured_payload: kernel_result_payload_from_outcome(&observation.outcome),
-                    error_summary: kernel_result_error_summary_from_outcome(&observation.outcome),
-                    artifact_ids,
-                    exit_code: shell_completed_exit_code(observation)
-                        .and_then(|code| i32::try_from(code).ok()),
-                },
-                format!("kevent_tool_result_{}_{}", meta.task_id, index + 1),
-            );
-        }
-
-        for (index, artifact) in outcome.module_run.artifacts.iter().enumerate() {
-            runtime.record_artifact(
-                ArtifactRecord {
-                    artifact_id: format!("kartifact_{}_{}", meta.task_id, index + 1),
-                    run_id: run_id.clone(),
-                    created_at: "now".to_string(),
-                    artifact_kind: artifact.artifact_type.clone(),
-                    storage_ref: artifact.payload_ref.clone(),
-                    mime_type: None,
-                    preview_summary: Some(artifact.summary.clone()),
-                    source_tool_invocation_id: last_invocation_id.clone(),
-                    size_bytes: None,
-                },
-                format!("kevent_artifact_{}_{}", meta.task_id, index + 1),
-            );
-        }
-
-        runtime.finish_step_commit(
-            &step_id,
-            "now",
-            format!("kevent_step_commit_{}", meta.task_id),
-        );
-
-        if let Some(reason) = interruption_reason {
-            runtime.finalize_step(
-                &step_id,
-                "now",
-                format!("kevent_step_finalize_{}", meta.task_id),
-                RunStepOutcome::Interrupted,
-                Some(outcome.task_run.summary.clone()),
-            );
-            runtime.open_interruption(
-                runtime_kernel::RunInterruption {
-                    interrupt_id: interruption_id
-                        .clone()
-                        .expect("interruption id should exist when opening interruption"),
-                    run_id: run_id.clone(),
-                    reason,
-                    status: runtime_kernel::RunInterruptStatus::Open,
-                    created_at: "now".to_string(),
-                    approval_request_ref: outcome.task_run.approval_request_id.clone(),
-                    requested_action_summary: Some(outcome.task_run.summary.clone()),
-                    resume_token: Some(format!("resume_{}", meta.task_id)),
-                    policy_tags: vec!["terminal".to_string()],
-                    default_resolution: Some("reject".to_string()),
-                },
-                format!("kevent_interrupt_opened_{}", meta.task_id),
-            );
-        } else {
-            runtime.finalize_step(
-                &step_id,
-                "now",
-                format!("kevent_step_finalize_{}", meta.task_id),
-                kernel_run_step_outcome_from_task_status(&outcome.task_run.status),
-                Some(outcome.task_run.summary.clone()),
-            );
-            match outcome.task_run.status {
-                TaskStatus::Completed => runtime.complete_run(
-                    &run_id,
-                    "now",
-                    format!("kevent_run_completed_{}", meta.task_id),
-                    final_output_ref,
-                ),
-                TaskStatus::Failed | TaskStatus::Cancelled => runtime.fail_run(
-                    &run_id,
-                    "now",
-                    format!("kevent_run_failed_{}", meta.task_id),
-                    Some(outcome.task_run.summary.clone()),
-                ),
-                TaskStatus::Queued | TaskStatus::Running => runtime.complete_run(
-                    &run_id,
-                    "now",
-                    format!("kevent_run_queued_{}", meta.task_id),
-                    final_output_ref,
-                ),
-                TaskStatus::WaitingReview | TaskStatus::WaitingInput => {
-                    unreachable!("interrupting task statuses are handled above")
-                }
-            }
-        }
-
-        runtime.session.history_cursor = runtime
-            .event_log
-            .events()
-            .last()
-            .map(|event| event.sequence)
-            .unwrap_or(0);
-    }
-
-    Ok(())
-}
-
-fn clarify_request_outcome(
-    source: RuntimeRequestSource,
-    detail: &str,
-) -> RuntimeRequestOutcomeRecord {
-    RuntimeRequestOutcomeRecord {
-        source,
-        kind: RuntimeRequestOutcomeKind::ClarifyNeeded,
-        detail: detail.to_string(),
-        task_id: None,
-        module_run_id: None,
-    }
-}
-
-fn quick_prompt_request_outcome(
-    prompt: &str,
-    chat_runtime_status: &str,
-    detail: &str,
-    task_id: Option<String>,
-    module_run_id: Option<String>,
-) -> RuntimeRequestOutcomeRecord {
-    let kind = if should_queue_quick_prompt_as_task(prompt) {
-        RuntimeRequestOutcomeKind::TaskHandoff
-    } else {
-        match chat_runtime_status {
-            "needs_setup" => RuntimeRequestOutcomeKind::NeedsSetup,
-            "degraded" => RuntimeRequestOutcomeKind::Error,
-            _ => RuntimeRequestOutcomeKind::ChatReply,
-        }
-    };
-
-    RuntimeRequestOutcomeRecord {
-        source: RuntimeRequestSource::QuickInput,
-        kind,
-        detail: detail.to_string(),
-        task_id,
-        module_run_id,
-    }
-}
-
-fn workspace_message_request_outcome(
-    chat_runtime_status: &str,
-    detail: &str,
-) -> RuntimeRequestOutcomeRecord {
-    let kind = match chat_runtime_status {
-        "needs_setup" => RuntimeRequestOutcomeKind::NeedsSetup,
-        "degraded" => RuntimeRequestOutcomeKind::Error,
-        _ => RuntimeRequestOutcomeKind::ChatReply,
-    };
-
-    RuntimeRequestOutcomeRecord {
-        source: RuntimeRequestSource::WorkspaceChat,
-        kind,
-        detail: detail.to_string(),
-        task_id: None,
-        module_run_id: None,
-    }
-}
-
-fn run_status_request_outcome(
-    source: RuntimeRequestSource,
-    detail: &str,
-    task_id: Option<String>,
-    module_run_id: Option<String>,
-) -> RuntimeRequestOutcomeRecord {
-    RuntimeRequestOutcomeRecord {
-        source,
-        kind: RuntimeRequestOutcomeKind::ChatReply,
-        detail: detail.to_string(),
-        task_id,
-        module_run_id,
-    }
 }
 
 fn runtime_run_state_from_execution_outcome(
@@ -8674,21 +7627,7 @@ fn runtime_run_state_from_execution_outcome(
     )
 }
 
-fn clarification_run_state(
-    conversation_id: Option<String>,
-    quick_reply: &str,
-) -> RuntimeRunStateRecord {
-    runtime_run_state(
-        conversation_id,
-        "waiting_input",
-        "waiting_for_clarification",
-        quick_reply.to_string(),
-        true,
-        None,
-        None,
-    )
-}
-
+#[cfg(test)]
 fn direct_chat_run_state(
     conversation_id: Option<String>,
     chat_runtime_status: &str,
@@ -8718,202 +7657,6 @@ fn direct_chat_run_state(
     )
 }
 
-fn single_controlled_terminal_request(
-    plan: &runtime_kernel::DetectedExecutionPlan,
-) -> Option<&ControlledTerminalRequest> {
-    match plan.steps.as_slice() {
-        [runtime_kernel::ExecutionPlanStep {
-            intent: execution_runtime::FirstPartyExecutionIntent::RunControlledTerminal(request),
-            condition: ExecutionPlanCondition::Always,
-        }] => Some(request),
-        _ => None,
-    }
-}
-
-fn should_execute_plan_step(
-    condition: &ExecutionPlanCondition,
-    _completed_outcomes: &[ExecutionOutcome],
-) -> bool {
-    match condition {
-        ExecutionPlanCondition::Always => true,
-    }
-}
-
-fn aggregate_execution_status(outcomes: &[ExecutionOutcome]) -> TaskStatus {
-    outcomes
-        .last()
-        .map(|outcome| outcome.task_run.status.clone())
-        .unwrap_or(TaskStatus::Completed)
-}
-
-fn aggregate_task_stage(status: &TaskStatus) -> TaskStage {
-    match status {
-        TaskStatus::WaitingReview => TaskStage::ReviewPending,
-        TaskStatus::Queued => TaskStage::Planning,
-        TaskStatus::Running => TaskStage::Running,
-        TaskStatus::WaitingInput => TaskStage::Reporting,
-        TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled => TaskStage::Finalized,
-    }
-}
-
-fn aggregate_module_stage(status: &TaskStatus) -> ModuleRunStage {
-    match status {
-        TaskStatus::WaitingReview => ModuleRunStage::ReviewPending,
-        TaskStatus::Queued => ModuleRunStage::Preflight,
-        TaskStatus::Running => ModuleRunStage::WaitingUpstream,
-        TaskStatus::WaitingInput => ModuleRunStage::Postprocess,
-        TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled => {
-            ModuleRunStage::Finalized
-        }
-    }
-}
-
-fn aggregate_module_status(status: &TaskStatus) -> ModuleRunStatus {
-    match status {
-        TaskStatus::Completed => ModuleRunStatus::Completed,
-        TaskStatus::Failed => ModuleRunStatus::Failed,
-        TaskStatus::Cancelled => ModuleRunStatus::Cancelled,
-        TaskStatus::WaitingReview => ModuleRunStatus::WaitingReview,
-        TaskStatus::Queued => ModuleRunStatus::Queued,
-        TaskStatus::Running | TaskStatus::WaitingInput => ModuleRunStatus::Running,
-    }
-}
-
-fn aggregate_execution_outcomes(
-    meta: &ExecutionRequestMeta,
-    canonical_prompt: &str,
-    outcomes: &[ExecutionOutcome],
-) -> ExecutionOutcome {
-    let Some(last_outcome) = outcomes.last() else {
-        unreachable!("aggregate_execution_outcomes requires at least one outcome");
-    };
-    if outcomes.len() == 1 {
-        return last_outcome.clone();
-    }
-
-    let status = aggregate_execution_status(outcomes);
-    let progress_percent = if matches!(status, TaskStatus::Completed) {
-        Some(100)
-    } else {
-        last_outcome.task_run.progress_percent
-    };
-    let step_summaries = outcomes
-        .iter()
-        .enumerate()
-        .map(|(index, outcome)| {
-            format!(
-                "{}. {}",
-                index + 1,
-                summarize_prompt(&outcome.assistant_reply, 180)
-            )
-        })
-        .collect::<Vec<_>>();
-    let combined_result_summary = outcomes
-        .iter()
-        .filter_map(|outcome| outcome.module_run.result_summary.clone())
-        .collect::<Vec<_>>()
-        .join(" | ");
-    let combined_artifacts = outcomes
-        .iter()
-        .flat_map(|outcome| outcome.module_run.artifacts.clone())
-        .collect::<Vec<_>>();
-    let combined_automation_drafts = outcomes
-        .iter()
-        .flat_map(|outcome| outcome.automation_drafts.clone())
-        .collect::<Vec<_>>();
-    let all_completed = outcomes
-        .iter()
-        .all(|outcome| matches!(outcome.task_run.status, TaskStatus::Completed));
-
-    let assistant_reply = if all_completed {
-        format!(
-            "I completed {} local step(s) in order for \"{}\": {}",
-            outcomes.len(),
-            summarize_prompt(canonical_prompt, 72),
-            step_summaries.join("; ")
-        )
-    } else {
-        format!(
-            "I advanced through {} step(s) in order, but stopped at step {}: {}",
-            outcomes.len(),
-            outcomes.len(),
-            step_summaries.last().cloned().unwrap_or_default()
-        )
-    };
-    let quick_reply = if all_completed {
-        format!("Completed {} structured local step(s).", outcomes.len())
-    } else {
-        last_outcome.quick_reply.clone()
-    };
-    let task_summary = if all_completed {
-        format!(
-            "Completed {} structured local step(s) for: {}.",
-            outcomes.len(),
-            summarize_prompt(canonical_prompt, 120)
-        )
-    } else {
-        last_outcome.task_run.summary.clone()
-    };
-
-    ExecutionOutcome {
-        task_run: TaskRun {
-            task_id: meta.task_id.clone(),
-            conversation_id: meta.conversation_id.clone(),
-            task_type: TaskType::AbilityRun,
-            title: meta.title.clone(),
-            status: status.clone(),
-            current_stage: aggregate_task_stage(&status),
-            summary: task_summary,
-            progress_percent,
-            importance_level: ImportanceLevel::Important,
-            approval_request_id: last_outcome.task_run.approval_request_id.clone(),
-        },
-        module_run: ModuleRun {
-            module_run_id: meta.module_run_id.clone(),
-            task_id: meta.task_id.clone(),
-            module_id: "geeagent.local.multi_action".to_string(),
-            capability_id: "structured_multi_action".to_string(),
-            status: aggregate_module_status(&status),
-            stage: aggregate_module_stage(&status),
-            attempt_count: 1,
-            result_summary: Some(if combined_result_summary.is_empty() {
-                summarize_prompt(&assistant_reply, 160)
-            } else {
-                combined_result_summary
-            }),
-            artifacts: combined_artifacts,
-            created_at: meta.created_at.clone(),
-            updated_at: meta.updated_at.clone(),
-        },
-        recoverability: last_outcome.recoverability.clone(),
-        automation_drafts: combined_automation_drafts,
-        observation: last_outcome.observation.clone(),
-        assistant_reply,
-        quick_reply,
-    }
-}
-
-fn structured_action_post_dispatch_detail(outcome: &ExecutionOutcome) -> String {
-    match outcome.task_run.status {
-        TaskStatus::WaitingReview => {
-            "reading the structured action result inside the same run, recognizing an approval interruption, and surfacing a resumable paused state"
-                .to_string()
-        }
-        TaskStatus::WaitingInput => {
-            "reading the structured action result inside the same run, recognizing missing input, and surfacing the next continuation boundary"
-                .to_string()
-        }
-        TaskStatus::Queued | TaskStatus::Running => {
-            "reading the structured action result inside the same run and surfacing a resumable in-progress state"
-                .to_string()
-        }
-        TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled => {
-            "reading the structured action result inside the same run and finalizing after the post-dispatch continuation step"
-                .to_string()
-        }
-    }
-}
-
 fn workspace_messages_from_store(store: &RuntimeStore) -> Vec<WorkspaceChatMessage> {
     let Some(active_conversation) = store.active_conversation() else {
         return Vec::new();
@@ -8929,6 +7672,7 @@ fn workspace_messages_from_store(store: &RuntimeStore) -> Vec<WorkspaceChatMessa
         .collect()
 }
 
+#[cfg(test)]
 fn update_focused_task_from_workspace_message(store: &mut RuntimeStore, message: &str) {
     let Some(task_id) = store.workspace_focus.task_id.clone() else {
         return;
@@ -8976,301 +7720,7 @@ fn update_focused_task_from_workspace_message(store: &mut RuntimeStore, message:
     }
 }
 
-fn module_run_is_active(module_run: &ModuleRun) -> bool {
-    matches!(
-        module_run.status,
-        ModuleRunStatus::Queued | ModuleRunStatus::Running
-    )
-}
-
-fn task_stage_from_module_run(module_run: &ModuleRun) -> &'static str {
-    match module_run.stage {
-        ModuleRunStage::Preflight => "preflight",
-        ModuleRunStage::Dispatch => "dispatching",
-        ModuleRunStage::WaitingUpstream => "waiting_upstream",
-        ModuleRunStage::Postprocess => "postprocess",
-        ModuleRunStage::ReviewPending => "review_pending",
-        ModuleRunStage::Finalized => "finalized",
-    }
-}
-
-fn sync_task_with_module_run(
-    task: &mut RuntimeTaskRecord,
-    module_run_record: &RuntimeModuleRunRecord,
-) {
-    task.artifact_count = task
-        .artifact_count
-        .max(module_run_record.module_run.artifacts.len() as u32);
-    if let Some(summary) = &module_run_record.module_run.result_summary {
-        task.summary = summary.clone();
-    }
-
-    match module_run_record.module_run.status {
-        ModuleRunStatus::Queued => {
-            task.status = "queued".to_string();
-            task.current_stage =
-                task_stage_from_module_run(&module_run_record.module_run).to_string();
-            task.progress_percent = task.progress_percent.max(12);
-        }
-        ModuleRunStatus::Running => {
-            task.status = "running".to_string();
-            task.current_stage =
-                task_stage_from_module_run(&module_run_record.module_run).to_string();
-            let progress_floor = match module_run_record.module_run.stage {
-                ModuleRunStage::Dispatch => 28,
-                ModuleRunStage::WaitingUpstream => 52,
-                ModuleRunStage::Postprocess => 82,
-                ModuleRunStage::Preflight => 16,
-                ModuleRunStage::ReviewPending => 92,
-                ModuleRunStage::Finalized => 100,
-            };
-            task.progress_percent = task.progress_percent.max(progress_floor);
-        }
-        ModuleRunStatus::WaitingReview => {
-            task.status = "waiting_review".to_string();
-            task.current_stage = "review_pending".to_string();
-            task.progress_percent = task.progress_percent.max(92);
-        }
-        ModuleRunStatus::Completed => {
-            task.status = "completed".to_string();
-            task.current_stage = "finalized".to_string();
-            task.progress_percent = 100;
-        }
-        ModuleRunStatus::Failed | ModuleRunStatus::Cancelled => {
-            task.status = "failed".to_string();
-            task.current_stage =
-                task_stage_from_module_run(&module_run_record.module_run).to_string();
-            task.progress_percent = task.progress_percent.max(68);
-        }
-    }
-}
-
-fn apply_remote_module_status_response(
-    store: &mut RuntimeStore,
-    response: ModuleStatusResponse,
-) -> bool {
-    let Some(module_run_record) = store
-        .module_runs
-        .iter_mut()
-        .find(|record| record.module_run.module_run_id == response.module_run.module_run_id)
-    else {
-        return false;
-    };
-
-    module_run_record.module_run = response.module_run;
-    module_run_record.recoverability = response.recoverability;
-
-    if let Some(task) = store
-        .tasks
-        .iter_mut()
-        .find(|task| task.task_id == module_run_record.module_run.task_id)
-    {
-        sync_task_with_module_run(task, module_run_record);
-    }
-
-    true
-}
-
 #[cfg(test)]
-fn advance_module_runs(store: &mut RuntimeStore) -> bool {
-    advance_module_runs_filtered(store, None)
-}
-
-fn advance_module_runs_filtered(
-    store: &mut RuntimeStore,
-    allowed_run_ids: Option<&HashSet<String>>,
-) -> bool {
-    let mut changed = false;
-    let mut completed_runs = 0usize;
-    let tasks = &mut store.tasks;
-
-    for module_run_record in &mut store.module_runs {
-        if let Some(allowed_run_ids) = allowed_run_ids {
-            if !allowed_run_ids.contains(&module_run_record.module_run.module_run_id) {
-                continue;
-            }
-        }
-
-        let task_id = module_run_record.module_run.task_id.clone();
-        let maybe_task = tasks.iter_mut().find(|task| task.task_id == task_id);
-        let status = module_run_record.module_run.status.clone();
-        let stage = module_run_record.module_run.stage.clone();
-
-        match (status, stage) {
-            (ModuleRunStatus::Queued, ModuleRunStage::Preflight) => {
-                module_run_record.module_run.status = ModuleRunStatus::Running;
-                module_run_record.module_run.stage = ModuleRunStage::Dispatch;
-                module_run_record.module_run.result_summary = Some(
-          "GeeAgent validated the request and is dispatching it into the selected module."
-            .to_string(),
-        );
-                module_run_record.module_run.updated_at = "now".to_string();
-                module_run_record.recoverability = Some(Recoverability {
-                    retry_safe: true,
-                    resume_supported: false,
-                    hint: Some(
-                        "Dispatch is in progress. Wait for the upstream service to accept the run."
-                            .to_string(),
-                    ),
-                });
-
-                if let Some(task) = maybe_task {
-                    task.status = "running".to_string();
-                    task.current_stage = "dispatching".to_string();
-                    task.progress_percent = task.progress_percent.max(28);
-                    task.summary =
-            "GeeAgent validated the request and is dispatching it into the selected module."
-              .to_string();
-                }
-                changed = true;
-            }
-            (ModuleRunStatus::Running, ModuleRunStage::Dispatch) => {
-                module_run_record.module_run.stage = ModuleRunStage::WaitingUpstream;
-                module_run_record.module_run.result_summary = Some(
-          "The upstream module accepted the run. GeeAgent is waiting for remote work to finish."
-            .to_string(),
-        );
-                module_run_record.module_run.updated_at = "now".to_string();
-                module_run_record.recoverability = Some(Recoverability {
-                    retry_safe: false,
-                    resume_supported: true,
-                    hint: Some(
-                        "The upstream service is still working. Wait for the next refresh."
-                            .to_string(),
-                    ),
-                });
-
-                if let Some(task) = maybe_task {
-                    task.status = "running".to_string();
-                    task.current_stage = "waiting_upstream".to_string();
-                    task.progress_percent = task.progress_percent.max(52);
-                    task.summary =
-                        "The upstream module accepted the run and is still processing the request."
-                            .to_string();
-                }
-                changed = true;
-            }
-            (ModuleRunStatus::Running, ModuleRunStage::WaitingUpstream) => {
-                module_run_record.module_run.stage = ModuleRunStage::Postprocess;
-                module_run_record.module_run.result_summary = Some(
-          "The upstream work finished. GeeAgent is postprocessing the returned artifacts."
-            .to_string(),
-        );
-                if !module_run_record
-                    .module_run
-                    .artifacts
-                    .iter()
-                    .any(|artifact| artifact.artifact_type == "upstream_payload")
-                {
-                    module_run_record
-                        .module_run
-                        .artifacts
-                        .push(ArtifactEnvelope {
-                            artifact_id: format!(
-                                "artifact_{}_payload",
-                                module_run_record.module_run.module_run_id
-                            ),
-                            artifact_type: "upstream_payload".to_string(),
-                            title: "Upstream payload".to_string(),
-                            summary:
-                                "Captured the upstream result payload for GeeAgent postprocess."
-                                    .to_string(),
-                            payload_ref: format!(
-                                "memory://module-runs/{}/payload",
-                                module_run_record.module_run.module_run_id
-                            ),
-                            inline_preview: None,
-                            domain_tags: vec!["module-run".to_string(), "upstream".to_string()],
-                        });
-                }
-                module_run_record.module_run.updated_at = "now".to_string();
-                module_run_record.recoverability = Some(Recoverability {
-                    retry_safe: true,
-                    resume_supported: false,
-                    hint: Some("GeeAgent is postprocessing the upstream output.".to_string()),
-                });
-
-                if let Some(task) = maybe_task {
-                    task.status = "running".to_string();
-                    task.current_stage = "postprocess".to_string();
-                    task.progress_percent = task.progress_percent.max(82);
-                    task.artifact_count = task
-                        .artifact_count
-                        .max(module_run_record.module_run.artifacts.len() as u32);
-                    task.summary =
-            "The upstream work finished and GeeAgent is packaging the returned artifacts."
-              .to_string();
-                }
-                changed = true;
-            }
-            (ModuleRunStatus::Running, ModuleRunStage::Postprocess) => {
-                module_run_record.module_run.status = ModuleRunStatus::Completed;
-                module_run_record.module_run.stage = ModuleRunStage::Finalized;
-                module_run_record.module_run.result_summary = Some(
-                    "Module execution completed. GeeAgent finalized the result for the workspace."
-                        .to_string(),
-                );
-                if !module_run_record
-                    .module_run
-                    .artifacts
-                    .iter()
-                    .any(|artifact| artifact.artifact_type == "execution_report")
-                {
-                    module_run_record
-                        .module_run
-                        .artifacts
-                        .push(ArtifactEnvelope {
-                            artifact_id: format!(
-                                "artifact_{}_report",
-                                module_run_record.module_run.module_run_id
-                            ),
-                            artifact_type: "execution_report".to_string(),
-                            title: "Execution report".to_string(),
-                            summary: "Finalized report ready for the workspace inspector."
-                                .to_string(),
-                            payload_ref: format!(
-                                "memory://module-runs/{}/report",
-                                module_run_record.module_run.module_run_id
-                            ),
-                            inline_preview: None,
-                            domain_tags: vec!["module-run".to_string(), "finalized".to_string()],
-                        });
-                }
-                module_run_record.module_run.updated_at = "now".to_string();
-                module_run_record.recoverability = None;
-
-                if let Some(task) = maybe_task {
-                    task.status = "completed".to_string();
-                    task.current_stage = "finalized".to_string();
-                    task.progress_percent = 100;
-                    task.artifact_count = task
-                        .artifact_count
-                        .max(module_run_record.module_run.artifacts.len() as u32);
-                    task.summary =
-            "Module execution completed and the finalized results are ready in the workspace."
-              .to_string();
-                }
-                completed_runs = completed_runs.saturating_add(1);
-                changed = true;
-            }
-            _ => {}
-        }
-    }
-
-    if changed {
-        store.quick_reply = if completed_runs > 0 {
-            format!(
-                "Module refresh completed {} run(s). Finalized results are ready in the workspace.",
-                completed_runs
-            )
-        } else {
-            "Module activity refreshed. GeeAgent moved active runs to the next stage.".to_string()
-        };
-    }
-
-    changed
-}
-
 fn apply_workspace_message_with_steps(
     store: &mut RuntimeStore,
     surface: ExecutionSurface,
@@ -9316,586 +7766,6 @@ fn apply_workspace_message(
         assistant_reply,
         quick_reply,
     )
-}
-
-fn show_and_focus(window: &WebviewWindow) -> Result<(), String> {
-    window.unminimize().map_err(|error| error.to_string())?;
-    window.show().map_err(|error| error.to_string())?;
-    window.set_focus().map_err(|error| error.to_string())
-}
-
-fn window_by_label(app: &AppHandle, label: &str) -> Result<WebviewWindow, String> {
-    app.get_webview_window(label)
-        .ok_or_else(|| format!("window {label} is not available"))
-}
-
-fn show_menu_bar_panel(app: &AppHandle) -> Result<(), String> {
-    let window = window_by_label(app, WINDOW_MENU_BAR)?;
-    if window.is_visible().map_err(|error| error.to_string())? {
-        return window.hide().map_err(|error| error.to_string());
-    }
-    #[cfg(desktop)]
-    window
-        .as_ref()
-        .window()
-        .move_window(Position::TrayCenter)
-        .map_err(|error| error.to_string())?;
-    show_and_focus(&window)
-}
-
-fn create_hidden_window(
-    app: &App,
-    label: &str,
-    html_path: &str,
-    title: &str,
-    width: f64,
-    height: f64,
-    transparent: bool,
-) -> tauri::Result<()> {
-    if app.get_webview_window(label).is_some() {
-        return Ok(());
-    }
-
-    WebviewWindowBuilder::new(app, label, WebviewUrl::App(html_path.into()))
-        .title(title)
-        .inner_size(width, height)
-        .resizable(false)
-        .visible(false)
-        .skip_taskbar(true)
-        .always_on_top(true)
-        .decorations(false)
-        .transparent(transparent)
-        .build()?;
-
-    Ok(())
-}
-
-fn build_auxiliary_windows(app: &App) -> tauri::Result<()> {
-    create_hidden_window(
-        app,
-        WINDOW_MENU_BAR,
-        "menu-bar.html",
-        "GeeAgent Menu",
-        380.0,
-        420.0,
-        false,
-    )?;
-    create_hidden_window(
-        app,
-        WINDOW_QUICK_INPUT,
-        "quick-input.html",
-        "GeeAgent Quick Input",
-        720.0,
-        112.0,
-        true,
-    )?;
-    create_hidden_window(
-        app,
-        WINDOW_PET_OVERLAY,
-        "pet-overlay.html",
-        "GeeAgent Companion",
-        980.0,
-        640.0,
-        true,
-    )?;
-
-    Ok(())
-}
-
-fn build_tray(app: &App) -> tauri::Result<()> {
-    let open_workspace =
-        MenuItem::with_id(app, "open-workspace", "Open Workspace", true, None::<&str>)?;
-    let show_companion =
-        MenuItem::with_id(app, "show-companion", "Show Companion", true, None::<&str>)?;
-    let toggle_quick = MenuItem::with_id(
-        app,
-        "toggle-quick",
-        "Toggle Quick Input",
-        true,
-        None::<&str>,
-    )?;
-    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(
-        app,
-        &[&open_workspace, &show_companion, &toggle_quick, &quit],
-    )?;
-
-    let mut tray_builder = TrayIconBuilder::new()
-        .icon(app.default_window_icon().unwrap().clone())
-        .menu(&menu)
-        .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "open-workspace" => {
-                let state = app.state::<ShellRuntimeState>();
-                let snapshot_store_state = app.state::<SnapshotStoreState>();
-                let _ = show_workspace_window_for_page(
-                    app,
-                    &state,
-                    &snapshot_store_state,
-                    WorkspacePage::Chat,
-                );
-            }
-            "show-companion" => {
-                let _ = show_pet_overlay(app.clone());
-            }
-            "toggle-quick" => {
-                let _ = toggle_quick_input(app.clone());
-            }
-            "quit" => app.exit(0),
-            _ => {}
-        });
-
-    tray_builder = tray_builder.on_tray_icon_event(|tray, event| {
-        #[cfg(desktop)]
-        tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
-
-        if let TrayIconEvent::Click {
-            button: MouseButton::Left,
-            button_state: _,
-            ..
-        } = event
-        {
-            let should_open = {
-                let app_handle = tray.app_handle();
-                let gate_state = app_handle.state::<TrayPanelGateState>();
-                let mut last_click_at = match gate_state.0.lock() {
-                    Ok(value) => value,
-                    Err(_) => return,
-                };
-                should_open_tray_panel(
-                    &mut *last_click_at,
-                    Instant::now(),
-                    Duration::from_millis(TRAY_PANEL_CLICK_DEBOUNCE_MS),
-                )
-            };
-
-            if should_open {
-                let _ = show_menu_bar_panel(&tray.app_handle());
-            }
-        }
-    });
-
-    tray_builder.build(app)?;
-    Ok(())
-}
-
-#[tauri::command]
-fn get_shell_snapshot(state: State<ShellRuntimeState>) -> Result<RuntimeSnapshot, String> {
-    state
-        .0
-        .lock()
-        .map_err(|error| error.to_string())
-        .map(|store| store.snapshot())
-}
-
-#[tauri::command]
-async fn submit_quick_prompt(
-    prompt: String,
-    app: AppHandle,
-    state: State<'_, ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-    _chat_runtime_state: State<'_, ChatRuntimeState>,
-) -> Result<RuntimeSnapshot, String> {
-    let trimmed_prompt = prompt.trim().to_string();
-    if trimmed_prompt.is_empty() {
-        return Err("prompt cannot be empty".to_string());
-    }
-
-    let route = TurnRoute {
-        mode: TurnMode::QuickPrompt,
-        source: RuntimeRequestSource::QuickInput,
-        surface: ExecutionSurface::DesktopQuickInput,
-    };
-    let mut store = state.0.lock().map_err(|error| error.to_string())?;
-    let routed_conversation = route_quick_prompt_to_best_conversation(&mut store, &trimmed_prompt);
-    let is_transient = routed_conversation.is_none() && is_transient_quick_prompt(&trimmed_prompt);
-    let store_snapshot = store.clone();
-    let prepared = prepare_turn_context(&store_snapshot, route.clone(), &trimmed_prompt);
-    if is_transient {
-        apply_transient_claude_sdk_quick_turn(
-            &mut store,
-            &route,
-            &prepared,
-            &trimmed_prompt,
-            None,
-        )?;
-    } else {
-        apply_claude_sdk_turn(&mut store, &route, &prepared, &trimmed_prompt, None)?;
-    }
-    let next_snapshot = store.snapshot();
-    persist_snapshot_if_possible(&snapshot_store_state, &store);
-    drop(store);
-    emit_shell_snapshot_changed(&app, &next_snapshot)?;
-    Ok(next_snapshot)
-}
-
-#[tauri::command]
-async fn submit_workspace_message(
-    message: String,
-    app: AppHandle,
-    state: State<'_, ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-    _chat_runtime_state: State<'_, ChatRuntimeState>,
-) -> Result<RuntimeSnapshot, String> {
-    let trimmed_message = message.trim().to_string();
-    if trimmed_message.is_empty() {
-        return Err("message cannot be empty".to_string());
-    }
-
-    let route = TurnRoute {
-        mode: TurnMode::WorkspaceMessage,
-        source: RuntimeRequestSource::WorkspaceChat,
-        surface: ExecutionSurface::DesktopWorkspaceChat,
-    };
-    let store_snapshot = state.0.lock().map_err(|error| error.to_string())?.clone();
-    let prepared = prepare_turn_context(&store_snapshot, route.clone(), &trimmed_message);
-
-    let mut store = state.0.lock().map_err(|error| error.to_string())?;
-    apply_claude_sdk_turn(&mut store, &route, &prepared, &trimmed_message, None)?;
-    let next_snapshot = store.snapshot();
-    persist_snapshot_if_possible(&snapshot_store_state, &store);
-    drop(store);
-    emit_shell_snapshot_changed(&app, &next_snapshot)?;
-    Ok(next_snapshot)
-}
-
-#[tauri::command]
-fn save_chat_runtime_setup(
-    openai_api_key: Option<String>,
-    xenodia_api_key: Option<String>,
-    app: AppHandle,
-    state: State<'_, ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-    chat_runtime_state: State<'_, ChatRuntimeState>,
-    app_config_state: State<'_, AppConfigState>,
-) -> Result<RuntimeSnapshot, String> {
-    let config_dir = app_config_state
-        .config_dir
-        .clone()
-        .ok_or_else(|| "app config directory is unavailable".to_string())?;
-
-    persist_chat_runtime_setup(
-        config_dir.as_path(),
-        &ChatRuntimeSetupInput {
-            openai_api_key,
-            xenodia_api_key,
-        },
-    )?;
-
-    let chat_runtime_record =
-        reload_chat_runtime_state(&chat_runtime_state, Some(config_dir.as_path()));
-
-    let next_snapshot = {
-        let mut store = state.0.lock().map_err(|error| error.to_string())?;
-        store.chat_runtime = chat_runtime_record.clone();
-        store.quick_reply = match chat_runtime_record.status.as_str() {
-            "live" => format!(
-                "Saved chat setup. Live replies are ready via {}.",
-                chat_runtime_record
-                    .active_provider
-                    .as_deref()
-                    .unwrap_or("configured provider")
-            ),
-            "degraded" => "Saved chat setup, but the provider runtime is degraded.".to_string(),
-            _ => "Saved chat setup. GeeAgent still needs a valid provider key to go live."
-                .to_string(),
-        };
-        let next_snapshot = store.snapshot();
-        persist_snapshot_if_possible(&snapshot_store_state, &store);
-        next_snapshot
-    };
-
-    emit_shell_snapshot_changed(&app, &next_snapshot)?;
-    Ok(next_snapshot)
-}
-
-#[tauri::command]
-fn get_chat_routing_settings(
-    app_config_state: State<'_, AppConfigState>,
-) -> Result<ChatRoutingSettings, String> {
-    load_chat_routing_settings(app_config_state.config_dir.as_deref())
-}
-
-#[tauri::command]
-fn save_chat_routing_settings(
-    settings: ChatRoutingSettings,
-    app: AppHandle,
-    state: State<'_, ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-    chat_runtime_state: State<'_, ChatRuntimeState>,
-    app_config_state: State<'_, AppConfigState>,
-) -> Result<RuntimeSnapshot, String> {
-    let config_dir = app_config_state
-        .config_dir
-        .clone()
-        .ok_or_else(|| "app config directory is unavailable".to_string())?;
-
-    persist_chat_routing_settings(config_dir.as_path(), &settings)?;
-    let chat_runtime_record =
-        reload_chat_runtime_state(&chat_runtime_state, Some(config_dir.as_path()));
-
-    let next_snapshot = {
-        let mut store = state.0.lock().map_err(|error| error.to_string())?;
-        store.chat_runtime = chat_runtime_record.clone();
-        store.quick_reply = format!(
-            "Saved routing setup. {} now follows the updated profile routes.",
-            chat_runtime_record
-                .active_provider
-                .as_deref()
-                .unwrap_or("GeeAgent")
-        );
-        let next_snapshot = store.snapshot();
-        persist_snapshot_if_possible(&snapshot_store_state, &store);
-        next_snapshot
-    };
-
-    emit_shell_snapshot_changed(&app, &next_snapshot)?;
-    Ok(next_snapshot)
-}
-
-#[tauri::command]
-fn create_automation(
-    draft: AutomationDraftInput,
-    app: AppHandle,
-    state: State<'_, ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-) -> Result<RuntimeSnapshot, String> {
-    let next_snapshot = {
-        let mut store = state.0.lock().map_err(|error| error.to_string())?;
-        store.create_automation(draft)?;
-        let next_snapshot = store.snapshot();
-        persist_snapshot_if_possible(&snapshot_store_state, &store);
-        next_snapshot
-    };
-
-    emit_shell_snapshot_changed(&app, &next_snapshot)?;
-    Ok(next_snapshot)
-}
-
-#[tauri::command]
-fn set_automation_status(
-    automation_id: String,
-    status: AutomationStatus,
-    app: AppHandle,
-    state: State<'_, ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-) -> Result<RuntimeSnapshot, String> {
-    let next_snapshot = {
-        let mut store = state.0.lock().map_err(|error| error.to_string())?;
-        store.set_automation_status(&automation_id, status)?;
-        let next_snapshot = store.snapshot();
-        persist_snapshot_if_possible(&snapshot_store_state, &store);
-        next_snapshot
-    };
-
-    emit_shell_snapshot_changed(&app, &next_snapshot)?;
-    Ok(next_snapshot)
-}
-
-#[tauri::command]
-fn delete_automation(
-    automation_id: String,
-    app: AppHandle,
-    state: State<'_, ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-) -> Result<RuntimeSnapshot, String> {
-    let next_snapshot = {
-        let mut store = state.0.lock().map_err(|error| error.to_string())?;
-        store.delete_automation(&automation_id)?;
-        let next_snapshot = store.snapshot();
-        persist_snapshot_if_possible(&snapshot_store_state, &store);
-        next_snapshot
-    };
-
-    emit_shell_snapshot_changed(&app, &next_snapshot)?;
-    Ok(next_snapshot)
-}
-
-#[tauri::command]
-fn clear_saved_chat_runtime_provider(
-    provider_name: String,
-    app: AppHandle,
-    config_state: State<AppConfigState>,
-    chat_runtime_state: State<ChatRuntimeState>,
-    state: State<'_, ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-) -> Result<RuntimeSnapshot, String> {
-    let config_dir = config_state
-        .config_dir
-        .as_ref()
-        .ok_or_else(|| "app config directory is unavailable".to_string())?;
-
-    clear_chat_runtime_provider(config_dir.as_path(), &provider_name)?;
-    let chat_runtime_record =
-        reload_chat_runtime_state(&chat_runtime_state, Some(config_dir.as_path()));
-
-    let next_snapshot = {
-        let mut store = state.0.lock().map_err(|error| error.to_string())?;
-        store.chat_runtime = chat_runtime_record.clone();
-        store.quick_reply = format!(
-            "Cleared the saved {} key. GeeAgent reloaded the runtime configuration.",
-            provider_name
-        );
-        let next_snapshot = store.snapshot();
-        persist_snapshot_if_possible(&snapshot_store_state, &store);
-        next_snapshot
-    };
-
-    emit_shell_snapshot_changed(&app, &next_snapshot)?;
-    Ok(next_snapshot)
-}
-
-#[tauri::command]
-fn consume_workspace_route_hint(
-    pending_route_state: State<'_, PendingWorkspaceRouteState>,
-) -> Result<Option<WorkspacePage>, String> {
-    take_pending_workspace_route(&pending_route_state)
-}
-
-#[tauri::command]
-fn set_workspace_active_section(
-    page: WorkspacePage,
-    app: AppHandle,
-    state: State<'_, ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-) -> Result<RuntimeSnapshot, String> {
-    let next_snapshot = update_workspace_active_section(&state, &snapshot_store_state, &page)?;
-    emit_shell_snapshot_changed(&app, &next_snapshot)?;
-    Ok(next_snapshot)
-}
-
-#[tauri::command]
-fn show_workspace_window(
-    app: AppHandle,
-    state: State<'_, ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-) -> Result<(), String> {
-    show_workspace_window_for_page(&app, &state, &snapshot_store_state, WorkspacePage::Chat)
-}
-
-#[tauri::command]
-fn show_workspace_home_window(
-    app: AppHandle,
-    state: State<'_, ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-) -> Result<(), String> {
-    show_workspace_window_for_page(&app, &state, &snapshot_store_state, WorkspacePage::Home)
-}
-
-#[tauri::command]
-fn show_workspace_tasks_window(
-    app: AppHandle,
-    state: State<'_, ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-) -> Result<(), String> {
-    show_workspace_window_for_page(&app, &state, &snapshot_store_state, WorkspacePage::Tasks)
-}
-
-#[tauri::command]
-fn show_workspace_apps_window(
-    app: AppHandle,
-    state: State<'_, ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-) -> Result<(), String> {
-    show_workspace_window_for_page(&app, &state, &snapshot_store_state, WorkspacePage::Apps)
-}
-
-#[tauri::command]
-fn show_workspace_settings_window(
-    app: AppHandle,
-    state: State<'_, ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-) -> Result<(), String> {
-    show_workspace_window_for_page(&app, &state, &snapshot_store_state, WorkspacePage::Settings)
-}
-
-#[tauri::command]
-fn show_review_window(
-    app: AppHandle,
-    state: State<'_, ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-) -> Result<(), String> {
-    {
-        let mut store = state.0.lock().map_err(|error| error.to_string())?;
-        focus_open_approval(&mut store);
-        persist_snapshot_if_possible(&snapshot_store_state, &store);
-    }
-    show_workspace_window_for_page(&app, &state, &snapshot_store_state, WorkspacePage::Tasks)
-}
-
-#[tauri::command]
-fn set_workspace_focus_task(
-    task_id: String,
-    app: AppHandle,
-    state: State<'_, ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-) -> Result<RuntimeSnapshot, String> {
-    let next_snapshot = {
-        let mut store = state.0.lock().map_err(|error| error.to_string())?;
-        set_workspace_focus(&mut store, &task_id)?;
-        let next_snapshot = store.snapshot();
-        persist_snapshot_if_possible(&snapshot_store_state, &store);
-        next_snapshot
-    };
-
-    emit_shell_snapshot_changed(&app, &next_snapshot)?;
-    Ok(next_snapshot)
-}
-
-#[tauri::command]
-fn create_workspace_conversation(
-    app: AppHandle,
-    state: State<'_, ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-) -> Result<RuntimeSnapshot, String> {
-    let next_snapshot = {
-        let mut store = state.0.lock().map_err(|error| error.to_string())?;
-        store.create_conversation(None);
-        let next_snapshot = store.snapshot();
-        persist_snapshot_if_possible(&snapshot_store_state, &store);
-        next_snapshot
-    };
-
-    emit_shell_snapshot_changed(&app, &next_snapshot)?;
-    Ok(next_snapshot)
-}
-
-#[tauri::command]
-fn set_active_workspace_conversation(
-    conversation_id: String,
-    app: AppHandle,
-    state: State<'_, ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-) -> Result<RuntimeSnapshot, String> {
-    let next_snapshot = {
-        let mut store = state.0.lock().map_err(|error| error.to_string())?;
-        store.set_active_conversation(&conversation_id)?;
-        let next_snapshot = store.snapshot();
-        persist_snapshot_if_possible(&snapshot_store_state, &store);
-        next_snapshot
-    };
-
-    emit_shell_snapshot_changed(&app, &next_snapshot)?;
-    Ok(next_snapshot)
-}
-
-#[tauri::command]
-fn delete_workspace_conversation(
-    conversation_id: String,
-    app: AppHandle,
-    state: State<'_, ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-) -> Result<RuntimeSnapshot, String> {
-    let next_snapshot = {
-        let mut store = state.0.lock().map_err(|error| error.to_string())?;
-        store.delete_conversation(&conversation_id)?;
-        let next_snapshot = store.snapshot();
-        persist_snapshot_if_possible(&snapshot_store_state, &store);
-        next_snapshot
-    };
-
-    emit_shell_snapshot_changed(&app, &next_snapshot)?;
-    Ok(next_snapshot)
 }
 
 pub fn native_bridge_get_shell_snapshot_json(
@@ -10176,7 +8046,7 @@ pub fn native_bridge_perform_task_action_json(
     serde_json::to_string(&snapshot).map_err(|error| error.to_string())
 }
 
-pub async fn native_bridge_submit_workspace_message_json(
+pub fn native_bridge_submit_workspace_message_json(
     message: &str,
     config_dir_override: Option<PathBuf>,
 ) -> Result<String, String> {
@@ -10205,7 +8075,7 @@ pub async fn native_bridge_submit_workspace_message_json(
     serde_json::to_string(&snapshot).map_err(|error| error.to_string())
 }
 
-pub async fn native_bridge_submit_quick_prompt_json(
+pub fn native_bridge_submit_quick_prompt_json(
     prompt: &str,
     config_dir_override: Option<PathBuf>,
 ) -> Result<String, String> {
@@ -10246,355 +8116,33 @@ pub async fn native_bridge_submit_quick_prompt_json(
     serde_json::to_string(&snapshot).map_err(|error| error.to_string())
 }
 
-#[tauri::command]
-async fn refresh_module_runs(
-    app: AppHandle,
-    state: State<'_, ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-    module_refresh_gate_state: State<'_, ModuleRefreshGateState>,
-    module_status_runtime_state: State<'_, ModuleStatusRuntimeState>,
-) -> Result<RuntimeSnapshot, String> {
-    let should_refresh = {
-        let mut last_refresh_at = module_refresh_gate_state
-            .0
-            .lock()
-            .map_err(|error| error.to_string())?;
-        should_refresh_module_runs(
-            &mut *last_refresh_at,
-            Instant::now(),
-            Duration::from_millis(MODULE_REFRESH_MIN_INTERVAL_MS),
-        )
-    };
-
-    let (remote_statuses, fallback_run_ids) = if should_refresh {
-        let active_runs = {
-            let store = state.0.lock().map_err(|error| error.to_string())?;
-            store
-                .module_runs
-                .iter()
-                .filter(|record| module_run_is_active(&record.module_run))
-                .map(|record| record.module_run.clone())
-                .collect::<Vec<_>>()
-        };
-
-        if active_runs.is_empty() {
-            (Vec::new(), HashSet::new())
-        } else {
-            let mut responses = Vec::new();
-            let mut unresolved_run_ids = HashSet::new();
-
-            match &module_status_runtime_state.runtime {
-                Some(runtime) => {
-                    for module_run in active_runs {
-                        match runtime.fetch_status(&module_run).await {
-                            Ok(Some(response)) => responses.push(response),
-                            Ok(None) => {
-                                unresolved_run_ids.insert(module_run.module_run_id);
-                            }
-                            Err(error) => {
-                                log::warn!(
-                                    "failed to refresh module run {} from live runtime: {}",
-                                    module_run.module_run_id,
-                                    error
-                                );
-                                unresolved_run_ids.insert(module_run.module_run_id);
-                            }
-                        }
-                    }
-                }
-                None => {
-                    if let Some(error) = &module_status_runtime_state.startup_error {
-                        log::warn!(
-                            "module status runtime unavailable, falling back to simulated refresh: {error}"
-                        );
-                    }
-                    unresolved_run_ids.extend(
-                        active_runs
-                            .into_iter()
-                            .map(|module_run| module_run.module_run_id),
-                    );
-                }
-            }
-
-            (responses, unresolved_run_ids)
-        }
-    } else {
-        (Vec::new(), HashSet::new())
-    };
-
-    let next_snapshot = {
-        let mut store = state.0.lock().map_err(|error| error.to_string())?;
-        let remote_refresh_count = remote_statuses
-            .into_iter()
-            .filter(|response| apply_remote_module_status_response(&mut store, response.clone()))
-            .count();
-        let fallback_changed = if should_refresh && !fallback_run_ids.is_empty() {
-            advance_module_runs_filtered(&mut store, Some(&fallback_run_ids))
-        } else {
-            false
-        };
-        let changed = remote_refresh_count > 0 || fallback_changed;
-        if remote_refresh_count > 0 && !fallback_changed {
-            store.quick_reply = format!(
-                "Refreshed {} module run(s) from live module status.",
-                remote_refresh_count
-            );
-        }
-        let next_snapshot = store.snapshot();
-        if changed {
-            persist_snapshot_if_possible(&snapshot_store_state, &store);
-        }
-        next_snapshot
-    };
-
-    emit_shell_snapshot_changed(&app, &next_snapshot)?;
-    Ok(next_snapshot)
-}
-
-#[tauri::command]
-fn recover_module_run(
-    module_run_id: String,
-    action: String,
-    app: AppHandle,
-    state: State<'_, ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-) -> Result<RuntimeSnapshot, String> {
-    let next_snapshot = {
-        let mut store = state.0.lock().map_err(|error| error.to_string())?;
-        apply_module_recovery(&mut store, &module_run_id, &action)?;
-        let next_snapshot = store.snapshot();
-        persist_snapshot_if_possible(&snapshot_store_state, &store);
-        next_snapshot
-    };
-
-    emit_shell_snapshot_changed(&app, &next_snapshot)?;
-    Ok(next_snapshot)
-}
-
-#[tauri::command]
-fn resolve_approval_request(
-    approval_request_id: String,
-    decision: String,
-    app: AppHandle,
-    state: State<ShellRuntimeState>,
-    snapshot_store_state: State<'_, SnapshotStoreState>,
-) -> Result<RuntimeSnapshot, String> {
-    let next_snapshot = {
-        let mut store = state.0.lock().map_err(|error| error.to_string())?;
-        let config_dir = snapshot_store_state
-            .snapshot_path
-            .as_deref()
-            .and_then(Path::parent);
-        resolve_approval(&mut store, &approval_request_id, &decision, config_dir)?;
-        let next_snapshot = store.snapshot();
-        persist_snapshot_if_possible(&snapshot_store_state, &store);
-        next_snapshot
-    };
-
-    emit_shell_snapshot_changed(&app, &next_snapshot)?;
-    Ok(next_snapshot)
-}
-
-#[tauri::command]
-fn show_pet_overlay(app: AppHandle) -> Result<(), String> {
-    let window = window_by_label(&app, WINDOW_PET_OVERLAY)?;
-    show_and_focus(&window)
-}
-
-#[tauri::command]
-fn hide_pet_overlay(app: AppHandle) -> Result<(), String> {
-    let window = window_by_label(&app, WINDOW_PET_OVERLAY)?;
-    window.hide().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn toggle_quick_input(app: AppHandle) -> Result<(), String> {
-    let window = window_by_label(&app, WINDOW_QUICK_INPUT)?;
-    if window.is_visible().map_err(|error| error.to_string())? {
-        return window.hide().map_err(|error| error.to_string());
-    }
-    window.center().map_err(|error| error.to_string())?;
-    show_and_focus(&window)
-}
-
-#[tauri::command]
-fn hide_quick_input(app: AppHandle) -> Result<(), String> {
-    let window = window_by_label(&app, WINDOW_QUICK_INPUT)?;
-    window.hide().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn show_menu_bar_window(app: AppHandle) -> Result<(), String> {
-    show_menu_bar_panel(&app)
-}
-
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    tauri::Builder::default()
-        .setup(|app| {
-            let app_config_dir = app.path().app_config_dir().ok();
-            let snapshot_path = app_config_dir
-                .as_ref()
-                .map(|path| snapshot_store_path(path));
-            let mut initial_store = match snapshot_path.as_ref() {
-                Some(path) => match load_persisted_store(path) {
-                    Ok(Some(store)) => store,
-                    Ok(None) => default_runtime_store(),
-                    Err(error) => {
-                        log::warn!("failed to load persisted shell snapshot: {error}");
-                        default_runtime_store()
-                    }
-                },
-                None => default_runtime_store(),
-            };
-            initial_store.refresh_agent_profiles(app_config_dir.as_deref());
-            let _ = app.manage(AppConfigState {
-                config_dir: app_config_dir.clone(),
-            });
-            let _ = app.manage(SnapshotStoreState {
-                snapshot_path: snapshot_path.clone(),
-            });
-            match ChatRuntime::from_config_dir(app_config_dir.as_deref()) {
-                Ok(runtime) => {
-                    initial_store.chat_runtime =
-                        chat_runtime_record_from_readiness(runtime.readiness());
-                    let _ = app.manage(ChatRuntimeState(Mutex::new(ChatRuntimeHandle {
-                        runtime: Some(runtime),
-                        startup_error: None,
-                    })));
-                }
-                Err(error) => {
-                    log::warn!("failed to initialize chat runtime: {error}");
-                    initial_store.chat_runtime = RuntimeChatRuntimeRecord {
-                        status: "needs_setup".to_string(),
-                        active_provider: None,
-                        detail: "Live chat is waiting for provider configuration.".to_string(),
-                    };
-                    let _ = app.manage(ChatRuntimeState(Mutex::new(ChatRuntimeHandle {
-                        runtime: None,
-                        startup_error: Some(error),
-                    })));
-                }
-            }
-            match ModuleStatusRuntime::from_config_dir(app_config_dir.as_deref()) {
-                Ok(runtime) => {
-                    let _ = app.manage(ModuleStatusRuntimeState {
-                        runtime: Some(runtime),
-                        startup_error: None,
-                    });
-                }
-                Err(error) => {
-                    log::warn!("failed to initialize module status runtime: {error}");
-                    let _ = app.manage(ModuleStatusRuntimeState {
-                        runtime: None,
-                        startup_error: Some(error),
-                    });
-                }
-            }
-            let _ = app.manage(ModuleRefreshGateState(Mutex::new(None)));
-            let _ = app.manage(PendingWorkspaceRouteState(Mutex::new(None)));
-            let _ = app.manage(TrayPanelGateState(Mutex::new(None)));
-            let _ = app.manage(ShellRuntimeState(Mutex::new(initial_store)));
-
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
-
-            #[cfg(desktop)]
-            {
-                app.handle().plugin(
-                    tauri_plugin_global_shortcut::Builder::new()
-                        .with_handler(move |app, shortcut, event| {
-                            if shortcut == &quick_input_shortcut()
-                                && event.state() == ShortcutState::Pressed
-                            {
-                                let _ = toggle_quick_input(app.clone());
-                            }
-                        })
-                        .build(),
-                )?;
-                app.handle().plugin(tauri_plugin_positioner::init())?;
-                app.global_shortcut()
-                    .register(quick_input_shortcut())
-                    .map_err(|error| -> Box<dyn std::error::Error> { Box::new(error) })?;
-            }
-
-            build_auxiliary_windows(app)?;
-            build_tray(app)?;
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
-            get_shell_snapshot,
-            submit_quick_prompt,
-            submit_workspace_message,
-            save_chat_runtime_setup,
-            create_automation,
-            set_automation_status,
-            delete_automation,
-            clear_saved_chat_runtime_provider,
-            consume_workspace_route_hint,
-            get_chat_routing_settings,
-            save_chat_routing_settings,
-            set_workspace_active_section,
-            show_workspace_home_window,
-            show_workspace_window,
-            show_workspace_tasks_window,
-            show_workspace_apps_window,
-            show_workspace_settings_window,
-            show_review_window,
-            set_workspace_focus_task,
-            create_workspace_conversation,
-            set_active_workspace_conversation,
-            delete_workspace_conversation,
-            refresh_module_runs,
-            recover_module_run,
-            resolve_approval_request,
-            show_pet_overlay,
-            hide_pet_overlay,
-            toggle_quick_input,
-            hide_quick_input,
-            show_menu_bar_window
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        advance_module_runs, apply_execution_outcome_to_store, apply_module_recovery,
-        apply_quick_prompt, apply_remote_module_status_response, apply_workspace_message,
-        best_quick_prompt_conversation_match, build_controlled_terminal_execution_outcome,
-        build_terminal_tool_request, claude_sdk_runtime_provider_label,
-        compose_claude_sdk_turn_prompt, context_projected_workspace_messages,
-        default_runtime_store, detect_first_party_execution_from_store,
-        detect_run_status_follow_up, direct_chat_run_state, ensure_workspace_runtime_catalog,
-        execute_controlled_terminal_step, focus_open_approval, is_auto_approved_read_only_sdk_tool,
+        apply_execution_outcome_to_store, apply_module_recovery, apply_quick_prompt,
+        apply_workspace_message, best_quick_prompt_conversation_match,
+        build_controlled_terminal_execution_outcome, build_terminal_tool_request,
+        claude_sdk_runtime_provider_label, compose_claude_sdk_turn_prompt,
+        context_projected_workspace_messages, default_runtime_store,
+        detect_first_party_execution_from_store, detect_run_status_follow_up,
+        direct_chat_run_state, ensure_workspace_runtime_catalog, execute_controlled_terminal_step,
+        grounded_runtime_fact_reply, is_auto_approved_read_only_sdk_tool,
         is_transient_quick_prompt, load_native_bridge_store, load_persisted_store,
-        native_bridge_delete_agent_profile_json, native_bridge_delete_terminal_access_rule_json,
-        native_bridge_get_shell_snapshot_json, native_bridge_install_agent_pack_json,
-        native_bridge_list_agent_profiles_json, native_bridge_perform_task_action_json,
-        native_bridge_reload_agent_profile_json, native_bridge_set_active_agent_profile_json,
-        native_bridge_set_highest_authorization_json, native_bridge_submit_quick_prompt_json,
-        native_bridge_submit_workspace_message_json, next_controlled_terminal_planner_decision,
+        looks_like_runtime_facts_time_request, native_bridge_delete_agent_profile_json,
+        native_bridge_delete_terminal_access_rule_json, native_bridge_get_shell_snapshot_json,
+        native_bridge_install_agent_pack_json, native_bridge_list_agent_profiles_json,
+        native_bridge_perform_task_action_json, native_bridge_reload_agent_profile_json,
+        native_bridge_set_active_agent_profile_json, native_bridge_set_highest_authorization_json,
+        native_bridge_submit_quick_prompt_json, native_bridge_submit_workspace_message_json,
         normalized_pack_root, persist_store_to_disk, personalize_execution_outcome_for_agent,
-        prepare_turn_context, quick_input_reply, record_first_party_turn, resolve_approval,
+        quick_input_reply, record_first_party_turn, resolve_approval,
         route_quick_prompt_to_best_conversation, runtime_run_state, seed_runtime_store,
-        set_pending_workspace_route, set_workspace_focus, set_workspace_runtime_active_section,
-        should_open_tray_panel, should_refresh_module_runs, sync_workspace_navigation,
-        take_pending_workspace_route, terminal_observation_error, upsert_terminal_access_rule,
-        workspace_quick_reply, AutomationDraftInput, ControlledTerminalObservation,
-        ControlledTerminalPlannerDecision, FirstPartyRoutingDecision, PendingWorkspaceRouteState,
-        PreparedTurnContext, RuntimeConversationMessageRecord, RuntimeRequestOutcomeKind,
-        RuntimeRequestOutcomeRecord, RuntimeRequestSource, RuntimeTaskRecord,
-        RuntimeWorkspaceFocus, TerminalAccessDecision, TerminalAccessScope, TurnMode, TurnRoute,
-        WorkbenchSection, WorkspaceChatMessage, WorkspacePage, AGENT_RUNTIME_BRIDGE_MANAGER,
+        terminal_observation_error, upsert_terminal_access_rule, workspace_quick_reply,
+        ControlledTerminalObservation, PreparedTurnContext, RuntimeConversationMessageRecord,
+        RuntimeRequestOutcomeKind, RuntimeRequestOutcomeRecord, RuntimeRequestSource,
+        RuntimeTaskRecord, RuntimeWorkspaceFocus, TerminalAccessDecision, TerminalAccessScope,
+        TurnMode, TurnRoute, WorkspaceChatMessage, AGENT_RUNTIME_BRIDGE_MANAGER,
         CONTEXT_AUTO_SUMMARY_TRIGGER_TOKENS, CONTEXT_WINDOW_TOKENS, ITERATIVE_TURN_MAX_STEPS,
-        TRAY_PANEL_CLICK_DEBOUNCE_MS,
     };
     use crate::load_terminal_access_permissions;
     use agent_kernel::{AgentAppearance, AgentProfile, ProfileSource};
@@ -10604,14 +8152,15 @@ mod tests {
         ControlledTerminalPlanKind, ControlledTerminalRequest, ControlledTerminalStep,
         ExecutionRequestMeta, ExecutionRuntime, FirstPartyExecutionIntent, ToolOutcome,
     };
-    use runtime_kernel::{ExecutionPlanCondition, KernelRun, KernelRunStatus};
+    use runtime_kernel::{
+        ExecutionPlanCondition, FirstPartyRoutingDecision, KernelRun, KernelRunStatus,
+    };
     use std::{
         fs,
         net::TcpListener,
         path::PathBuf,
         process::Command,
         sync::{Mutex, OnceLock},
-        time::{Duration, Instant},
     };
     use task_engine::{ExecutionSurface, TaskStatus, ToolInvocationStatus, TranscriptEventPayload};
 
@@ -10678,6 +8227,10 @@ mod tests {
                 .sessions
                 .clear();
         }
+        result
+    }
+
+    fn native_bridge_result<T>(result: Result<T, String>) -> Result<T, String> {
         result
     }
 
@@ -11154,51 +8707,6 @@ mod tests {
     }
 
     #[test]
-    fn create_automation_rejects_impossible_clock_times() {
-        let mut store = default_runtime_store();
-        let before_count = store.automations.len();
-
-        let result = store.create_automation(AutomationDraftInput {
-            name: "Morning digest".to_string(),
-            goal_prompt: "Digest creator uploads every morning.".to_string(),
-            cadence: ScheduleCadence::Daily,
-            time_of_day: "24:60".to_string(),
-        });
-
-        assert_eq!(
-            result,
-            Err("time of day must be a real 24-hour clock value".to_string())
-        );
-        assert_eq!(store.automations.len(), before_count);
-    }
-
-    #[test]
-    fn create_automation_accepts_boundary_24_hour_times() {
-        let mut store = default_runtime_store();
-
-        store
-            .create_automation(AutomationDraftInput {
-                name: "Dawn watch".to_string(),
-                goal_prompt: "Check the first wave of uploads.".to_string(),
-                cadence: ScheduleCadence::Daily,
-                time_of_day: "00:00".to_string(),
-            })
-            .expect("midnight should be accepted");
-
-        store
-            .create_automation(AutomationDraftInput {
-                name: "Late review".to_string(),
-                goal_prompt: "Check the final evening queue.".to_string(),
-                cadence: ScheduleCadence::Daily,
-                time_of_day: "23:59".to_string(),
-            })
-            .expect("23:59 should be accepted");
-
-        assert_eq!(store.automations[0].time_of_day, "23:59");
-        assert_eq!(store.automations[1].time_of_day, "00:00");
-    }
-
-    #[test]
     fn runtime_snapshot_carries_workspace_catalogs_from_the_facade() {
         let snapshot = serde_json::to_value(default_runtime_store().snapshot())
             .expect("snapshot should serialize");
@@ -11462,83 +8970,6 @@ mod tests {
         assert!(follow_up
             .assistant_reply
             .contains("The previous turn answered directly from turn setup runtime facts"));
-    }
-
-    #[test]
-    fn pending_workspace_route_is_consumed_once() {
-        let pending_route_state = PendingWorkspaceRouteState(Mutex::new(None));
-
-        set_pending_workspace_route(&pending_route_state, WorkspacePage::Settings)
-            .expect("route hint should set");
-
-        assert_eq!(
-            take_pending_workspace_route(&pending_route_state).expect("route hint should read"),
-            Some(WorkspacePage::Settings)
-        );
-        assert_eq!(
-            take_pending_workspace_route(&pending_route_state).expect("route hint should clear"),
-            None
-        );
-    }
-
-    #[test]
-    fn workspace_runtime_active_section_follows_the_requested_page() {
-        let mut store = default_runtime_store();
-
-        set_workspace_runtime_active_section(&mut store, &WorkspacePage::Chat);
-
-        let snapshot = store.snapshot();
-        assert_eq!(
-            snapshot
-                .workspace_runtime
-                .expect("workspace runtime should exist")
-                .active_section,
-            WorkbenchSection::Chat
-        );
-    }
-
-    #[test]
-    fn workspace_navigation_updates_active_section_and_route_hint() {
-        let mut store = default_runtime_store();
-        let pending_route_state = PendingWorkspaceRouteState(Mutex::new(None));
-
-        sync_workspace_navigation(&mut store, &pending_route_state, WorkspacePage::Settings)
-            .expect("workspace navigation should update");
-
-        let snapshot = store.snapshot();
-        assert_eq!(
-            snapshot
-                .workspace_runtime
-                .expect("workspace runtime should exist")
-                .active_section,
-            WorkbenchSection::Settings
-        );
-        assert_eq!(
-            take_pending_workspace_route(&pending_route_state).expect("route hint should read"),
-            Some(WorkspacePage::Settings)
-        );
-    }
-
-    #[test]
-    fn tray_panel_gate_only_allows_one_toggle_inside_the_debounce_window() {
-        let mut last_click_at = None;
-        let now = Instant::now();
-
-        assert!(should_open_tray_panel(
-            &mut last_click_at,
-            now,
-            Duration::from_millis(TRAY_PANEL_CLICK_DEBOUNCE_MS)
-        ));
-        assert!(!should_open_tray_panel(
-            &mut last_click_at,
-            now + Duration::from_millis(80),
-            Duration::from_millis(TRAY_PANEL_CLICK_DEBOUNCE_MS)
-        ));
-        assert!(should_open_tray_panel(
-            &mut last_click_at,
-            now + Duration::from_millis(TRAY_PANEL_CLICK_DEBOUNCE_MS + 20),
-            Duration::from_millis(TRAY_PANEL_CLICK_DEBOUNCE_MS)
-        ));
     }
 
     #[test]
@@ -11855,18 +9286,15 @@ mod tests {
     #[test]
     fn current_time_request_is_answered_from_runtime_facts() {
         let store = default_runtime_store();
-        let prepared = prepare_turn_context(
+        assert!(looks_like_runtime_facts_time_request("现在是几点"));
+        let reply = grounded_runtime_fact_reply(
             &store,
-            TurnRoute {
-                mode: TurnMode::WorkspaceMessage,
-                source: RuntimeRequestSource::WorkspaceChat,
-                surface: ExecutionSurface::DesktopWorkspaceChat,
-            },
-            "现在是几点",
+            ExecutionSurface::DesktopWorkspaceChat,
+            &crate::default_runtime_agent_profile(),
         );
 
-        assert!(prepared.first_party_routing_decision.is_none());
-        assert!(prepared.grounded_runtime_fact_reply.is_some());
+        assert_eq!(reply.run_state.stop_reason, "runtime_fact_reply");
+        assert!(reply.quick_reply.contains("Current local time"));
     }
 
     #[test]
@@ -11941,105 +9369,13 @@ mod tests {
 
         let outcome = build_controlled_terminal_execution_outcome(&meta, &request, &observations);
         assert_eq!(outcome.task_run.status, TaskStatus::Failed);
-        assert!(outcome.assistant_reply.contains("失败"));
+        assert!(outcome.assistant_reply.contains("failed"));
         assert!(outcome
             .module_run
             .result_summary
             .as_deref()
             .unwrap_or_default()
             .contains("terminal inspection failed"));
-    }
-
-    fn conditional_host_diagnostics_request() -> ControlledTerminalRequest {
-        ControlledTerminalRequest {
-            goal: "看看本机python服务有什么正在运行吗？如果没有，再看看3000端口是否被占用。"
-                .to_string(),
-            plan_summary:
-                "Inspect local Python processes first, and only inspect port 3000 if no Python service is running."
-                    .to_string(),
-            kind: ControlledTerminalPlanKind::HostDiagnostics {
-                include_current_time: false,
-            },
-            steps: vec![
-                ControlledTerminalStep {
-                    title: "Inspect running Python processes".to_string(),
-                    command: "ps".to_string(),
-                    args: vec!["-axo".to_string(), "pid=,comm=,args=".to_string()],
-                    condition: execution_runtime::ControlledTerminalStepCondition::Always,
-                    cwd: None,
-                },
-                ControlledTerminalStep {
-                    title: "Inspect LISTEN state for port 3000".to_string(),
-                    command: "lsof".to_string(),
-                    args: vec![
-                        "-nP".to_string(),
-                        "-iTCP:3000".to_string(),
-                        "-sTCP:LISTEN".to_string(),
-                    ],
-                    condition:
-                        execution_runtime::ControlledTerminalStepCondition::IfPreviousPythonInspectionEmpty,
-                    cwd: None,
-                },
-            ],
-        }
-    }
-
-    #[test]
-    fn host_diagnostics_planner_dispatches_python_first() {
-        let request = conditional_host_diagnostics_request();
-
-        match next_controlled_terminal_planner_decision(&request, &[]) {
-            ControlledTerminalPlannerDecision::Dispatch { step, .. } => {
-                assert_eq!(step.command, "ps");
-            }
-            other => panic!("expected planner to dispatch python inspection first, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn host_diagnostics_planner_branches_from_python_observation() {
-        let request = conditional_host_diagnostics_request();
-        let python_step = request.steps[0].clone();
-
-        let python_running = vec![ControlledTerminalObservation {
-            step: python_step.clone(),
-            outcome: ToolOutcome::Completed {
-                tool_id: "shell.run".to_string(),
-                payload: serde_json::json!({
-                    "command": "ps",
-                    "args": ["-axo", "pid=,comm=,args="],
-                    "exit_code": 0,
-                    "stdout": "123 python3 python3 server.py",
-                    "stderr": "",
-                }),
-            },
-        }];
-        assert!(matches!(
-            next_controlled_terminal_planner_decision(&request, &python_running),
-            ControlledTerminalPlannerDecision::Finalize { .. }
-        ));
-
-        let python_absent = vec![ControlledTerminalObservation {
-            step: python_step,
-            outcome: ToolOutcome::Completed {
-                tool_id: "shell.run".to_string(),
-                payload: serde_json::json!({
-                    "command": "ps",
-                    "args": ["-axo", "pid=,comm=,args="],
-                    "exit_code": 0,
-                    "stdout": "",
-                    "stderr": "",
-                }),
-            },
-        }];
-        match next_controlled_terminal_planner_decision(&request, &python_absent) {
-            ControlledTerminalPlannerDecision::Dispatch { step, .. } => {
-                assert_eq!(step.command, "lsof");
-            }
-            other => {
-                panic!("expected planner to branch into the conditional port check, got {other:?}")
-            }
-        }
     }
 
     #[test]
@@ -12071,20 +9407,11 @@ mod tests {
     #[test]
     fn python_service_inspection_is_detected_as_controlled_terminal_execution() {
         let store = default_runtime_store();
-        let prepared = prepare_turn_context(
-            &store,
-            TurnRoute {
-                mode: TurnMode::WorkspaceMessage,
-                source: RuntimeRequestSource::WorkspaceChat,
-                surface: ExecutionSurface::DesktopWorkspaceChat,
-            },
-            "你看看现在有什么正在运行的python服务",
-        );
+        let decision =
+            detect_first_party_execution_from_store(&store, "你看看现在有什么正在运行的python服务")
+                .expect("python-service request should resolve");
 
-        match prepared
-            .first_party_routing_decision
-            .expect("python-service request should resolve")
-        {
+        match decision {
             FirstPartyRoutingDecision::Execute(plan) => match plan.steps.as_slice() {
                 [runtime_kernel::ExecutionPlanStep {
                     intent: FirstPartyExecutionIntent::RunControlledTerminal(request),
@@ -12102,8 +9429,6 @@ mod tests {
             },
             _ => panic!("expected execution decision"),
         }
-        assert!(prepared.run_status_follow_up.is_none());
-        assert!(prepared.grounded_runtime_fact_reply.is_none());
     }
 
     #[test]
@@ -12119,20 +9444,11 @@ mod tests {
             None,
         ));
 
-        let prepared = prepare_turn_context(
-            &store,
-            TurnRoute {
-                mode: TurnMode::WorkspaceMessage,
-                source: RuntimeRequestSource::WorkspaceChat,
-                surface: ExecutionSurface::DesktopWorkspaceChat,
-            },
-            "怎么样？你看了本地python服务吗",
-        );
+        let decision =
+            detect_first_party_execution_from_store(&store, "怎么样？你看了本地python服务吗")
+                .expect("fresh actionable request should resolve");
 
-        match prepared
-            .first_party_routing_decision
-            .expect("fresh actionable request should resolve")
-        {
+        match decision {
             FirstPartyRoutingDecision::Execute(plan) => match plan.steps.as_slice() {
                 [runtime_kernel::ExecutionPlanStep {
                     intent: FirstPartyExecutionIntent::RunControlledTerminal(request),
@@ -12147,7 +9463,6 @@ mod tests {
             },
             _ => panic!("expected execution decision"),
         }
-        assert!(prepared.run_status_follow_up.is_none());
     }
 
     #[test]
@@ -12163,20 +9478,13 @@ mod tests {
             Some("run_demo".to_string()),
         ));
 
-        let prepared = prepare_turn_context(
+        let decision = detect_first_party_execution_from_store(
             &store,
-            TurnRoute {
-                mode: TurnMode::WorkspaceMessage,
-                source: RuntimeRequestSource::WorkspaceChat,
-                surface: ExecutionSurface::DesktopWorkspaceChat,
-            },
             "怎么样？你看下本机docker里面有什么可启动的容器",
-        );
+        )
+        .expect("fresh docker request should resolve");
 
-        match prepared
-            .first_party_routing_decision
-            .expect("fresh docker request should resolve")
-        {
+        match decision {
             FirstPartyRoutingDecision::Execute(plan) => match plan.steps.as_slice() {
                 [runtime_kernel::ExecutionPlanStep {
                     intent: FirstPartyExecutionIntent::RunControlledTerminal(request),
@@ -12193,7 +9501,6 @@ mod tests {
             },
             _ => panic!("expected execution decision"),
         }
-        assert!(prepared.run_status_follow_up.is_none());
     }
 
     #[test]
@@ -12373,19 +9680,6 @@ mod tests {
         .expect_err("empty prompt should fail");
 
         assert!(error.contains("empty"));
-    }
-
-    #[test]
-    fn focus_open_approval_prefers_the_pending_review_task() {
-        let mut store = seed_runtime_store().expect("fixture should parse");
-
-        focus_open_approval(&mut store);
-
-        assert_eq!(store.workspace_focus.mode, "approval");
-        assert_eq!(
-            store.workspace_focus.task_id.as_deref(),
-            Some("task_review_publish")
-        );
     }
 
     #[test]
@@ -12623,38 +9917,13 @@ mod tests {
     }
 
     #[test]
-    fn set_workspace_focus_targets_the_requested_task() {
-        let mut store = seed_runtime_store().expect("fixture should parse");
-
-        set_workspace_focus(&mut store, "task_digest_youtube")
-            .expect("existing task should become the workspace focus");
-
-        assert_eq!(store.workspace_focus.mode, "task");
-        assert_eq!(
-            store.workspace_focus.task_id.as_deref(),
-            Some("task_digest_youtube")
-        );
-    }
-
-    #[test]
-    fn set_workspace_focus_switches_to_the_task_conversation() {
-        let mut store = seed_runtime_store().expect("fixture should parse");
-
-        set_workspace_focus(&mut store, "task_waiting_note")
-            .expect("existing task should become the workspace focus");
-
-        assert_eq!(store.active_conversation_id, "conv_notes");
-        assert_eq!(
-            store.workspace_focus.task_id.as_deref(),
-            Some("task_waiting_note")
-        );
-    }
-
-    #[test]
     fn workspace_message_updates_the_focused_task_when_direction_changes() {
         let mut store = seed_runtime_store().expect("fixture should parse");
-        set_workspace_focus(&mut store, "task_waiting_note")
-            .expect("existing task should become the workspace focus");
+        store.active_conversation_id = "conv_notes".to_string();
+        store.workspace_focus = RuntimeWorkspaceFocus {
+            mode: "task".to_string(),
+            task_id: Some("task_waiting_note".to_string()),
+        };
 
         apply_workspace_message(
             &mut store,
@@ -12702,12 +9971,11 @@ mod tests {
         with_mock_agent_runtime_bridge("direct", || {
             let temp_dir = tempfile::tempdir().expect("tempdir should create");
 
-            let raw_snapshot =
-                tauri::async_runtime::block_on(native_bridge_submit_quick_prompt_json(
-                    "Reply with READY.",
-                    Some(temp_dir.path().to_path_buf()),
-                ))
-                .expect("native quick prompt should return a snapshot");
+            let raw_snapshot = native_bridge_result(native_bridge_submit_quick_prompt_json(
+                "Reply with READY.",
+                Some(temp_dir.path().to_path_buf()),
+            ))
+            .expect("native quick prompt should return a snapshot");
             let snapshot: serde_json::Value =
                 serde_json::from_str(&raw_snapshot).expect("snapshot json should parse");
 
@@ -12759,12 +10027,11 @@ mod tests {
                 .expect("conversations should be present")
                 .len();
 
-            let raw_snapshot =
-                tauri::async_runtime::block_on(native_bridge_submit_quick_prompt_json(
-                    "23 * (7 + 5) 等于多少？",
-                    Some(temp_dir.path().to_path_buf()),
-                ))
-                .expect("transient quick prompt should return a snapshot");
+            let raw_snapshot = native_bridge_result(native_bridge_submit_quick_prompt_json(
+                "23 * (7 + 5) 等于多少？",
+                Some(temp_dir.path().to_path_buf()),
+            ))
+            .expect("transient quick prompt should return a snapshot");
             let snapshot: serde_json::Value =
                 serde_json::from_str(&raw_snapshot).expect("snapshot json should parse");
 
@@ -12788,12 +10055,11 @@ mod tests {
         with_mock_agent_runtime_bridge("tool", || {
             let temp_dir = tempfile::tempdir().expect("tempdir should create");
 
-            let raw_snapshot =
-                tauri::async_runtime::block_on(native_bridge_submit_workspace_message_json(
-                    "Use a tool and finish the task.",
-                    Some(temp_dir.path().to_path_buf()),
-                ))
-                .expect("native workspace message should return a snapshot");
+            let raw_snapshot = native_bridge_result(native_bridge_submit_workspace_message_json(
+                "Use a tool and finish the task.",
+                Some(temp_dir.path().to_path_buf()),
+            ))
+            .expect("native workspace message should return a snapshot");
             let snapshot: serde_json::Value =
                 serde_json::from_str(&raw_snapshot).expect("snapshot json should parse");
 
@@ -12827,12 +10093,11 @@ mod tests {
         with_mock_agent_runtime_bridge("approval", || {
             let temp_dir = tempfile::tempdir().expect("tempdir should create");
 
-            let raw_snapshot =
-                tauri::async_runtime::block_on(native_bridge_submit_workspace_message_json(
-                    "Run an approval-gated Bash check.",
-                    Some(temp_dir.path().to_path_buf()),
-                ))
-                .expect("approval-gated workspace message should return a snapshot");
+            let raw_snapshot = native_bridge_result(native_bridge_submit_workspace_message_json(
+                "Run an approval-gated Bash check.",
+                Some(temp_dir.path().to_path_buf()),
+            ))
+            .expect("approval-gated workspace message should return a snapshot");
             let snapshot: serde_json::Value =
                 serde_json::from_str(&raw_snapshot).expect("snapshot json should parse");
             let task_id = snapshot["tasks"][0]["task_id"]
@@ -12896,12 +10161,11 @@ mod tests {
         with_mock_agent_runtime_bridge("approval-chain", || {
             let temp_dir = tempfile::tempdir().expect("tempdir should create");
 
-            let raw_snapshot =
-                tauri::async_runtime::block_on(native_bridge_submit_workspace_message_json(
-                    "Run an approval-gated multi-step Bash check.",
-                    Some(temp_dir.path().to_path_buf()),
-                ))
-                .expect("approval-gated workspace message should return a snapshot");
+            let raw_snapshot = native_bridge_result(native_bridge_submit_workspace_message_json(
+                "Run an approval-gated multi-step Bash check.",
+                Some(temp_dir.path().to_path_buf()),
+            ))
+            .expect("approval-gated workspace message should return a snapshot");
             let snapshot: serde_json::Value =
                 serde_json::from_str(&raw_snapshot).expect("snapshot json should parse");
             let task_id = snapshot["tasks"][0]["task_id"]
@@ -13003,16 +10267,15 @@ mod tests {
     }
 
     #[test]
-    fn native_bridge_task_action_replays_when_sdk_pending_approval_was_lost() {
+    fn native_bridge_task_action_marks_degraded_when_sdk_pending_approval_was_lost() {
         with_mock_agent_runtime_bridge("approval", || {
             let temp_dir = tempfile::tempdir().expect("tempdir should create");
 
-            let raw_snapshot =
-                tauri::async_runtime::block_on(native_bridge_submit_workspace_message_json(
-                    "Run an approval-gated Bash check.",
-                    Some(temp_dir.path().to_path_buf()),
-                ))
-                .expect("approval-gated workspace message should return a snapshot");
+            let raw_snapshot = native_bridge_result(native_bridge_submit_workspace_message_json(
+                "Run an approval-gated Bash check.",
+                Some(temp_dir.path().to_path_buf()),
+            ))
+            .expect("approval-gated workspace message should return a snapshot");
             let snapshot: serde_json::Value =
                 serde_json::from_str(&raw_snapshot).expect("snapshot json should parse");
             let task_id = snapshot["tasks"][0]["task_id"]
@@ -13033,17 +10296,31 @@ mod tests {
                 "allow_once",
                 Some(temp_dir.path().to_path_buf()),
             )
-            .expect("allow once should replay the SDK bridge run when pending approval is stale");
+            .expect("allow once should commit a degraded state when pending approval is stale");
             let snapshot: serde_json::Value =
                 serde_json::from_str(&raw_snapshot).expect("snapshot json should parse");
 
-            assert_eq!(
-                snapshot["tasks"][0]["status"],
-                serde_json::json!("completed")
-            );
+            assert_eq!(snapshot["tasks"][0]["status"], serde_json::json!("failed"));
             assert_eq!(
                 snapshot["approval_requests"][0]["status"],
                 serde_json::json!("approved")
+            );
+            assert_eq!(
+                snapshot["chat_runtime"]["status"],
+                serde_json::json!("degraded")
+            );
+            assert_eq!(
+                snapshot["last_run_state"]["stop_reason"],
+                serde_json::json!("terminal_approval_resume_failed")
+            );
+            let assistant_reply = snapshot["active_conversation"]["messages"]
+                .as_array()
+                .and_then(|messages| messages.last())
+                .and_then(|message| message["content"].as_str())
+                .unwrap_or_default();
+            assert!(
+                assistant_reply.contains("no longer alive"),
+                "lost approval sessions should be surfaced as degraded instead of replayed"
             );
         });
     }
@@ -13053,12 +10330,11 @@ mod tests {
         with_mock_agent_runtime_bridge("approval", || {
             let temp_dir = tempfile::tempdir().expect("tempdir should create");
 
-            let raw_snapshot =
-                tauri::async_runtime::block_on(native_bridge_submit_workspace_message_json(
-                    "Run an approval-gated Bash check.",
-                    Some(temp_dir.path().to_path_buf()),
-                ))
-                .expect("approval-gated workspace message should return a snapshot");
+            let raw_snapshot = native_bridge_result(native_bridge_submit_workspace_message_json(
+                "Run an approval-gated Bash check.",
+                Some(temp_dir.path().to_path_buf()),
+            ))
+            .expect("approval-gated workspace message should return a snapshot");
             let snapshot: serde_json::Value =
                 serde_json::from_str(&raw_snapshot).expect("snapshot json should parse");
             let task_id = snapshot["tasks"][0]["task_id"]
@@ -13150,12 +10426,11 @@ mod tests {
                 serde_json::json!(true)
             );
 
-            let raw_snapshot =
-                tauri::async_runtime::block_on(native_bridge_submit_workspace_message_json(
-                    "Run an approval-gated Bash check.",
-                    Some(temp_dir.path().to_path_buf()),
-                ))
-                .expect("highest authorization should auto-approve the bridge request");
+            let raw_snapshot = native_bridge_result(native_bridge_submit_workspace_message_json(
+                "Run an approval-gated Bash check.",
+                Some(temp_dir.path().to_path_buf()),
+            ))
+            .expect("highest authorization should auto-approve the bridge request");
             let snapshot: serde_json::Value =
                 serde_json::from_str(&raw_snapshot).expect("snapshot json should parse");
 
@@ -13183,12 +10458,11 @@ mod tests {
         with_mock_agent_runtime_bridge("approval", || {
             let temp_dir = tempfile::tempdir().expect("tempdir should create");
 
-            let raw_snapshot =
-                tauri::async_runtime::block_on(native_bridge_submit_workspace_message_json(
-                    "Run an approval-gated Bash check.",
-                    Some(temp_dir.path().to_path_buf()),
-                ))
-                .expect("approval-gated workspace message should return a snapshot");
+            let raw_snapshot = native_bridge_result(native_bridge_submit_workspace_message_json(
+                "Run an approval-gated Bash check.",
+                Some(temp_dir.path().to_path_buf()),
+            ))
+            .expect("approval-gated workspace message should return a snapshot");
             let snapshot: serde_json::Value =
                 serde_json::from_str(&raw_snapshot).expect("snapshot json should parse");
             let task_id = snapshot["tasks"][0]["task_id"]
@@ -13240,12 +10514,11 @@ mod tests {
         with_mock_agent_runtime_bridge("websearch", || {
             let temp_dir = tempfile::tempdir().expect("tempdir should create");
 
-            let raw_snapshot =
-                tauri::async_runtime::block_on(native_bridge_submit_workspace_message_json(
-                    "Search the web for the AxonChain official website.",
-                    Some(temp_dir.path().to_path_buf()),
-                ))
-                .expect("web search should complete through the SDK bridge");
+            let raw_snapshot = native_bridge_result(native_bridge_submit_workspace_message_json(
+                "Search the web for the AxonChain official website.",
+                Some(temp_dir.path().to_path_buf()),
+            ))
+            .expect("web search should complete through the SDK bridge");
             let snapshot: serde_json::Value =
                 serde_json::from_str(&raw_snapshot).expect("snapshot json should parse");
 
@@ -13285,12 +10558,11 @@ mod tests {
         with_mock_agent_runtime_bridge("nonbash", || {
             let temp_dir = tempfile::tempdir().expect("tempdir should create");
 
-            let raw_snapshot =
-                tauri::async_runtime::block_on(native_bridge_submit_workspace_message_json(
-                    "Try an unsupported non-Bash file mutation.",
-                    Some(temp_dir.path().to_path_buf()),
-                ))
-                .expect("non-Bash tool request should return a snapshot");
+            let raw_snapshot = native_bridge_result(native_bridge_submit_workspace_message_json(
+                "Try an unsupported non-Bash file mutation.",
+                Some(temp_dir.path().to_path_buf()),
+            ))
+            .expect("non-Bash tool request should return a snapshot");
             let snapshot: serde_json::Value =
                 serde_json::from_str(&raw_snapshot).expect("snapshot json should parse");
 
@@ -13326,12 +10598,11 @@ mod tests {
         with_mock_agent_runtime_bridge("error", || {
             let temp_dir = tempfile::tempdir().expect("tempdir should create");
 
-            let raw_snapshot =
-                tauri::async_runtime::block_on(native_bridge_submit_quick_prompt_json(
-                    "fail this turn",
-                    Some(temp_dir.path().to_path_buf()),
-                ))
-                .expect("native quick prompt should still return a snapshot");
+            let raw_snapshot = native_bridge_result(native_bridge_submit_quick_prompt_json(
+                "fail this turn",
+                Some(temp_dir.path().to_path_buf()),
+            ))
+            .expect("native quick prompt should still return a snapshot");
             let snapshot: serde_json::Value =
                 serde_json::from_str(&raw_snapshot).expect("snapshot json should parse");
 
@@ -13369,7 +10640,7 @@ mod tests {
     fn native_bridge_quick_prompt_can_queue_a_task_handoff() {
         let temp_dir = tempfile::tempdir().expect("tempdir should create");
 
-        let raw_snapshot = tauri::async_runtime::block_on(native_bridge_submit_quick_prompt_json(
+        let raw_snapshot = native_bridge_result(native_bridge_submit_quick_prompt_json(
             "Design a quiet macOS automation palette for local terminal themes.",
             Some(temp_dir.path().to_path_buf()),
         ))
@@ -13389,7 +10660,7 @@ mod tests {
     fn native_bridge_quick_prompt_can_execute_first_party_reminders() {
         let temp_dir = tempfile::tempdir().expect("tempdir should create");
 
-        let raw_snapshot = tauri::async_runtime::block_on(native_bridge_submit_quick_prompt_json(
+        let raw_snapshot = native_bridge_result(native_bridge_submit_quick_prompt_json(
             "明天8点通知我吃药💊",
             Some(temp_dir.path().to_path_buf()),
         ))
@@ -13412,7 +10683,7 @@ mod tests {
     fn native_bridge_quick_prompt_can_answer_current_time_from_runtime_facts() {
         let temp_dir = tempfile::tempdir().expect("tempdir should create");
 
-        let raw_snapshot = tauri::async_runtime::block_on(native_bridge_submit_quick_prompt_json(
+        let raw_snapshot = native_bridge_result(native_bridge_submit_quick_prompt_json(
             "现在是几点",
             Some(temp_dir.path().to_path_buf()),
         ))
@@ -13448,12 +10719,11 @@ mod tests {
     fn native_bridge_workspace_message_executes_wrapped_reminder_task_request() {
         let temp_dir = tempfile::tempdir().expect("tempdir should create");
 
-        let raw_snapshot =
-            tauri::async_runtime::block_on(native_bridge_submit_workspace_message_json(
-                "创建一个任务，在12点设定一个提醒我吃药的任务",
-                Some(temp_dir.path().to_path_buf()),
-            ))
-            .expect("native workspace message should return a snapshot");
+        let raw_snapshot = native_bridge_result(native_bridge_submit_workspace_message_json(
+            "创建一个任务，在12点设定一个提醒我吃药的任务",
+            Some(temp_dir.path().to_path_buf()),
+        ))
+        .expect("native workspace message should return a snapshot");
         let snapshot: serde_json::Value =
             serde_json::from_str(&raw_snapshot).expect("snapshot json should parse");
 
@@ -13481,12 +10751,11 @@ mod tests {
             .expect("listener should expose local addr")
             .port();
 
-        let raw_snapshot =
-            tauri::async_runtime::block_on(native_bridge_submit_workspace_message_json(
-                &format!("你看看{port}端口有没有被占用"),
-                Some(temp_dir.path().to_path_buf()),
-            ))
-            .expect("native workspace message should return a snapshot");
+        let raw_snapshot = native_bridge_result(native_bridge_submit_workspace_message_json(
+            &format!("你看看{port}端口有没有被占用"),
+            Some(temp_dir.path().to_path_buf()),
+        ))
+        .expect("native workspace message should return a snapshot");
         let snapshot: serde_json::Value =
             serde_json::from_str(&raw_snapshot).expect("snapshot json should parse");
 
@@ -13517,12 +10786,11 @@ mod tests {
     fn native_bridge_workspace_message_can_complete_a_terminal_host_diagnostics_request() {
         let temp_dir = tempfile::tempdir().expect("tempdir should create");
 
-        let raw_snapshot =
-            tauri::async_runtime::block_on(native_bridge_submit_workspace_message_json(
-                "获取现在的本地时间，告诉我此时此刻本地有哪些python程序在运行",
-                Some(temp_dir.path().to_path_buf()),
-            ))
-            .expect("compound local ops request should return a snapshot");
+        let raw_snapshot = native_bridge_result(native_bridge_submit_workspace_message_json(
+            "获取现在的本地时间，告诉我此时此刻本地有哪些python程序在运行",
+            Some(temp_dir.path().to_path_buf()),
+        ))
+        .expect("compound local ops request should return a snapshot");
         let snapshot: serde_json::Value =
             serde_json::from_str(&raw_snapshot).expect("snapshot json should parse");
 
@@ -13550,12 +10818,11 @@ mod tests {
     fn native_bridge_workspace_message_can_run_the_controlled_terminal_lane_for_docker() {
         let temp_dir = tempfile::tempdir().expect("tempdir should create");
 
-        let raw_snapshot =
-            tauri::async_runtime::block_on(native_bridge_submit_workspace_message_json(
-                "你看下本机docker里面有什么可启动的容器",
-                Some(temp_dir.path().to_path_buf()),
-            ))
-            .expect("native workspace message should return a snapshot");
+        let raw_snapshot = native_bridge_result(native_bridge_submit_workspace_message_json(
+            "你看下本机docker里面有什么可启动的容器",
+            Some(temp_dir.path().to_path_buf()),
+        ))
+        .expect("native workspace message should return a snapshot");
         let snapshot: serde_json::Value =
             serde_json::from_str(&raw_snapshot).expect("snapshot json should parse");
 
@@ -13607,12 +10874,11 @@ mod tests {
         .expect("run script should be written");
 
         let initial_prompt = format!("cd {} 需要运行的文件是 run.sh", app_dir.display());
-        let initial_snapshot =
-            tauri::async_runtime::block_on(native_bridge_submit_workspace_message_json(
-                &initial_prompt,
-                Some(temp_dir.path().to_path_buf()),
-            ))
-            .expect("initial script request should return a snapshot");
+        let initial_snapshot = native_bridge_result(native_bridge_submit_workspace_message_json(
+            &initial_prompt,
+            Some(temp_dir.path().to_path_buf()),
+        ))
+        .expect("initial script request should return a snapshot");
         let initial_snapshot: serde_json::Value =
             serde_json::from_str(&initial_snapshot).expect("initial snapshot json should parse");
 
@@ -13635,12 +10901,11 @@ mod tests {
                 .contains("需要你的确认")
         );
 
-        let raw_snapshot =
-            tauri::async_runtime::block_on(native_bridge_submit_workspace_message_json(
-                "执行",
-                Some(temp_dir.path().to_path_buf()),
-            ))
-            .expect("confirmation should continue the same script run");
+        let raw_snapshot = native_bridge_result(native_bridge_submit_workspace_message_json(
+            "执行",
+            Some(temp_dir.path().to_path_buf()),
+        ))
+        .expect("confirmation should continue the same script run");
         let snapshot: serde_json::Value =
             serde_json::from_str(&raw_snapshot).expect("follow-up snapshot json should parse");
 
@@ -13679,12 +10944,11 @@ mod tests {
     fn native_bridge_workspace_message_returns_clarify_needed_for_partial_reminder() {
         let temp_dir = tempfile::tempdir().expect("tempdir should create");
 
-        let raw_snapshot =
-            tauri::async_runtime::block_on(native_bridge_submit_workspace_message_json(
-                "创建一个任务，提醒我吃药",
-                Some(temp_dir.path().to_path_buf()),
-            ))
-            .expect("native workspace message should return a snapshot");
+        let raw_snapshot = native_bridge_result(native_bridge_submit_workspace_message_json(
+            "创建一个任务，提醒我吃药",
+            Some(temp_dir.path().to_path_buf()),
+        ))
+        .expect("native workspace message should return a snapshot");
         let snapshot: serde_json::Value =
             serde_json::from_str(&raw_snapshot).expect("snapshot json should parse");
 
@@ -13707,12 +10971,11 @@ mod tests {
     fn native_bridge_follow_up_completes_a_pending_reminder_clarification() {
         let temp_dir = tempfile::tempdir().expect("tempdir should create");
 
-        let initial_snapshot =
-            tauri::async_runtime::block_on(native_bridge_submit_workspace_message_json(
-                "创建一个任务，提醒我吃药",
-                Some(temp_dir.path().to_path_buf()),
-            ))
-            .expect("initial reminder request should return a snapshot");
+        let initial_snapshot = native_bridge_result(native_bridge_submit_workspace_message_json(
+            "创建一个任务，提醒我吃药",
+            Some(temp_dir.path().to_path_buf()),
+        ))
+        .expect("initial reminder request should return a snapshot");
         let initial_snapshot: serde_json::Value =
             serde_json::from_str(&initial_snapshot).expect("initial snapshot json should parse");
         assert_eq!(
@@ -13720,12 +10983,11 @@ mod tests {
             serde_json::json!("clarify_needed")
         );
 
-        let raw_snapshot =
-            tauri::async_runtime::block_on(native_bridge_submit_workspace_message_json(
-                "今天12点",
-                Some(temp_dir.path().to_path_buf()),
-            ))
-            .expect("follow-up reminder request should return a snapshot");
+        let raw_snapshot = native_bridge_result(native_bridge_submit_workspace_message_json(
+            "今天12点",
+            Some(temp_dir.path().to_path_buf()),
+        ))
+        .expect("follow-up reminder request should return a snapshot");
         let snapshot: serde_json::Value =
             serde_json::from_str(&raw_snapshot).expect("snapshot json should parse");
 
@@ -13783,12 +11045,11 @@ mod tests {
         .expect("run script should be written");
 
         let initial_prompt = format!("cd {} 需要运行的文件是 run.sh", app_dir.display());
-        let initial_snapshot =
-            tauri::async_runtime::block_on(native_bridge_submit_workspace_message_json(
-                &initial_prompt,
-                Some(temp_dir.path().to_path_buf()),
-            ))
-            .expect("initial script request should return a snapshot");
+        let initial_snapshot = native_bridge_result(native_bridge_submit_workspace_message_json(
+            &initial_prompt,
+            Some(temp_dir.path().to_path_buf()),
+        ))
+        .expect("initial script request should return a snapshot");
         let initial_snapshot: serde_json::Value =
             serde_json::from_str(&initial_snapshot).expect("initial snapshot json should parse");
         let task_id = initial_snapshot["tasks"][0]["task_id"]
@@ -13870,8 +11131,10 @@ mod tests {
     #[test]
     fn switching_conversations_resets_workspace_focus() {
         let mut store = seed_runtime_store().expect("fixture should parse");
-        set_workspace_focus(&mut store, "task_digest_youtube")
-            .expect("existing task should become the workspace focus");
+        store.workspace_focus = RuntimeWorkspaceFocus {
+            mode: "task".to_string(),
+            task_id: Some("task_digest_youtube".to_string()),
+        };
 
         store
             .set_active_conversation("conv_notes")
@@ -13920,155 +11183,6 @@ mod tests {
     }
 
     #[test]
-    fn refresh_module_runs_advances_a_queued_quick_run_into_dispatch() {
-        let mut store = seed_runtime_store().expect("fixture should parse");
-        apply_quick_prompt(
-            &mut store,
-            ExecutionSurface::DesktopQuickInput,
-            "Check the newest creator uploads and queue a digest.",
-            "Queued in the workspace.",
-            &quick_input_reply(
-                "xenodia",
-                "Queued in the workspace.",
-                &crate::default_runtime_agent_profile(),
-            ),
-        )
-        .expect("quick prompt should apply");
-
-        let changed = advance_module_runs(&mut store);
-
-        assert!(changed);
-        assert_eq!(
-            store.module_runs[0].module_run.status,
-            module_gateway::ModuleRunStatus::Running
-        );
-        assert_eq!(
-            store.module_runs[0].module_run.stage,
-            module_gateway::ModuleRunStage::Dispatch
-        );
-        assert_eq!(store.tasks[0].status, "running");
-        assert_eq!(store.tasks[0].current_stage, "dispatching");
-    }
-
-    #[test]
-    fn refresh_module_runs_finalizes_running_digest_runs() {
-        let mut store = seed_runtime_store().expect("fixture should parse");
-
-        let changed = advance_module_runs(&mut store);
-
-        assert!(changed);
-        let digest_run = store
-            .module_runs
-            .iter()
-            .find(|run| run.module_run.module_run_id == "run_digest_01")
-            .expect("digest run should exist");
-        let digest_task = store
-            .tasks
-            .iter()
-            .find(|task| task.task_id == "task_digest_youtube")
-            .expect("digest task should exist");
-
-        assert_eq!(
-            digest_run.module_run.status,
-            module_gateway::ModuleRunStatus::Completed
-        );
-        assert_eq!(
-            digest_run.module_run.stage,
-            module_gateway::ModuleRunStage::Finalized
-        );
-        assert!(digest_run.module_run.artifacts.len() >= 2);
-        assert_eq!(digest_task.status, "completed");
-        assert_eq!(digest_task.current_stage, "finalized");
-        assert_eq!(digest_task.progress_percent, 100);
-        assert!(digest_task.artifact_count >= 5);
-    }
-
-    #[test]
-    fn remote_module_status_response_updates_task_state_and_artifacts() {
-        let mut store = seed_runtime_store().expect("fixture should parse");
-
-        let changed = apply_remote_module_status_response(
-            &mut store,
-            module_gateway::ModuleStatusResponse {
-                module_run: module_gateway::ModuleRun {
-                    module_run_id: "run_digest_01".to_string(),
-                    task_id: "task_digest_youtube".to_string(),
-                    module_id: "content.youtube.monitor".to_string(),
-                    capability_id: "digest_recent_uploads".to_string(),
-                    status: module_gateway::ModuleRunStatus::Completed,
-                    stage: module_gateway::ModuleRunStage::Finalized,
-                    attempt_count: 1,
-                    result_summary: Some(
-                        "Remote module finished digest processing and returned a finalized report."
-                            .to_string(),
-                    ),
-                    artifacts: vec![
-                        module_gateway::ArtifactEnvelope {
-                            artifact_id: "artifact_digest_board".to_string(),
-                            artifact_type: "digest_summary".to_string(),
-                            title: "Morning digest draft".to_string(),
-                            summary: "Three creator uploads ranked by importance.".to_string(),
-                            payload_ref: "memory://digest/14".to_string(),
-                            inline_preview: None,
-                            domain_tags: vec!["youtube".to_string(), "digest".to_string()],
-                        },
-                        module_gateway::ArtifactEnvelope {
-                            artifact_id: "artifact_execution_report".to_string(),
-                            artifact_type: "execution_report".to_string(),
-                            title: "Execution report".to_string(),
-                            summary: "Finalized digest report from remote module.".to_string(),
-                            payload_ref: "memory://digest/14/report".to_string(),
-                            inline_preview: None,
-                            domain_tags: vec!["youtube".to_string(), "finalized".to_string()],
-                        },
-                    ],
-                    created_at: "2026-04-14T09:55:00Z".to_string(),
-                    updated_at: "now".to_string(),
-                },
-                recoverability: None,
-                result_preview: None,
-            },
-        );
-
-        assert!(changed);
-        let digest_task = store
-            .tasks
-            .iter()
-            .find(|task| task.task_id == "task_digest_youtube")
-            .expect("digest task should exist");
-
-        assert_eq!(digest_task.status, "completed");
-        assert_eq!(digest_task.current_stage, "finalized");
-        assert_eq!(digest_task.progress_percent, 100);
-        assert_eq!(digest_task.artifact_count, 5);
-        assert!(digest_task
-            .summary
-            .contains("Remote module finished digest processing"));
-    }
-
-    #[test]
-    fn module_refresh_gate_throttles_close_successive_calls() {
-        let mut last_refresh_at = None;
-        let start = Instant::now();
-
-        assert!(should_refresh_module_runs(
-            &mut last_refresh_at,
-            start,
-            Duration::from_millis(3900)
-        ));
-        assert!(!should_refresh_module_runs(
-            &mut last_refresh_at,
-            start + Duration::from_millis(1200),
-            Duration::from_millis(3900)
-        ));
-        assert!(should_refresh_module_runs(
-            &mut last_refresh_at,
-            start + Duration::from_millis(4100),
-            Duration::from_millis(3900)
-        ));
-    }
-
-    #[test]
     fn claude_sdk_turn_prompt_preserves_full_history_before_context_threshold() {
         let store = default_runtime_store();
         let active_agent_profile = store
@@ -14092,9 +11206,6 @@ mod tests {
         };
         let prepared = PreparedTurnContext {
             active_agent_profile,
-            first_party_routing_decision: None,
-            run_status_follow_up: None,
-            grounded_runtime_fact_reply: None,
             workspace_messages,
             should_reuse_active_conversation: true,
         };

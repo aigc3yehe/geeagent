@@ -8,7 +8,6 @@
 ![AppKit](https://img.shields.io/badge/AppKit-macOS_Framework-1F6FEB)
 ![Rust](https://img.shields.io/badge/Rust-Workspace-000000?logo=rust&logoColor=white)
 ![Cargo](https://img.shields.io/badge/Cargo-Build_System-8C4A2F?logo=rust&logoColor=white)
-![Tauri](https://img.shields.io/badge/Tauri-v2-24C8DB?logo=tauri&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 
 GeeAgent 是一个面向 macOS 的 AI 工作台项目，重点探索陪伴式交互、可视化任务执行，以及模块化运行时编排。
@@ -32,7 +31,7 @@ GeeAgent 当前主要使用以下组件：
 - `SwiftUI` 与 `AppKit`：原生 macOS 外壳和界面
 - `Swift Package Manager`：macOS 应用包管理
 - `Rust` 与 `Cargo`：运行时逻辑、执行契约、路由与工作区状态
-- `Tauri v2`：用于壳层与运行时的桥接组件
+- 独立 Rust runtime bridge 二进制：由原生 macOS 应用构建和随包分发
 - `TOML`：路由与模块配置
 
 ## 架构概览
@@ -57,7 +56,8 @@ GeeAgent 目前主要由三层组成：
 核心目录：
 
 - `apps/macos-bridge`：原生 macOS 外壳
-- `apps/desktop-shell/src-tauri`：Rust bridge / runtime 集成层
+- `apps/runtime-bridge`：原生 macOS 外壳调用的 Rust bridge 二进制
+- `apps/desktop-shell/src-tauri`：过渡期 Rust runtime library，后续继续迁出旧壳目录
 - `crates/*`：核心运行时 crate
 - `config/*`：路由与模块配置
 - `examples/agent-packs/*`：示例 agent pack
@@ -77,13 +77,13 @@ GeeAgent 目前主要由三层组成：
 swift build --package-path apps/macos-bridge
 ```
 
-### 构建并启动工作台
+### 构建并启动原生工作台应用
 
 ```bash
 bash apps/macos-bridge/script/build_and_run.sh
 ```
 
-这个命令会同时构建原生 macOS 应用以及工作台依赖的 Rust runtime bridge。
+这个命令会同时构建原生 macOS 应用以及随包分发的 Rust runtime bridge。
 
 ### 运行 Rust 工作区测试
 

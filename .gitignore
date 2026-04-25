@@ -15,6 +15,7 @@
 /apps/desktop-shell/node_modules/
 /apps/desktop-shell/dist/
 /apps/desktop-shell/src-tauri/target/
+/apps/runtime-bridge/target/
 /target/
 *.app/
 

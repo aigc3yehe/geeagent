@@ -185,10 +185,7 @@ fn run(cli: Cli) -> Result<(), String> {
         },
         CliCommand::Chat { message } => {
             let message = join_words(&message, "message")?;
-            let raw = tauri::async_runtime::block_on(native_bridge_submit_workspace_message_json(
-                &message,
-                cli.config_dir,
-            ))?;
+            let raw = native_bridge_submit_workspace_message_json(&message, cli.config_dir)?;
             if cli.json {
                 println!("{raw}");
                 return Ok(());
@@ -198,10 +195,7 @@ fn run(cli: Cli) -> Result<(), String> {
         }
         CliCommand::Quick { prompt } => {
             let prompt = join_words(&prompt, "prompt")?;
-            let raw = tauri::async_runtime::block_on(native_bridge_submit_quick_prompt_json(
-                &prompt,
-                cli.config_dir,
-            ))?;
+            let raw = native_bridge_submit_quick_prompt_json(&prompt, cli.config_dir)?;
             if cli.json {
                 println!("{raw}");
                 return Ok(());

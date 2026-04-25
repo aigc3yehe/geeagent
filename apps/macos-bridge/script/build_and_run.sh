@@ -15,16 +15,24 @@ APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 SOURCE_RESOURCES="$ROOT_DIR/Resources"
+SOURCE_GEARS="$ROOT_DIR/Sources/GeeAgentMac/gears"
 REPO_ROOT="$(cd "$ROOT_DIR/../.." && pwd)"
 ROOT_BACKGROUND="$REPO_ROOT/bg.png"
-TAURI_MANIFEST="$REPO_ROOT/apps/desktop-shell/src-tauri/Cargo.toml"
-RUNTIME_BRIDGE_BIN="$REPO_ROOT/apps/desktop-shell/src-tauri/target/debug/shell_runtime_bridge"
+RUNTIME_BRIDGE_MANIFEST="$REPO_ROOT/apps/runtime-bridge/Cargo.toml"
+RUNTIME_BRIDGE_BIN="$REPO_ROOT/apps/runtime-bridge/target/debug/shell_runtime_bridge"
 
-pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+stop_running_app_processes() {
+  pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+  pkill -f "$APP_RESOURCES/shell_runtime_bridge serve" >/dev/null 2>&1 || true
+  pkill -f "$REPO_ROOT/apps/agent-runtime-bridge/dist/index.js" >/dev/null 2>&1 || true
+  pkill -f "$REPO_ROOT/apps/agent-runtime-bridge/node_modules/@anthropic-ai/claude-agent-sdk" >/dev/null 2>&1 || true
+}
+
+stop_running_app_processes
 
 swift build --package-path "$ROOT_DIR"
 BUILD_BINARY="$(swift build --package-path "$ROOT_DIR" --show-bin-path)/$APP_NAME"
-cargo build --manifest-path "$TAURI_MANIFEST" --bin shell_runtime_bridge
+cargo build --manifest-path "$RUNTIME_BRIDGE_MANIFEST" --bin shell_runtime_bridge
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS"
@@ -33,6 +41,9 @@ cp "$BUILD_BINARY" "$APP_BINARY"
 cp "$RUNTIME_BRIDGE_BIN" "$APP_RESOURCES/shell_runtime_bridge"
 if [ -d "$SOURCE_RESOURCES" ]; then
   cp -R "$SOURCE_RESOURCES"/. "$APP_RESOURCES"/
+fi
+if [ -d "$SOURCE_GEARS" ]; then
+  cp -R "$SOURCE_GEARS" "$APP_RESOURCES/gears"
 fi
 if [ -f "$ROOT_BACKGROUND" ] && [ ! -f "$APP_RESOURCES/bg.png" ]; then
   cp "$ROOT_BACKGROUND" "$APP_RESOURCES/bg.png"

@@ -151,11 +151,28 @@ enum GearRegistry {
 
     private static func gearRoots() -> [URL] {
         var roots: [URL] = []
-        if let bundledRoot = Bundle.module.resourceURL?.appendingPathComponent(bundledGearsDirectoryName),
-           FileManager.default.fileExists(atPath: bundledRoot.path)
-        {
-            roots.append(bundledRoot)
+        let runningFromAppBundle = Bundle.main.bundleURL.pathExtension == "app"
+
+        if let appResourceURL = Bundle.main.resourceURL {
+            let appBundledRoot = appResourceURL.appendingPathComponent(
+                bundledGearsDirectoryName,
+                isDirectory: true
+            )
+            if FileManager.default.fileExists(atPath: appBundledRoot.path) {
+                roots.append(appBundledRoot)
+            }
         }
+
+        if !runningFromAppBundle,
+           let swiftPMBundledRoot = Bundle.module.resourceURL?.appendingPathComponent(
+               bundledGearsDirectoryName,
+               isDirectory: true
+           ),
+           FileManager.default.fileExists(atPath: swiftPMBundledRoot.path)
+        {
+            roots.append(swiftPMBundledRoot)
+        }
+
         if let supportRoot = try? FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,

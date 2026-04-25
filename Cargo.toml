@@ -11,7 +11,7 @@ members = [
   "crates/experience-registry",
   "crates/workspace-runtime",
 ]
-exclude = ["apps/desktop-shell/src-tauri"]
+exclude = ["apps/desktop-shell/src-tauri", "apps/runtime-bridge"]
 resolver = "2"
 
 [workspace.package]

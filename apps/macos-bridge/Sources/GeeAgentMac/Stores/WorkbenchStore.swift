@@ -142,6 +142,10 @@ final class WorkbenchStore {
         refreshActiveLive2DState()
     }
 
+    func shutdownRuntime() {
+        (runtimeClient as? RustWorkbenchRuntimeClient)?.shutdown()
+    }
+
     var homeSummary: WorkbenchHomeSummary {
         WorkbenchHomeSummary(
             openTasksCount: openTasksCount,

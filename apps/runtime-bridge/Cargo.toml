@@ -1,0 +1,13 @@
+[package]
+name = "geeagent_runtime_bridge"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace]
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+geeagent_desktop_shell_lib = { package = "geeagent_desktop_shell", path = "../desktop-shell/src-tauri" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
