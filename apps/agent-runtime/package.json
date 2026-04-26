@@ -1,0 +1,24 @@
+{
+  "name": "@geeagent/agent-runtime",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && esbuild src/chat-runtime-cli.ts --bundle --platform=node --format=esm --outfile=dist/chat-runtime-cli.mjs && esbuild src/native-runtime/index.ts --bundle --platform=node --format=esm --outfile=dist/native-runtime/index.mjs",
+    "dev": "tsx src/index.ts",
+    "native:serve": "node dist/native-runtime/index.mjs serve",
+    "native:dev": "tsx src/native-runtime/index.ts serve",
+    "test": "node --test --import tsx src/gateway.test.ts src/session.test.ts src/runtime-process.test.ts src/chat-runtime.test.ts src/native-runtime.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.118",
+    "smol-toml": "^1.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.27.7",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,201 @@
+import {
+  loadChatRoutingSettings,
+  persistChatRoutingSettings,
+  type ChatRoutingSettings,
+} from "../chat-runtime.js";
+import { resolveConfigDir } from "./paths.js";
+import {
+  deleteAgentProfile,
+  installAgentPack,
+  reloadAgentProfile,
+  setActiveAgentProfile,
+} from "./store/agent-profiles.js";
+import {
+  activateConversation,
+  createConversation,
+  deleteConversation,
+} from "./store/conversations.js";
+import {
+  deleteTerminalAccessRule,
+} from "./store/terminal-permissions.js";
+import {
+  performTaskAction,
+  submitQuickPrompt,
+  submitWorkspaceMessage,
+} from "./turns.js";
+
+import {
+  loadRuntimeStore,
+  loadSecurityPreferences,
+  persistRuntimeStore,
+  persistSecurityPreferences,
+} from "./store/persistence.js";
+import { loadSnapshot, snapshotFromStore } from "./store/snapshot.js";
+import type { RuntimeCommandContext } from "./protocol.js";
+import { invokeTool, type ToolRequest } from "./tools.js";
+
+export async function handleNativeRuntimeCommand(
+  command: string,
+  args: string[] = [],
+  context: RuntimeCommandContext = {},
+): Promise<string> {
+  const configDir = resolveConfigDir(context.configDir);
+
+  switch (command) {
+    case "snapshot":
+      assertArgCount(command, args, 0);
+      return stringify(await loadSnapshot(configDir));
+    case "list-agent-profiles": {
+      assertArgCount(command, args, 0);
+      const snapshot = await loadSnapshot(configDir);
+      return stringify(snapshot.agent_profiles);
+    }
+    case "set-active-agent-profile":
+      assertArgCount(command, args, 1);
+      return mutateStore(configDir, async (store) => {
+        await setActiveAgentProfile(store, configDir, args[0]);
+      });
+    case "install-agent-pack":
+      assertArgCount(command, args, 1);
+      return mutateStore(configDir, async (store) => {
+        await installAgentPack(store, configDir, args[0]);
+      });
+    case "reload-agent-profile":
+      assertArgCount(command, args, 1);
+      return mutateStore(configDir, async (store) => {
+        await reloadAgentProfile(store, configDir, args[0]);
+      });
+    case "delete-agent-profile":
+      assertArgCount(command, args, 1);
+      return mutateStore(configDir, async (store) => {
+        await deleteAgentProfile(store, configDir, args[0]);
+      });
+    case "create-conversation":
+      assertArgCount(command, args, 0);
+      return mutateStore(configDir, (store) => {
+        createConversation(store);
+      });
+    case "set-active-conversation":
+      assertArgCount(command, args, 1);
+      return mutateStore(configDir, (store) => {
+        activateConversation(store, args[0]);
+      });
+    case "delete-conversation":
+      assertArgCount(command, args, 1);
+      return mutateStore(configDir, (store) => {
+        deleteConversation(store, args[0]);
+      });
+    case "get-chat-routing-settings":
+      assertArgCount(command, args, 0);
+      return stringify(await loadChatRoutingSettings(configDir));
+    case "save-chat-routing-settings":
+      assertArgCount(command, args, 1);
+      await persistChatRoutingSettings(configDir, parseSettings(args[0]));
+      return stringify(await loadSnapshot(configDir));
+    case "set-highest-authorization": {
+      assertArgCount(command, args, 1);
+      const current = await loadSecurityPreferences(configDir);
+      await persistSecurityPreferences(configDir, {
+        ...current,
+        highest_authorization_enabled: parseBoolean(args[0]),
+      });
+      return stringify(await loadSnapshot(configDir));
+    }
+    case "delete-terminal-access-rule":
+      assertArgCount(command, args, 1);
+      await deleteTerminalAccessRule(configDir, args[0]);
+      return stringify(await loadSnapshot(configDir));
+    case "submit-workspace-message":
+      assertArgCount(command, args, 1);
+      return stringify(await submitWorkspaceMessage(configDir, args[0]));
+    case "submit-quick-prompt":
+      assertArgCount(command, args, 1);
+      return stringify(await submitQuickPrompt(configDir, args[0]));
+    case "perform-task-action":
+      assertArgCount(command, args, 2);
+      return stringify(await performTaskAction(configDir, args[0], args[1]));
+    case "invoke-tool": {
+      assertArgCount(command, args, 1);
+      const request = parseToolRequest(args[0]);
+      const store = await loadRuntimeStore(configDir);
+      const activeProfile = store.agent_profiles.find(
+        (profile) => profile.id === store.active_agent_profile_id,
+      );
+      request.allowed_tool_ids = activeProfile?.allowed_tool_ids;
+      const security = await loadSecurityPreferences(configDir);
+      if (
+        security.highest_authorization_enabled &&
+        request.approval_token?.trim()
+      ) {
+        // Keep the explicit frontend approval token intact.
+      } else if (security.highest_authorization_enabled) {
+        request.approval_token = "highest_authorization";
+      }
+      return stringify(await invokeTool(request));
+    }
+    default:
+      throw new Error("unsupported command or wrong argument count");
+  }
+}
+
+async function mutateStore(
+  configDir: string,
+  mutate: (store: Awaited<ReturnType<typeof loadRuntimeStore>>) => void | Promise<void>,
+): Promise<string> {
+  const store = await loadRuntimeStore(configDir);
+  await mutate(store);
+  await persistRuntimeStore(configDir, store);
+  return stringify(await snapshotFromStore(store, configDir));
+}
+
+function parseSettings(raw: string): ChatRoutingSettings {
+  const parsed = JSON.parse(raw) as ChatRoutingSettings;
+  if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.routeClasses)) {
+    throw new Error("chat routing settings JSON is invalid");
+  }
+  return parsed;
+}
+
+function parseToolRequest(raw: string): ToolRequest {
+  const parsed = JSON.parse(raw) as Partial<ToolRequest>;
+  if (!parsed || typeof parsed !== "object" || typeof parsed.tool_id !== "string") {
+    throw new Error("invalid tool request JSON: missing string `tool_id`");
+  }
+  return {
+    tool_id: parsed.tool_id,
+    arguments:
+      parsed.arguments && typeof parsed.arguments === "object" && !Array.isArray(parsed.arguments)
+        ? (parsed.arguments as Record<string, unknown>)
+        : {},
+    approval_token:
+      typeof parsed.approval_token === "string" ? parsed.approval_token : undefined,
+    files_root: typeof parsed.files_root === "string" ? parsed.files_root : undefined,
+  };
+}
+
+function parseBoolean(raw: string): boolean {
+  switch (raw.trim().toLowerCase()) {
+    case "true":
+    case "1":
+    case "yes":
+    case "on":
+      return true;
+    case "false":
+    case "0":
+    case "no":
+    case "off":
+      return false;
+    default:
+      throw new Error(`expected true or false, got \`${raw}\``);
+  }
+}
+
+function assertArgCount(command: string, args: string[], expected: number): void {
+  if (args.length !== expected) {
+    throw new Error(`${command} expects ${expected} argument(s)`);
+  }
+}
+
+function stringify(value: unknown): string {
+  return `${JSON.stringify(value)}\n`;
+}

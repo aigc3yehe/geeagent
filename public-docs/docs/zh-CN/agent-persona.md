@@ -1,0 +1,179 @@
+# Agent Persona
+
+## 目的
+
+GeeAgent 不只是一个通用 agent runtime。它在共享运行时之上提供 agent persona 产品层。persona 定义 agent 的身份、行为方式、视觉呈现，以及它可以建议或约束的本地能力。
+
+persona 层必须和运行时执行真相分开。run、session、event、approval、task continuation、tool execution 属于 phase-2 runtime spine。
+
+## 当前状态
+
+当前 persona 系统是基础能力，不是完整的 persona 市场。
+
+- persona definition 可以从本地文件夹或 zip 归档导入。
+- 导入后的 persona 会复制到本地 persona workspace。
+- active persona 会暴露在 runtime snapshot 中。
+- active persona 会影响 SDK system prompt。
+- persona skill whitelist 可以注入 prompt。
+- persona tool allow-list 会由 native runtime tool dispatcher 强制执行。
+- 如果存在视觉资产，persona visual layer 会驱动原生 Home surface。
+
+## Agent Definition v2
+
+当前主要公开格式是 `Agent Definition v2`。
+
+必需包结构：
+
+```text
+agent.json
+identity-prompt.md
+soul.md
+playbook.md
+appearance/
+```
+
+可选文件：
+
+```text
+tools.md
+memory.md
+heartbeat.md
+skills/
+README.md
+LICENSE
+```
+
+视觉资源可以缺省。persona 可以完全省略 visual layer，并回退到默认 abstract surface。
+
+## Manifest 字段
+
+`agent.json` 是小型声明式 manifest。它应该引用文件，而不是直接承载长 prompt 文本。
+
+必填字段：
+
+- `definition_version`：必须为 `2`。
+- `id`：稳定 persona id。
+- `name`：展示名。
+- `tagline`：短摘要。
+- `identity_prompt_path`：身份层文件路径。
+- `soul_path`：声音和人格层文件路径。
+- `playbook_path`：行为层文件路径。
+- `appearance`：可选视觉定义。
+- `source`：通常为 `module_pack` 或 `user_created`。
+- `version`：可读版本号。
+
+常见可选字段：
+
+- `tools_context_path`
+- `memory_seed_path`
+- `heartbeat_path`
+- `skills`
+- `allowed_tool_ids`
+
+## 分层上下文
+
+GeeAgent 按以下顺序编译 persona context：
+
+- `identity-prompt.md`：角色、职责、任务边界。
+- `soul.md`：人格、语气、沟通姿态。
+- `playbook.md`：工作规则、自主性姿态、升级和审批行为。
+- `tools.md`：本地工具使用提示，如果已声明。
+- `memory.md`：初始可移植 memory seed，如果已声明。
+- `heartbeat.md`：周期性行为指导，如果已声明。
+
+编译结果会成为 persona 的 runtime `personality_prompt`。
+
+## 视觉层
+
+支持的 persona visual kind：
+
+- `live2d`：引用 Cubism `*.model3.json` bundle descriptor。
+- `video`：引用本地循环视频。
+- `static_image` 或 `image`：引用图片资源。
+
+visual layer 可以同时声明三种资源。GeeAgent 按以下优先级应用：
+
+- Live2D；
+- video；
+- image。
+
+如果所有 persona visual 字段都缺省，应用会使用默认 abstract surface。
+
+在 Home surface 上，GeeAgent 可以为 active persona 暴露一个紧凑的视觉切换器。它只显示存在对应文件的视觉模式，外加 abstract 模式。例如某个 persona 有 Live2D 和图片资源但没有视频资源时，视频选项会隐藏。
+
+`image` 资源只代表图片展示模式，不是 Live2D 背景。
+
+visual layer 还可以声明 `global_background`。global background 会作为全覆盖 Home 背景渲染在 persona visual 后面，包括 Live2D。它支持：
+
+- video；
+- image。
+
+global background 的优先级是 video 优先，然后 image。
+
+如果 Live2D persona 没有声明 `global_background`，GeeAgent 会把 Live2D 渲染在默认 abstract Home 背景上。
+
+Live2D persona 可以通过本地 UI 暴露姿势、动作、表情、viewport 位置和缩放。
+
+## 运行时影响
+
+persona 的影响被刻意保持为轻量。
+
+persona 可以影响：
+
+- system prompt 内容；
+- 白名单 persona skills；
+- tool allow-list 的建议和约束；
+- 视觉展示；
+- 本地 appearance 交互状态。
+
+persona 不应该拥有：
+
+- run lineage；
+- session continuation；
+- approval state；
+- event truth；
+- task persistence；
+- provider routing truth；
+- host security policy。
+
+## 本地存储
+
+runtime profile 存储在 GeeAgent config directory 下。persona workspace 存储在本地 `Personas` 目录下。active persona id 是运行时状态，不属于 persona package 本身。
+
+导入后的 profile 文件可以继续编辑。Reload 会重新读取本地 workspace 并生成 runtime profile。如果 reload 失败，最后一次可用的 profile 会保持不变。
+
+## Tool Allow-Lists
+
+`allowed_tool_ids` 可以约束某个 persona 可用的 native runtime tools。
+
+如果字段省略，persona 使用 workspace defaults。如果字段存在，则只允许匹配的工具。pattern 可以使用尾部 `*` 做前缀匹配，例如 `navigate.*`。
+
+frontend 不能提升 persona 的工具权限。native runtime 会解析 active persona，并在执行前强制检查 allow-list。
+
+## Import、Reload、Delete
+
+Import：
+
+- 校验 package；
+- 复制完整 package 到本地 persona workspace；
+- 编译 layered context；
+- 生成 normalized runtime profile；
+- 刷新 desktop 和 CLI surface。
+
+Reload：
+
+- 重新读取本地 persona workspace；
+- 重新编译 layered context；
+- 如果校验失败，保留之前已加载的 profile。
+
+Delete：
+
+- 删除本地 workspace；
+- 删除生成的 runtime profile；
+- 一方 persona 不能删除。
+
+## 边界
+
+persona package 是声明式的。它不应该包含可执行脚本、原生二进制、应用 bundle，或机器特定的 runtime state。
+
+当前公开文档描述的是已经实现的基础能力。persona market distribution、签名、信任元数据、automation heartbeat execution，以及更广泛的 multi-profile orchestration 仍是未来工作。

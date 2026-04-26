@@ -17,23 +17,48 @@ This directory is a complete `Agent Definition v2` template that can be copied, 
    - change `id`, `name`, `tagline`, and `version`
    - keep `identity_prompt_path` pointed at `identity-prompt.md`
    - keep `soul_path` and `playbook_path` pointed at the layered context files unless you rename them
-   - update `appearance` if you want a different image, video, or Live2D bundle
+   - update `appearance` if you want image, video, Live2D, or global background visuals
 3. Edit `identity-prompt.md`, `soul.md`, and `playbook.md` with your agent definition.
 4. Optionally edit `tools.md`, `memory.md`, and `heartbeat.md`.
 5. Replace `appearance/hero.png` with your own image if you stay on `static_image`.
 
-## Switching appearance kinds
+## Visual layer
 
-- `static_image`
-  - point `appearance.asset_path` at an image inside this folder, for example `appearance/hero.png`
-- `video`
-  - change `kind` to `video`
-  - point `appearance.asset_path` at a local video such as `appearance/loop.mp4`
-- `live2d`
-  - change `kind` to `live2d`
-  - point `appearance.bundle_path` at either:
-    - a `*.model3.json` file
-    - or a folder inside this pack that contains the `*.model3.json`
+The visual layer is optional. If all visual fields are missing, GeeAgent uses
+its default abstract surface.
+
+GeeAgent can read image, video, and Live2D visual resources from the same
+definition. The app chooses what to show in this priority order:
+
+1. Live2D
+2. video
+3. image
+
+Example:
+
+```json
+{
+  "appearance": {
+    "live2d": {
+      "bundle_path": "appearance/model/character.model3.json"
+    },
+    "video": {
+      "asset_path": "appearance/loop.mp4"
+    },
+    "image": {
+      "asset_path": "appearance/hero.png"
+    },
+    "global_background": {
+      "video_asset_path": "appearance/background.mp4",
+      "image_asset_path": "appearance/background.png"
+    }
+  }
+}
+```
+
+`global_background` is also optional. It is rendered full-bleed behind the
+persona visual on the Home surface and uses video before image when both are
+present.
 
 ## What GeeAgent currently recognizes for Live2D
 

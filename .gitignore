@@ -7,16 +7,25 @@
 /dist/
 /build/
 /coverage/
-/apps/macos-bridge/.build/
-/apps/macos-bridge/.codex/
-/apps/macos-bridge/.swiftpm/
-/apps/macos-bridge/DerivedData/
-/apps/macos-bridge/dist/
-/apps/desktop-shell/node_modules/
-/apps/desktop-shell/dist/
-/apps/desktop-shell/src-tauri/target/
-/apps/runtime-bridge/target/
-/target/
+**/node_modules/
+**/dist/
+**/build/
+**/coverage/
+**/.build/
+**/.swiftpm/
+**/DerivedData/
+**/xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+/apps/macos-app/.build/
+/apps/macos-app/.codex/
+/apps/macos-app/.swiftpm/
+/apps/macos-app/.swift-build/
+/apps/macos-app/DerivedData/
+/apps/macos-app/dist/
+/apps/macos-app/Resources/Live2DHost/Framework/
+/apps/macos-app/Resources/Live2DHost/live2dcubismcore.min.js
+/apps/macos-app/Resources/Live2DHost/live2d-bootstrap.js
 *.app/
 
 /docs/
@@ -35,6 +44,7 @@
 !README.*
 !**/README
 !**/README.*
+!/public-docs/**/*.md
 /AGENTS.md
 
 /development/
@@ -44,6 +54,7 @@
 # Local env, secrets, and machine-specific state.
 .env
 .env.*
+.envrc
 !.env.example
 *.local
 *.secret
@@ -73,3 +84,7 @@
 **/test/
 **/tests/
 **/Tests/
+!apps/agent-runtime/src/*.test.ts
+!apps/agent-runtime/src/**/*.test.ts
+!apps/macos-app/Tests/
+!apps/macos-app/Tests/**

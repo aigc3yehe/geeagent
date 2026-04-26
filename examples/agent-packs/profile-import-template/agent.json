@@ -10,8 +10,9 @@
   "memory_seed_path": "memory.md",
   "heartbeat_path": "heartbeat.md",
   "appearance": {
-    "kind": "static_image",
-    "asset_path": "appearance/hero.png"
+    "image": {
+      "asset_path": "appearance/hero.png"
+    }
   },
   "skills": [
     {
