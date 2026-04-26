@@ -185,16 +185,16 @@ enum GeeHostToolRouter {
         args: [String: Any]
     ) -> WorkbenchToolOutcome {
         let store = MediaLibraryModuleStore.shared
-        guard store.library != nil else {
-            return .error(
-                toolID: toolID,
-                code: "gear.media.library_missing",
-                message: "Open or create a media library before invoking media.library."
-            )
-        }
 
         switch capabilityID {
         case "media.focus_folder":
+            guard store.library != nil else {
+                return .error(
+                    toolID: toolID,
+                    code: "gear.media.library_missing",
+                    message: "Open or create a media library before focusing a media folder."
+                )
+            }
             guard let folderName = stringArg(args, "folder_name"), !folderName.isEmpty else {
                 return .error(toolID: toolID, code: "gear.args.folder_name", message: "`folder_name` is required.")
             }

@@ -45,11 +45,13 @@
 !**/README
 !**/README.*
 !/public-docs/**/*.md
+/README.architecture-simplification-runtime-spine.md
 /AGENTS.md
 
 /development/
 /examples/nyko/
 /refproj/
+/scripts/
 
 # Local env, secrets, and machine-specific state.
 .env

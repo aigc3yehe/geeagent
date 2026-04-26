@@ -55,6 +55,13 @@ export type RuntimeStore = {
   approval_requests: unknown[];
   workspace_focus: Record<string, unknown>;
   workspace_runtime: Record<string, unknown>;
+  host_action_intents?: RuntimeHostActionIntent[];
+};
+
+export type RuntimeHostActionIntent = {
+  host_action_id: string;
+  tool_id: string;
+  arguments?: Record<string, unknown>;
 };
 
 export type RuntimeSecurityPreferences = {
@@ -70,4 +77,5 @@ export type RuntimeSnapshot = Omit<
   active_conversation: RuntimeConversation;
   terminal_access_rules: unknown[];
   security_preferences: RuntimeSecurityPreferences;
+  host_action_intents: RuntimeHostActionIntent[];
 };

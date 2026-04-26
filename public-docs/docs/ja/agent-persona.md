@@ -126,6 +126,8 @@ persona が影響できるもの：
 - visual presentation；
 - local appearance interaction state。
 
+core runtime prompt は Gee の default task boundary を所有します。Gee は default では coding-first ではありません。user が code development、bug fix、refactor、code edit を明示的に依頼しない限り、ordinary app control、file management、research、configuration requests を local project source code の変更で解決すべきではありません。この boundary は、必要な scripts、data-processing helpers、inspection utilities、一時的な automation code を implementation detail として書いて実行することを禁止しません。
+
 persona が所有してはいけないもの：
 
 - run lineage；
@@ -148,7 +150,9 @@ import 後の profile files は編集可能です。Reload はローカル works
 
 field が省略された場合、persona は workspace defaults を使います。field が存在する場合、match した tools のみ許可されます。pattern は `navigate.*` のような末尾 `*` prefix match を使えます。
 
-frontend は persona の tool permissions を昇格できません。native runtime は active persona を解決し、実行前に allow-list を強制します。
+frontend は persona の non-Gee tool permissions を昇格できません。shell や file operations などの ordinary local tools では、native runtime が active persona を解決し、実行前に allow-list を強制します。
+
+`gee.app.*` と `gee.gear.*` のような Gee host-managed bridge tools は first-party product controls であり、persona-owned generic tools ではありません。これらは persona allow-list filtering を bypass しますが、Gee host bridge の中で enabled gears、declared capabilities、policy state、arguments を引き続き validate します。
 
 ## Import, Reload, Delete
 

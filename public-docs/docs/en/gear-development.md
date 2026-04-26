@@ -99,6 +99,8 @@ Current capabilities already present:
 - `hyperframes.studio` dependency plan for Node, npm, Hyperframes, FFmpeg, and FFprobe.
 - Gears catalog states for checking, installing, failed, and open.
 - Native windows for first-party `media.library` and `hyperframes.studio`.
+- First V1 host bridge surface for `gee.app.openSurface`, progressive Gear capability disclosure, and shared Gear invocation.
+- Transitional host action intents let first-party runtime turns hand native Gear actions back to GeeAgentMac while full SDK/MCP tool exposure is still being completed.
 - Home widget direction for `btc.price` and `system.monitor`.
 
 Current gaps:
@@ -106,7 +108,7 @@ Current gaps:
 - First-party gear business logic still lives inside the main app source tree.
 - Gear package folders are not yet the full implementation boundary.
 - Third-party gear import is not implemented yet.
-- Agent control bridge is not implemented yet.
+- Full agent-runtime SDK/MCP tool injection for every Gear capability is not complete yet.
 - `GearKit` and `GearHost` have not been split into separate SwiftPM targets yet.
 
 ## Target Architecture
@@ -651,6 +653,11 @@ Current V1 implements the first host bridge surface for native Gee usage:
 - `gee.app.openSurface` opens a Gee surface or Gear window by id, such as `media.library`.
 - `gee.gear.listCapabilities` progressively discloses enabled Gear capabilities.
 - `gee.gear.invoke` invokes one declared Gear capability through the shared host bridge.
+- `host_action_intents` allow a runtime turn to return native actions that GeeAgentMac applies in order. This is the current transition path for simple first-party Gear requests, such as asking the media library to show only video files, before full SDK/MCP tool exposure is available to every model turn.
+- During this transition, direct first-party media-library requests can route video, image, and extension-specific filters such as PNG into `media.filter` instead of entering the coding loop.
+- Media-library filters set through `media.filter` are visible as active filters in the native UI. The user can return to the full media view through `All` or the `Clear filters` affordance.
+
+Gear execution results are structured data, not final prose. A Gear capability, native adapter, or transitional router may report state changes, counts, artifacts, warnings, and errors, but it must not hardcode the final user-facing completion sentence. After all Gear actions in a turn finish, GeeAgent must return those structured results to the active agent/LLM, and the agent must compose the final reply in the user's language. If the LLM continuation cannot run, GeeAgent should show a transparent pending or failure state instead of a fake hardcoded success message.
 
 Progressive disclosure is required. The agent should first request `detail: "summary"`, then request `detail: "capabilities"` for one `gear_id`, then request `detail: "schema"` for one `capability_id` before invoking. GeeAgent should not dump every Gear capability schema into the model context by default.
 
@@ -674,6 +681,7 @@ Rules:
 - `policy-blocked`, `invalid`, `installing`, `install_failed`, and `blocked` gears are invisible to the agent.
 - Capabilities are declared in `gear.json`.
 - Gear adapters validate `capability_id` and `args`.
+- Gear adapters return structured results. The active agent/LLM owns the final natural-language reply after execution.
 - Do not add one global pseudo-tool per gear feature.
 - The root agent enters gear surfaces only through the shared bridge.
 - First-party Gear business logic remains inside the Gear adapter boundary, not in generic runtime glue.

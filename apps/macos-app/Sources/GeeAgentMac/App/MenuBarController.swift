@@ -77,8 +77,8 @@ final class MenuBarController {
             NSMenuItem(
                 title: "Quick Input",
                 action: #selector(showQuickInput),
-                keyEquivalent: "g"
-            ).configured(target: self, modifiers: [.control, .option])
+                keyEquivalent: " "
+            ).configured(target: self, modifiers: [.option])
         )
         menu.addItem(.separator())
         menu.addItem(

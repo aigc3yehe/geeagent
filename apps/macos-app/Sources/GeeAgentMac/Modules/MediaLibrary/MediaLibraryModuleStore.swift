@@ -93,6 +93,14 @@ final class MediaLibraryModuleStore {
         "\(filteredItems.count) of \(items.count)"
     }
 
+    var hasActiveFilters: Bool {
+        !filter.selectedExtensions.isEmpty
+            || filter.starredOnly
+            || filter.mediaKind != .all
+            || filter.minimumDurationSeconds != nil
+            || !filter.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     func restoreLastLibraryIfNeeded() async {
         guard library == nil, let path = defaults.string(forKey: PreferenceKey.lastLibraryPath) else {
             return
@@ -236,6 +244,17 @@ final class MediaLibraryModuleStore {
 
     func clearFilters() {
         filter = MediaLibraryFilterState()
+    }
+
+    func selectMediaKindFromUI(_ mediaKind: MediaLibraryMediaKind) {
+        if mediaKind == .all {
+            clearFilters()
+            return
+        }
+
+        filter.mediaKind = mediaKind
+        filter.selectedExtensions.removeAll()
+        filter.minimumDurationSeconds = nil
     }
 
     func toggleExtension(_ ext: String) {

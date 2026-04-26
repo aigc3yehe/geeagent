@@ -19,7 +19,9 @@ import {
   deleteTerminalAccessRule,
 } from "./store/terminal-permissions.js";
 import {
+  completeHostActionTurn,
   performTaskAction,
+  type RuntimeHostActionCompletion,
   submitQuickPrompt,
   submitWorkspaceMessage,
 } from "./turns.js";
@@ -114,6 +116,9 @@ export async function handleNativeRuntimeCommand(
     case "perform-task-action":
       assertArgCount(command, args, 2);
       return stringify(await performTaskAction(configDir, args[0], args[1]));
+    case "complete-host-action-turn":
+      assertArgCount(command, args, 1);
+      return stringify(await completeHostActionTurn(configDir, parseHostActionCompletions(args[0])));
     case "invoke-tool": {
       assertArgCount(command, args, 1);
       const request = parseToolRequest(args[0]);
@@ -146,6 +151,35 @@ async function mutateStore(
   await mutate(store);
   await persistRuntimeStore(configDir, store);
   return stringify(await snapshotFromStore(store, configDir));
+}
+
+function parseHostActionCompletions(raw: string): RuntimeHostActionCompletion[] {
+  const parsed = JSON.parse(raw) as unknown;
+  if (!Array.isArray(parsed)) {
+    throw new Error("host action completions JSON must be an array");
+  }
+  return parsed.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`host action completion at index ${index} must be an object`);
+    }
+    const record = item as Record<string, unknown>;
+    if (typeof record.host_action_id !== "string" || !record.host_action_id.trim()) {
+      throw new Error(`host action completion at index ${index} is missing host_action_id`);
+    }
+    if (typeof record.tool_id !== "string" || !record.tool_id.trim()) {
+      throw new Error(`host action completion at index ${index} is missing tool_id`);
+    }
+    if (record.status !== "succeeded" && record.status !== "failed") {
+      throw new Error(`host action completion at index ${index} has invalid status`);
+    }
+    return {
+      host_action_id: record.host_action_id,
+      tool_id: record.tool_id,
+      status: record.status,
+      summary: typeof record.summary === "string" ? record.summary : undefined,
+      error: typeof record.error === "string" ? record.error : undefined,
+    };
+  });
 }
 
 function parseSettings(raw: string): ChatRoutingSettings {

@@ -110,6 +110,35 @@ function normalizeRuntimeStore(value: unknown): RuntimeStore {
   if (!store.conversations.some((item) => item.conversation_id === store.active_conversation_id)) {
     store.active_conversation_id = store.conversations[0]?.conversation_id ?? "conv_01";
   }
+  pruneOrphanConversationRuntimeHistory(store);
   syncConversationStatuses(store);
   return store;
+}
+
+function pruneOrphanConversationRuntimeHistory(store: RuntimeStore): void {
+  const conversationIds = new Set(
+    store.conversations
+      .map((conversation) => conversation.conversation_id)
+      .filter((conversationId): conversationId is string => typeof conversationId === "string"),
+  );
+  store.execution_sessions = store.execution_sessions.filter((session) => {
+    if (!isRecord(session)) {
+      return true;
+    }
+    const conversationId = session.conversation_id;
+    return typeof conversationId !== "string" || conversationIds.has(conversationId);
+  });
+
+  const sessionIds = new Set(
+    store.execution_sessions
+      .map((session) => (isRecord(session) ? session.session_id : undefined))
+      .filter((sessionId): sessionId is string => typeof sessionId === "string"),
+  );
+  store.transcript_events = store.transcript_events.filter((event) => {
+    if (!isRecord(event)) {
+      return true;
+    }
+    const sessionId = event.session_id;
+    return typeof sessionId !== "string" || sessionIds.has(sessionId);
+  });
 }

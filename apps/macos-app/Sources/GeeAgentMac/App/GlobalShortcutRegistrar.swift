@@ -12,9 +12,16 @@ final class GlobalShortcutRegistrar: @unchecked Sendable {
         var keyCode: UInt16
         var modifierFlags: NSEvent.ModifierFlags
 
-        /// `⌘⇧K` conflicts with Finder's Network shortcut, and `⌥Space`
-        /// conflicts with Finder Quick Look, so the default global invocation
-        /// uses a quieter Gee mnemonic.
+        /// Primary launcher shortcut. Keep this Spotlight-like so quick input
+        /// feels like a lightweight command surface instead of an app-specific
+        /// hidden chord.
+        static let quickInputPrimary = Binding(
+            keyCode: UInt16(kVK_Space),
+            modifierFlags: [.option]
+        )
+
+        /// `⌘⇧K` conflicts with Finder's Network shortcut in Finder, so keep
+        /// a quieter Gee mnemonic as a second global option.
         static let quickInputGlobal = Binding(
             keyCode: UInt16(kVK_ANSI_G),
             modifierFlags: [.control, .option]
@@ -28,6 +35,7 @@ final class GlobalShortcutRegistrar: @unchecked Sendable {
         )
 
         static let quickInputBindings: [Binding] = [
+            .quickInputPrimary,
             .quickInputGlobal,
             .quickInputLegacy,
         ]
@@ -109,6 +117,10 @@ final class GlobalShortcutRegistrar: @unchecked Sendable {
             } else {
                 NSLog("GeeAgent failed to register global quick-input hotkey \(index + 1): \(hotKeyStatus)")
             }
+        }
+
+        if hotKeyRefs.isEmpty {
+            NSLog("GeeAgent could not register any global quick-input hotkeys. Local focused shortcuts will still be monitored.")
         }
 
         // Fallbacks keep the shortcut usable while GeeAgent is focused even if

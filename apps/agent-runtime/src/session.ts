@@ -53,6 +53,8 @@ function buildSystemPrompt(
     "If the latest user request asks for local machine state, you MUST call an appropriate tool before answering. A response that says you cannot directly inspect is incorrect unless the host denies or withholds the tool.",
     "Do not use SDK WebSearch or WebFetch in GeeAgent. When current public web information is needed, use Bash with an inspectable command such as curl, python urllib, or another local CLI, so the host can show and approve the exact operation.",
     "Do not use TodoWrite or maintain a separate SDK todo list; GeeAgent owns task and approval state at the host layer.",
+    "Gee's default specialty and preset task domain are not code development. Unless the user explicitly asks you to develop, fix, refactor, or edit code, do not modify local project source code or configuration as the way to satisfy a request.",
+    "If a task needs scripting, data processing, inspection helpers, or a temporary automation program, you may write and run that code as an implementation detail, but do not turn ordinary app control, file management, research, or configuration requests into edits to the user's local codebase.",
   ];
 
   if (context) {

@@ -327,6 +327,42 @@ private struct RuntimeSnapshotDTO: Decodable {
     let workspaceRuntime: RuntimeWorkspaceRuntimeDTO?
     let activeAgentProfile: RuntimeAgentProfileDTO?
     let agentProfiles: [RuntimeAgentProfileDTO]?
+    let hostActionIntents: [RuntimeHostActionIntentDTO]?
+}
+
+private struct RuntimeHostActionIntentDTO: Decodable {
+    let hostActionId: String
+    let toolId: String
+    let arguments: RuntimeJSONValue?
+}
+
+private enum RuntimeJSONValue: Decodable {
+    case string(String)
+    case int(Int)
+    case double(Double)
+    case bool(Bool)
+    case array([RuntimeJSONValue])
+    case object([String: RuntimeJSONValue])
+    case null
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Int.self) {
+            self = .int(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .double(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([RuntimeJSONValue].self) {
+            self = .array(value)
+        } else {
+            self = .object(try container.decode([String: RuntimeJSONValue].self))
+        }
+    }
 }
 
 private struct RuntimeTerminalAccessRuleDTO: Decodable {
@@ -461,6 +497,16 @@ private final class AgentRuntimeProcess {
 
     func submitQuickPrompt(_ prompt: String) throws -> RuntimeSnapshotDTO {
         try decodeSnapshot(arguments: ["submit-quick-prompt", prompt])
+    }
+
+    func completeHostActionTurn(_ completions: [WorkbenchHostActionCompletion]) throws -> RuntimeSnapshotDTO {
+        let data = try encoder.encode(completions)
+        guard let raw = String(data: data, encoding: .utf8) else {
+            throw RuntimeProcessError.runtimeInvocation(
+                "Could not encode host action completions as UTF-8 JSON."
+            )
+        }
+        return try decodeSnapshot(arguments: ["complete-host-action-turn", raw])
     }
 
     func performTaskAction(taskID: String, action: String) throws -> RuntimeSnapshotDTO {
@@ -1040,6 +1086,19 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
         return map(nextSnapshot)
     }
 
+    func completeHostActionTurn(
+        _ completions: [WorkbenchHostActionCompletion],
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        _ = snapshot
+        guard !completions.isEmpty else { return snapshot }
+        let nextSnapshot = try await runOffMainThread {
+            try self.runtime.completeHostActionTurn(completions)
+        }
+        storeRawSnapshot(nextSnapshot)
+        return map(nextSnapshot)
+    }
+
     func installAgentPack(
         at packPath: String,
         in snapshot: WorkbenchSnapshot
@@ -1317,8 +1376,48 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
             quickInputHint: snapshot.quickInputHint,
             quickReply: snapshot.quickReply,
             contextBudget: contextBudget(from: snapshot.contextBudget),
-            lastOutcome: requestOutcome(from: snapshot.lastRequestOutcome)
+            lastOutcome: requestOutcome(from: snapshot.lastRequestOutcome),
+            hostActionIntents: hostActionIntents(from: snapshot.hostActionIntents)
         )
+    }
+
+    private func hostActionIntents(from dtos: [RuntimeHostActionIntentDTO]?) -> [WorkbenchHostActionIntent] {
+        (dtos ?? []).map { dto in
+            WorkbenchHostActionIntent(
+                id: dto.hostActionId,
+                toolID: dto.toolId,
+                arguments: workbenchArguments(from: dto.arguments)
+            )
+        }
+    }
+
+    private func workbenchArguments(from value: RuntimeJSONValue?) -> [String: WorkbenchToolArgumentValue] {
+        guard case let .object(object)? = value else {
+            return [:]
+        }
+        return object.mapValues(workbenchArgumentValue)
+    }
+
+    private func workbenchArgumentValue(from value: RuntimeJSONValue) -> WorkbenchToolArgumentValue {
+        switch value {
+        case let .string(string):
+            return .string(string)
+        case let .int(int):
+            return .int(int)
+        case let .double(double):
+            return .int(Int(double))
+        case let .bool(bool):
+            return .bool(bool)
+        case let .array(array):
+            return .stringArray(array.compactMap { item in
+                guard case let .string(string) = item else { return nil }
+                return string
+            })
+        case let .object(object):
+            return .object(object.mapValues(workbenchArgumentValue))
+        case .null:
+            return .null
+        }
     }
 
     private func contextBudget(from dto: RuntimeContextBudgetDTO?) -> ContextBudgetRecord {
@@ -1813,6 +1912,8 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
         case "task_handoff":
             kind = .taskHandoff
         case "first_party_action":
+            kind = .firstPartyAction
+        case "host_action_pending", "host_action_completed":
             kind = .firstPartyAction
         case "clarify_needed":
             kind = .clarifyNeeded

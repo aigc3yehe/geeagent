@@ -40,6 +40,15 @@ describe("session prompt and tool-result helpers", () => {
     assert.match(prompt, /Do not use SDK WebSearch or WebFetch/);
     assert.match(prompt, /use Bash with an inspectable command such as curl/);
     assert.match(prompt, /Do not use TodoWrite/);
+    assert.match(prompt, /Gee's default specialty and preset task domain are not code development/);
+    assert.match(
+      prompt,
+      /Unless the user explicitly asks you to develop, fix, refactor, or edit code, do not modify local project source code or configuration/,
+    );
+    assert.match(
+      prompt,
+      /If a task needs scripting, data processing, inspection helpers, or a temporary automation program, you may write and run that code as an implementation detail/,
+    );
   });
 
   it("normalizes non-object tool input into an empty object", () => {

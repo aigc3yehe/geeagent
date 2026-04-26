@@ -28,7 +28,7 @@ function preExecutionGate(request: ToolRequest): ToolOutcome | null {
     };
   }
 
-  if (!personaAllows(request.allowed_tool_ids, request.tool_id)) {
+  if (!isHostManagedGeeBridgeTool(request.tool_id) && !personaAllows(request.allowed_tool_ids, request.tool_id)) {
     return {
       kind: "denied",
       tool_id: request.tool_id,
@@ -60,6 +60,10 @@ function personaAllows(allowList: string[] | undefined, toolID: string): boolean
       pattern.endsWith("*") ? toolID.startsWith(pattern.slice(0, -1)) : pattern === toolID,
     )
   );
+}
+
+function isHostManagedGeeBridgeTool(toolID: string): boolean {
+  return toolID.startsWith("gee.app.") || toolID.startsWith("gee.gear.");
 }
 
 async function runTool(request: ToolRequest): Promise<ToolOutcome> {

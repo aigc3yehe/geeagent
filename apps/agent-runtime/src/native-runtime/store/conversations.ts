@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { currentTimestamp } from "./defaults.js";
 import type {
   RuntimeConversation,
@@ -46,8 +48,9 @@ export function activeConversation(store: RuntimeStore): RuntimeConversation {
 
 export function createConversation(store: RuntimeStore, title?: string): RuntimeConversation {
   const index = nextConversationIndex(store);
+  const conversationId = newConversationId(index, store);
   const conversation: RuntimeConversation = {
-    conversation_id: `conv_${String(index).padStart(2, "0")}`,
+    conversation_id: conversationId,
     title: title?.trim() || `Conversation ${index}`,
     status: "active",
     messages: [
@@ -80,12 +83,14 @@ export function activateConversation(store: RuntimeStore, conversationId: string
 
 export function deleteConversation(store: RuntimeStore, conversationId: string): void {
   const before = store.conversations.length;
+  const deletedSessionIds = sessionIdsForConversation(store, conversationId);
   store.conversations = store.conversations.filter(
     (conversation) => conversation.conversation_id !== conversationId,
   );
   if (store.conversations.length === before) {
     throw new Error("conversation not found");
   }
+  pruneConversationRuntimeHistory(store, conversationId, deletedSessionIds);
   if (store.conversations.length === 0) {
     createConversation(store, "Fresh Conversation");
     return;
@@ -103,4 +108,56 @@ function nextConversationIndex(store: RuntimeStore): number {
     next += 1;
   }
   return next;
+}
+
+function newConversationId(index: number, store: RuntimeStore): string {
+  const existingIds = new Set(store.conversations.map((conversation) => conversation.conversation_id));
+  while (true) {
+    const candidate = `conv_${String(index).padStart(2, "0")}_${randomUUID().slice(0, 8)}`;
+    if (!existingIds.has(candidate)) {
+      return candidate;
+    }
+  }
+}
+
+function sessionIdsForConversation(store: RuntimeStore, conversationId: string): Set<string> {
+  const sessionIds = new Set([`session_${conversationId}`]);
+  for (const session of store.execution_sessions) {
+    if (!isRecord(session)) {
+      continue;
+    }
+    if (
+      session.conversation_id === conversationId &&
+      typeof session.session_id === "string"
+    ) {
+      sessionIds.add(session.session_id);
+    }
+  }
+  return sessionIds;
+}
+
+function pruneConversationRuntimeHistory(
+  store: RuntimeStore,
+  conversationId: string,
+  sessionIds: Set<string>,
+): void {
+  store.execution_sessions = store.execution_sessions.filter((session) => {
+    if (!isRecord(session)) {
+      return true;
+    }
+    if (session.conversation_id === conversationId) {
+      return false;
+    }
+    return typeof session.session_id !== "string" || !sessionIds.has(session.session_id);
+  });
+  store.transcript_events = store.transcript_events.filter((event) => {
+    if (!isRecord(event)) {
+      return true;
+    }
+    return typeof event.session_id !== "string" || !sessionIds.has(event.session_id);
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

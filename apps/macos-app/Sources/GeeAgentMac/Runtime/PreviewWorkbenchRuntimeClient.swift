@@ -380,7 +380,7 @@ struct PreviewWorkbenchRuntimeClient: WorkbenchRuntimeClient {
     func createConversation(in snapshot: WorkbenchSnapshot) async throws -> WorkbenchSnapshot {
         var nextSnapshot = snapshot
         let newConversation = ConversationThread(
-            id: "chat-\(nextSnapshot.conversations.count + 1)",
+            id: "chat-\(UUID().uuidString)",
             title: "New Conversation",
             participantLabel: "Ready to chat",
             previewText: "Fresh conversation ready for the next request.",
@@ -564,6 +564,25 @@ struct PreviewWorkbenchRuntimeClient: WorkbenchRuntimeClient {
         next.quickReply = reply
         next.lastOutcome = WorkbenchRequestOutcome(
             kind: .chatReply,
+            detail: reply,
+            taskID: nil
+        )
+        return next
+    }
+
+    func completeHostActionTurn(
+        _ completions: [WorkbenchHostActionCompletion],
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        var next = snapshot
+        let succeeded = completions.filter { $0.status == "succeeded" }.count
+        let failed = completions.count - succeeded
+        let reply = failed > 0
+            ? "Preview: Gear actions finished with \(failed) failure(s)."
+            : "Preview: Gear actions finished successfully."
+        next.quickReply = reply
+        next.lastOutcome = WorkbenchRequestOutcome(
+            kind: .firstPartyAction,
             detail: reply,
             taskID: nil
         )

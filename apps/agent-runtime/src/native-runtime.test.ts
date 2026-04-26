@@ -44,7 +44,8 @@ describe("native runtime command modules", () => {
       configDir,
     });
     const created = JSON.parse(createdRaw);
-    assert.equal(created.active_conversation.conversation_id, "conv_02");
+    const createdConversationId = created.active_conversation.conversation_id;
+    assert.match(createdConversationId, /^conv_02_[a-f0-9]{8}$/);
     assert.equal(created.conversations.length, 2);
 
     const activatedRaw = await handleNativeRuntimeCommand(
@@ -61,7 +62,140 @@ describe("native runtime command modules", () => {
       { configDir },
     );
     const deleted = JSON.parse(deletedRaw);
-    assert.equal(deleted.active_conversation.conversation_id, "conv_02");
+    assert.equal(deleted.active_conversation.conversation_id, createdConversationId);
+  });
+
+  it("does not reuse a deleted conversation id or its transcript history", async () => {
+    const configDir = await tempConfigDir();
+    const created = JSON.parse(
+      await handleNativeRuntimeCommand("create-conversation", [], { configDir }),
+    );
+    const deletedConversationId = created.active_conversation.conversation_id;
+    const deletedSessionId = `session_${deletedConversationId}`;
+
+    const storePath = join(configDir, "runtime-store.json");
+    const store = JSON.parse(await readFile(storePath, "utf8"));
+    const deletedConversation = store.conversations.find(
+      (conversation: { conversation_id?: string }) =>
+        conversation.conversation_id === deletedConversationId,
+    );
+    deletedConversation.messages.push({
+      message_id: "msg_user_deleted",
+      role: "user",
+      content: "deleted content should not come back",
+      timestamp: "2026-04-26T00:00:00.000Z",
+    });
+    store.execution_sessions.push({
+      session_id: deletedSessionId,
+      conversation_id: deletedConversationId,
+      surface: "cli_workspace_chat",
+      mode: "interactive",
+      project_path: "/tmp/project",
+      parent_session_id: null,
+      persistence_policy: "persisted",
+      created_at: "now",
+      updated_at: "now",
+    });
+    store.transcript_events.push({
+      event_id: `event_${deletedSessionId}_01`,
+      session_id: deletedSessionId,
+      parent_event_id: null,
+      created_at: "now",
+      payload: {
+        kind: "user_message",
+        message_id: "msg_user_deleted",
+        content: "deleted content should not come back",
+      },
+    });
+    await writeFile(storePath, `${JSON.stringify(store, null, 2)}\n`, "utf8");
+
+    await handleNativeRuntimeCommand("delete-conversation", [deletedConversationId], {
+      configDir,
+    });
+
+    const afterDelete = JSON.parse(await readFile(storePath, "utf8"));
+    assert.equal(
+      afterDelete.conversations.some(
+        (conversation: { conversation_id?: string }) =>
+          conversation.conversation_id === deletedConversationId,
+      ),
+      false,
+    );
+    assert.equal(
+      afterDelete.execution_sessions.some(
+        (session: { conversation_id?: string; session_id?: string }) =>
+          session.conversation_id === deletedConversationId ||
+          session.session_id === deletedSessionId,
+      ),
+      false,
+    );
+    assert.equal(
+      afterDelete.transcript_events.some(
+        (event: { session_id?: string }) => event.session_id === deletedSessionId,
+      ),
+      false,
+    );
+
+    const recreated = JSON.parse(
+      await handleNativeRuntimeCommand("create-conversation", [], { configDir }),
+    );
+    assert.notEqual(recreated.active_conversation.conversation_id, deletedConversationId);
+    assert.equal(
+      recreated.active_conversation.messages.some(
+        (message: { content?: string }) =>
+          message.content === "deleted content should not come back",
+      ),
+      false,
+    );
+  });
+
+  it("drops orphaned conversation sessions when loading persisted runtime state", async () => {
+    const configDir = await tempConfigDir();
+    await handleNativeRuntimeCommand("create-conversation", [], { configDir });
+
+    const storePath = join(configDir, "runtime-store.json");
+    const store = JSON.parse(await readFile(storePath, "utf8"));
+    store.execution_sessions.push({
+      session_id: "session_conv_deleted",
+      conversation_id: "conv_deleted",
+      surface: "cli_workspace_chat",
+      mode: "interactive",
+      project_path: "/tmp/project",
+      parent_session_id: null,
+      persistence_policy: "persisted",
+      created_at: "now",
+      updated_at: "now",
+    });
+    store.transcript_events.push({
+      event_id: "event_session_conv_deleted_01",
+      session_id: "session_conv_deleted",
+      parent_event_id: null,
+      created_at: "now",
+      payload: {
+        kind: "user_message",
+        message_id: "msg_user_deleted",
+        content: "orphaned content should not be projected",
+      },
+    });
+    await writeFile(storePath, `${JSON.stringify(store, null, 2)}\n`, "utf8");
+
+    const snapshot = JSON.parse(
+      await handleNativeRuntimeCommand("snapshot", [], { configDir }),
+    );
+    assert.equal(
+      snapshot.execution_sessions.some(
+        (session: { session_id?: string }) =>
+          session.session_id === "session_conv_deleted",
+      ),
+      false,
+    );
+    assert.equal(
+      snapshot.transcript_events.some(
+        (event: { session_id?: string }) =>
+          event.session_id === "session_conv_deleted",
+      ),
+      false,
+    );
   });
 
   it("persists highest authorization in the same shape Swift already reads", async () => {
@@ -488,6 +622,106 @@ describe("native runtime command modules", () => {
     });
   });
 
+  it("routes simple media-library natural language requests into host actions without waiting on SDK tools", async () => {
+    const configDir = await tempConfigDir();
+    const previousKey = process.env.XENODIA_API_KEY;
+    delete process.env.XENODIA_API_KEY;
+    try {
+      const raw = await handleNativeRuntimeCommand(
+        "submit-workspace-message",
+        ["show video files in the media library"],
+        { configDir },
+      );
+      const snapshot = JSON.parse(raw);
+      assert.equal(snapshot.last_request_outcome.kind, "host_action_pending");
+      assert.equal(snapshot.host_action_intents.length, 2);
+      assert.deepEqual(snapshot.host_action_intents[0], {
+        host_action_id: "host_action_open_media_library_cdb8d666",
+        tool_id: "gee.app.openSurface",
+        arguments: { gear_id: "media.library" },
+      });
+      assert.deepEqual(snapshot.host_action_intents[1], {
+        host_action_id: "host_action_media_filter_video_cdb8d666",
+        tool_id: "gee.gear.invoke",
+        arguments: {
+          gear_id: "media.library",
+          capability_id: "media.filter",
+          args: { kind: "video" },
+        },
+      });
+      const latest = snapshot.active_conversation.messages.at(-1);
+      assert.equal(latest.role, "user");
+      assert.equal(latest.content, "show video files in the media library");
+    } finally {
+      if (previousKey === undefined) {
+        delete process.env.XENODIA_API_KEY;
+      } else {
+        process.env.XENODIA_API_KEY = previousKey;
+      }
+    }
+  });
+
+  it("routes media-browser extension filters to the media library instead of the SDK coding loop", async () => {
+    const configDir = await tempConfigDir();
+    const previousKey = process.env.XENODIA_API_KEY;
+    delete process.env.XENODIA_API_KEY;
+    try {
+      const raw = await handleNativeRuntimeCommand(
+        "submit-workspace-message",
+        ["show png image files in the media browser"],
+        { configDir },
+      );
+      const snapshot = JSON.parse(raw);
+      assert.equal(snapshot.last_request_outcome.kind, "host_action_pending");
+      assert.equal(snapshot.host_action_intents.length, 2);
+      assert.deepEqual(snapshot.host_action_intents[0].arguments, { gear_id: "media.library" });
+      assert.equal(snapshot.host_action_intents[1].tool_id, "gee.gear.invoke");
+      assert.deepEqual(snapshot.host_action_intents[1].arguments, {
+        gear_id: "media.library",
+        capability_id: "media.filter",
+        args: { kind: "image", extensions: ["png"] },
+      });
+      const latest = snapshot.active_conversation.messages.at(-1);
+      assert.equal(latest.role, "user");
+      assert.equal(latest.content, "show png image files in the media browser");
+    } finally {
+      if (previousKey === undefined) {
+        delete process.env.XENODIA_API_KEY;
+      } else {
+        process.env.XENODIA_API_KEY = previousKey;
+      }
+    }
+  });
+
+  it("routes English media-library extension filters without hardcoded assistant text", async () => {
+    const configDir = await tempConfigDir();
+    const previousKey = process.env.XENODIA_API_KEY;
+    delete process.env.XENODIA_API_KEY;
+    try {
+      const raw = await handleNativeRuntimeCommand(
+        "submit-workspace-message",
+        ["show all PNG files in the media library"],
+        { configDir },
+      );
+      const snapshot = JSON.parse(raw);
+      assert.equal(snapshot.last_request_outcome.kind, "host_action_pending");
+      assert.deepEqual(snapshot.host_action_intents[1].arguments, {
+        gear_id: "media.library",
+        capability_id: "media.filter",
+        args: { kind: "all", extensions: ["png"] },
+      });
+      const latest = snapshot.active_conversation.messages.at(-1);
+      assert.equal(latest.role, "user");
+      assert.equal(latest.content, "show all PNG files in the media library");
+    } finally {
+      if (previousKey === undefined) {
+        delete process.env.XENODIA_API_KEY;
+      } else {
+        process.env.XENODIA_API_KEY = previousKey;
+      }
+    }
+  });
+
   it("enforces active persona tool allow-lists in the TS native runtime", async () => {
     const configDir = await tempConfigDir();
     const snapshot = JSON.parse(
@@ -544,6 +778,30 @@ describe("native runtime command modules", () => {
     const outcome = JSON.parse(raw);
     assert.equal(outcome.kind, "denied");
     assert.equal(outcome.tool_id, "shell.run");
+
+    const gearRaw = await handleNativeRuntimeCommand(
+      "invoke-tool",
+      [
+        JSON.stringify({
+          tool_id: "gee.gear.invoke",
+          arguments: {
+            gear_id: "media.library",
+            capability_id: "media.filter",
+            args: { kind: "image", extensions: ["png"] },
+          },
+        }),
+      ],
+      { configDir },
+    );
+    const gearOutcome = JSON.parse(gearRaw);
+    assert.equal(gearOutcome.kind, "completed");
+    assert.equal(gearOutcome.tool_id, "gee.gear.invoke");
+    assert.deepEqual(gearOutcome.payload, {
+      intent: "gear.invoke",
+      gear_id: "media.library",
+      capability_id: "media.filter",
+      args: { kind: "image", extensions: ["png"] },
+    });
   });
 
   it("keeps shell approval semantics aligned with the native dispatcher", async () => {

@@ -11,7 +11,6 @@ struct HomeView: View {
     @State private var isDisplayModeSwitcherHovering = false
     @State private var chatLauncherDragTranslation: CGSize = .zero
     @AppStorage("geeagent.home.chatLauncher.position") private var storedChatLauncherPosition = ""
-    @AppStorage("geeagent.home.widget.positions") private var storedHomeWidgetPositions = "{}"
     @FocusState private var launcherComposerFocused: Bool
     @FocusState private var chatComposerFocused: Bool
     @FocusState private var chatTitleFocused: Bool
@@ -78,37 +77,10 @@ struct HomeView: View {
         let metrics = HomeCanvasMetrics(size: size)
 
         ZStack {
-            Color.clear
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    launcherComposerFocused = false
-                    NSApp.keyWindow?.makeFirstResponder(nil)
-                }
-
             ambientBrandBlock(fontSize: metrics.logoSize)
                 .padding(.leading, metrics.leadingInset)
                 .padding(.top, metrics.logoTopInset)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-
-            if shouldShowLive2DInteractionSurface {
-                Live2DInteractionSurface(
-                    viewportState: store.live2DViewportState,
-                    catalog: store.live2DActionCatalog,
-                    activePosePath: store.activeLive2DPosePath,
-                    activeExpressionPath: store.selectedLive2DExpression?.relativePath,
-                    onPrimaryClick: { store.triggerRandomLive2DReaction() },
-                    onSelectPose: { store.setLive2DPose($0) },
-                    onSelectExpression: { store.setLive2DExpression($0) },
-                    onPlayAction: { store.triggerLive2DAction($0) },
-                    onResetExpression: { store.resetLive2DExpression() },
-                    onDrag: { store.translateLive2D(by: $0) },
-                    onScale: { store.adjustLive2DScale(by: $0) },
-                    onResetViewport: { store.resetLive2DViewport() },
-                    excludedHitTestRects: live2DExcludedHitTestRects(in: size, chatLauncherWidth: metrics.chatLauncherWidth)
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .zIndex(1.5)
-            }
 
             HomeWidgetLayer(widgets: homeWidgets, canvasSize: size)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -128,11 +100,6 @@ struct HomeView: View {
                 && $0.installState == .installed
                 && GearHost.isEnabled(gearID: $0.id)
         }
-    }
-
-    private var shouldShowLive2DInteractionSurface: Bool {
-        guard case .live2D = store.effectiveActiveAppearance else { return false }
-        return true
     }
 
     private func ambientLogo(fontSize: CGFloat) -> some View {
@@ -354,66 +321,6 @@ struct HomeView: View {
             in: size,
             width: width
         )
-    }
-
-    private func live2DExcludedHitTestRects(in size: CGSize, chatLauncherWidth: CGFloat) -> [CGRect] {
-        let metrics = HomeCanvasMetrics(size: size)
-        let chatCenter = chatLauncherDisplayPosition(in: size, width: chatLauncherWidth)
-        let chatHeight = chatLauncherApproximateHeight(compactLayout: metrics.compactLauncherLayout)
-        var rects = [
-            CGRect(
-                x: chatCenter.x - chatLauncherWidth / 2,
-                y: chatCenter.y - chatHeight / 2,
-                width: chatLauncherWidth,
-                height: chatHeight
-            ).insetBy(dx: -8, dy: -8)
-        ]
-
-        rects.append(contentsOf: homeWidgetHitTestRects(in: size))
-        return rects
-    }
-
-    private func homeWidgetHitTestRects(in size: CGSize) -> [CGRect] {
-        homeWidgets.map { widget in
-            let center = homeWidgetStoredPosition(for: widget, in: size)
-            return CGRect(x: center.x - 115, y: center.y - 59, width: 230, height: 118)
-                .insetBy(dx: -8, dy: -8)
-        }
-    }
-
-    private func homeWidgetStoredPosition(for widget: InstalledAppRecord, in size: CGSize) -> CGPoint {
-        if let point = decodedHomeWidgetPositions()[widget.id]?.cgPoint {
-            return clampedHomeWidgetPosition(point, in: size)
-        }
-        return defaultHomeWidgetPosition(for: widget, in: size)
-    }
-
-    private func defaultHomeWidgetPosition(for widget: InstalledAppRecord, in size: CGSize) -> CGPoint {
-        let y = min(max(size.height * 0.34, 190), size.height - 160)
-        switch widget.id {
-        case "btc.price":
-            return clampedHomeWidgetPosition(CGPoint(x: min(max(size.width * 0.34, 280), size.width - 160), y: y), in: size)
-        case "system.monitor":
-            return clampedHomeWidgetPosition(CGPoint(x: min(max(size.width * 0.54, 530), size.width - 160), y: y + 18), in: size)
-        default:
-            return clampedHomeWidgetPosition(CGPoint(x: size.width * 0.44, y: y + 32), in: size)
-        }
-    }
-
-    private func clampedHomeWidgetPosition(_ point: CGPoint, in size: CGSize) -> CGPoint {
-        CGPoint(
-            x: min(max(point.x, 128), max(size.width - 128, 128)),
-            y: min(max(point.y, 92), max(size.height - 92, 92))
-        )
-    }
-
-    private func decodedHomeWidgetPositions() -> [String: HomeStoredPoint] {
-        guard let data = storedHomeWidgetPositions.data(using: .utf8),
-              let positions = try? JSONDecoder().decode([String: HomeStoredPoint].self, from: data)
-        else {
-            return [:]
-        }
-        return positions
     }
 
     private func chatLauncherApproximateHeight(compactLayout: Bool) -> CGFloat {

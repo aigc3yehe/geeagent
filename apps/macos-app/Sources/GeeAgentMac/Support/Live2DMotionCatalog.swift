@@ -513,26 +513,26 @@ enum Live2DMotionCatalog {
         guard !trimmed.isEmpty else { return "" }
 
         let englishMap: [String: String] = [
-            "书本": "Book",
-            "书本-写字": "Book Writing",
-            "书本-点击": "Book Tap",
-            "冰淇淋": "Ice Cream",
-            "变小": "Shrink",
-            "只有头": "Head Only",
-            "待机动画": "Idle Animation",
-            "戳脸": "Poke Cheek",
-            "打瞌睡": "Sleepy",
-            "打瞌睡动画": "Sleepy Animation",
-            "星星眼": "Star Eyes",
-            "流泪": "Tears",
-            "熊猫抱枕": "Panda Pillow",
-            "爱心眼": "Heart Eyes",
-            "眼镜": "Glasses",
-            "脸红": "Blush",
-            "脸黑": "Dark Face",
-            "舌头": "Tongue",
-            "蚊香眼": "Dizzy Eyes",
-            "走路动画": "Walking Animation"
+            "\u{4E66}\u{672C}": "Book",
+            "\u{4E66}\u{672C}-\u{5199}\u{5B57}": "Book Writing",
+            "\u{4E66}\u{672C}-\u{70B9}\u{51FB}": "Book Tap",
+            "\u{51B0}\u{6DC7}\u{6DCB}": "Ice Cream",
+            "\u{53D8}\u{5C0F}": "Shrink",
+            "\u{53EA}\u{6709}\u{5934}": "Head Only",
+            "\u{5F85}\u{673A}\u{52A8}\u{753B}": "Idle Animation",
+            "\u{6233}\u{8138}": "Poke Cheek",
+            "\u{6253}\u{778C}\u{7761}": "Sleepy",
+            "\u{6253}\u{778C}\u{7761}\u{52A8}\u{753B}": "Sleepy Animation",
+            "\u{661F}\u{661F}\u{773C}": "Star Eyes",
+            "\u{6D41}\u{6CEA}": "Tears",
+            "\u{718A}\u{732B}\u{62B1}\u{6795}": "Panda Pillow",
+            "\u{7231}\u{5FC3}\u{773C}": "Heart Eyes",
+            "\u{773C}\u{955C}": "Glasses",
+            "\u{8138}\u{7EA2}": "Blush",
+            "\u{8138}\u{9ED1}": "Dark Face",
+            "\u{820C}\u{5934}": "Tongue",
+            "\u{868A}\u{9999}\u{773C}": "Dizzy Eyes",
+            "\u{8D70}\u{8DEF}\u{52A8}\u{753B}": "Walking Animation"
         ]
 
         if let mapped = englishMap[trimmed] {

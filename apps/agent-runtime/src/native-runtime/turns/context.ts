@@ -140,39 +140,18 @@ function normalizedKeywords(text: string): Set<string> {
 }
 
 function cjkTopicKeywords(text: string): string[] {
-  const stopPhrases = [
-    "什么",
-    "为什么",
-    "怎么",
-    "如何",
-    "告诉我",
-    "看看",
-    "查询",
-    "检查",
-    "现在",
-    "这个",
-    "那个",
-    "一下",
-    "有没有",
-    "是多少",
-    "是什么",
-  ];
   const tokens = new Set<string>();
   const runs = text.match(/[\u3400-\u4dbf\u4e00-\u9fff]+/g) ?? [];
   for (const run of runs) {
-    let cleaned = run;
-    for (const phrase of stopPhrases) {
-      cleaned = cleaned.replaceAll(phrase, "");
-    }
-    if (cleaned.length < 2) {
+    if (run.length < 2) {
       continue;
     }
-    if (cleaned.length <= 8) {
-      tokens.add(cleaned);
+    if (run.length <= 8) {
+      tokens.add(run);
     }
     for (let size = 2; size <= 4; size += 1) {
-      for (let index = 0; index + size <= cleaned.length; index += 1) {
-        tokens.add(cleaned.slice(index, index + size));
+      for (let index = 0; index + size <= run.length; index += 1) {
+        tokens.add(run.slice(index, index + size));
       }
     }
   }
@@ -211,24 +190,6 @@ export function isTransientQuickPrompt(prompt: string): boolean {
     /[+\-*/×÷=^%()]/.test(trimmed) &&
     [...trimmed].length <= 120;
   if (looksLikeMath) {
-    return true;
-  }
-  const transientPatterns = [
-    "的英文",
-    "英文单词",
-    "翻译成",
-    "怎么说",
-    "什么意思",
-    "怎么算",
-    "等于多少",
-    "是多少",
-    "读音",
-    "拼写",
-  ];
-  if (
-    transientPatterns.some((pattern) => trimmed.includes(pattern)) &&
-    [...trimmed].length <= 80
-  ) {
     return true;
   }
   return (

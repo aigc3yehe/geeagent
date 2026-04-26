@@ -99,6 +99,8 @@ apps/macos-app/Sources/GeeAgentMac/Views/Content/HomeWidgetsView.swift
 - `hyperframes.studio` には Node、npm、Hyperframes、FFmpeg、FFprobe の dependency plan がある。
 - Gears catalog には checking、installing、failed、open の states がある。
 - first-party `media.library` と `hyperframes.studio` は native windows として開ける。
+- `gee.app.openSurface`、progressive Gear capability disclosure、shared Gear invocation の first V1 host bridge surface がある。
+- full SDK/MCP tool exposure が完了するまでの transition path として、`host_action_intents` が first-party runtime turn から native Gear actions を GeeAgentMac に渡し、順番に適用できる。
 - `btc.price` と `system.monitor` は Home widgets の方向として存在する。
 
 現在の gaps:
@@ -106,7 +108,7 @@ apps/macos-app/Sources/GeeAgentMac/Views/Content/HomeWidgetsView.swift
 - first-party gear business logic はまだ main app source tree の中にある。
 - Gear package folders はまだ full implementation boundary ではない。
 - third-party gear import はまだ実装されていない。
-- Agent control bridge はまだ実装されていない。
+- every Gear capability に対する full agent-runtime SDK/MCP tool injection はまだ完了していない。
 - `GearKit` と `GearHost` はまだ separate SwiftPM targets には分割されていない。
 
 ## 目標アーキテクチャ
@@ -651,6 +653,11 @@ Current V1 implements the first native Gee host bridge surface:
 - `gee.app.openSurface` opens a Gee surface or Gear window by id, such as `media.library`。
 - `gee.gear.listCapabilities` progressively discloses enabled Gear capabilities。
 - `gee.gear.invoke` invokes one declared Gear capability through the shared host bridge。
+- `host_action_intents` allow a runtime turn to return native actions that GeeAgentMac applies in order。This is the current transition path for simple first-party Gear requests, such as asking the media library to show only video files, before full SDK/MCP tool exposure is available to every model turn。
+- During this transition, direct first-party media-library requests can route video、image、and extension-specific filters such as PNG into `media.filter` instead of entering the coding loop。
+- `media.filter` で設定された media-library filters は native UI の active filters として表示されます。User は `All` または `Clear filters` から full media view に戻れます。
+
+Gear の実行結果は structured data であり、final prose ではありません。Gear capability、native adapter、または transition router は state changes、counts、artifacts、warnings、errors を返せますが、ユーザーに表示する最終完了文を hardcode してはいけません。1 turn 内のすべての Gear actions が完了した後、GeeAgent は structured results を active agent/LLM に戻し、agent が結果とユーザーの言語に合わせて最終返信を生成します。LLM continuation が実行できない場合、GeeAgent は fake hardcoded success message ではなく、明確な pending または failure state を表示するべきです。
 
 Progressive disclosure is required。The agent should first request `detail: "summary"`、then request `detail: "capabilities"` for one `gear_id`、then request `detail: "schema"` for one `capability_id` before invoking。GeeAgent should not dump every Gear capability schema into the model context by default。
 
@@ -674,6 +681,7 @@ Rules:
 - `policy-blocked`、`invalid`、`installing`、`install_failed`、`blocked` gears are invisible to the agent。
 - capabilities are declared in `gear.json`。
 - Gear adapters validate `capability_id` and `args`。
+- Gear adapters return structured results。The active agent/LLM owns the final natural-language reply after execution。
 - Do not add one global pseudo-tool per gear feature。
 - root agent enters gear surfaces only through the shared bridge。
 - First-party Gear business logic remains inside the Gear adapter boundary, not in generic runtime glue。

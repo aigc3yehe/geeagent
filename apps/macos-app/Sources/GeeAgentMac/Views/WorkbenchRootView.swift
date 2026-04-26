@@ -27,6 +27,13 @@ struct WorkbenchRootView: View {
         presentedSection == .home || presentedSection == .apps
     }
 
+    private var shouldShowLive2DInteractionSurface: Bool {
+        guard presentedSection == .home else { return false }
+        guard !isHomeFocused else { return false }
+        guard case .live2D = store.effectiveActiveAppearance else { return false }
+        return true
+    }
+
     var body: some View {
         ZStack {
             WorkbenchSceneBackground(
@@ -51,6 +58,26 @@ struct WorkbenchRootView: View {
                 onResetLive2DViewport: { store.resetLive2DViewport() }
             )
             .ignoresSafeArea()
+
+            if shouldShowLive2DInteractionSurface {
+                Live2DInteractionSurface(
+                    viewportState: store.live2DViewportState,
+                    catalog: store.live2DActionCatalog,
+                    activePosePath: store.activeLive2DPosePath,
+                    activeExpressionPath: store.selectedLive2DExpression?.relativePath,
+                    onPrimaryClick: { store.triggerRandomLive2DReaction() },
+                    onSelectPose: { store.setLive2DPose($0) },
+                    onSelectExpression: { store.setLive2DExpression($0) },
+                    onPlayAction: { store.triggerLive2DAction($0) },
+                    onResetExpression: { store.resetLive2DExpression() },
+                    onDrag: { store.translateLive2D(by: $0) },
+                    onScale: { store.adjustLive2DScale(by: $0) },
+                    onResetViewport: { store.resetLive2DViewport() }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
+                .zIndex(0.5)
+            }
 
             if store.presentedStandaloneModuleID != nil {
                 StandaloneModuleStage(store: store)
@@ -492,7 +519,7 @@ private struct WorkbenchSceneBackground: View {
             if isHomeActive {
                 homeBackground
             } else {
-                functionalBackground
+                nonHomeBackground
             }
         }
         .overlay {
@@ -574,35 +601,8 @@ private struct WorkbenchSceneBackground: View {
     }
 
     @ViewBuilder
-    private var functionalBackground: some View {
-        ZStack {
-            switch activeAppearance {
-            case .abstract, .live2D:
-                AbstractHomeBackground()
-                    .saturation(0.62)
-                    .blur(radius: 5)
-            case .video:
-                // For video banners, use a soft abstract gradient instead of
-                // attempting to blur a live video layer in the background.
-                AbstractHomeBackground()
-                    .saturation(0.55)
-                    .blur(radius: 6)
-            case .staticImage:
-                if let image = BackgroundImageProvider.pixelatedBackground(customPath: imageAssetPath) {
-                    GeometryReader { geo in
-                        Image(nsImage: image)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: geo.size.width, height: geo.size.height)
-                            .clipped()
-                            .blur(radius: 1.6)
-                            .saturation(0.78)
-                    }
-                } else {
-                    fallbackBackground
-                }
-            }
-        }
+    private var nonHomeBackground: some View {
+        Color(red: 0.085, green: 0.095, blue: 0.11)
     }
 
     @ViewBuilder

@@ -130,6 +130,22 @@ struct PendingToolApproval: Hashable {
     var generatedToken: String
 }
 
+struct WorkbenchHostActionCompletion: Codable, Hashable, Sendable {
+    var hostActionID: String
+    var toolID: String
+    var status: String
+    var summary: String?
+    var error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case hostActionID = "host_action_id"
+        case toolID = "tool_id"
+        case status
+        case summary
+        case error
+    }
+}
+
 /// Helper that converts `ToolInvocation.arguments` into the `[String: Any]`
 /// form `JSONSerialization` expects. Kept small and side-effect-free so the
 /// Agent runtime can stay a thin transport.

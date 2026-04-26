@@ -48,6 +48,7 @@ export async function snapshotFromStore(
     approval_requests: store.approval_requests,
     terminal_access_rules: await loadTerminalAccessRuleRecords(configDir),
     security_preferences: await loadSecurityPreferences(configDir),
+    host_action_intents: store.host_action_intents ?? [],
     workspace_focus: store.workspace_focus,
     workspace_runtime: store.workspace_runtime,
   };

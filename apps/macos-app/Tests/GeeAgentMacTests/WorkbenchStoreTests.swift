@@ -267,7 +267,7 @@ final class WorkbenchStoreTests: XCTestCase {
     func testTriggerLive2DActionRestoresActivePose() async throws {
         let pose = Live2DMotionRecord(
             id: "idle.motion3.json",
-            title: "默认姿态",
+            title: "Default Pose",
             relativePath: "idle.motion3.json",
             source: .scanned,
             category: .pose,
@@ -554,6 +554,37 @@ final class WorkbenchStoreTests: XCTestCase {
         XCTAssertEqual(payload["total_count"] as? Int, 3)
     }
 
+    func testMediaLibraryUIKindSelectionClearsHiddenAgentFilters() {
+        let defaults = UserDefaults(suiteName: "GeeAgentMacTests.MediaLibraryFilters.\(UUID().uuidString)")!
+        let mediaStore = MediaLibraryModuleStore(defaults: defaults)
+
+        mediaStore.applyAgentFilter(
+            extensions: ["png"],
+            starredOnly: true,
+            mediaKind: .image,
+            minimumDurationSeconds: 180,
+            searchText: "night"
+        )
+        XCTAssertTrue(mediaStore.hasActiveFilters)
+
+        mediaStore.selectMediaKindFromUI(.video)
+
+        XCTAssertEqual(mediaStore.filter.mediaKind, .video)
+        XCTAssertEqual(mediaStore.filter.selectedExtensions, [])
+        XCTAssertNil(mediaStore.filter.minimumDurationSeconds)
+        XCTAssertTrue(mediaStore.filter.starredOnly)
+        XCTAssertEqual(mediaStore.filter.searchText, "night")
+
+        mediaStore.selectMediaKindFromUI(.all)
+
+        XCTAssertFalse(mediaStore.hasActiveFilters)
+        XCTAssertEqual(mediaStore.filter.mediaKind, .all)
+        XCTAssertEqual(mediaStore.filter.selectedExtensions, [])
+        XCTAssertFalse(mediaStore.filter.starredOnly)
+        XCTAssertNil(mediaStore.filter.minimumDurationSeconds)
+        XCTAssertEqual(mediaStore.filter.searchText, "")
+    }
+
     func testCloseStandaloneModuleRestoresPriorSection() async throws {
         let store = WorkbenchStore(runtimeClient: PreviewWorkbenchRuntimeClient())
         store.openSection(.automations)
@@ -686,6 +717,75 @@ final class WorkbenchStoreTests: XCTestCase {
 
         XCTAssertEqual(store.lastOutcome?.kind, .chatReply)
         XCTAssertFalse(store.isSendingMessage)
+    }
+
+    func testSendMessageAppliesRuntimeHostActionIntentsToGear() async throws {
+        let mediaStore = MediaLibraryModuleStore.shared
+        let originalLibrary = mediaStore.library
+        let originalItems = mediaStore.items
+        let originalFolders = mediaStore.folders
+        let originalSelectedFolderID = mediaStore.selectedFolderID
+        let originalFilter = mediaStore.filter
+        let originalSelectedItemIDs = mediaStore.selectedItemIDs
+        let originalFocusedItemID = mediaStore.focusedItemID
+        defer {
+            mediaStore.library = originalLibrary
+            mediaStore.items = originalItems
+            mediaStore.folders = originalFolders
+            mediaStore.selectedFolderID = originalSelectedFolderID
+            mediaStore.filter = originalFilter
+            mediaStore.selectedItemIDs = originalSelectedItemIDs
+            mediaStore.focusedItemID = originalFocusedItemID
+        }
+
+        mediaStore.library = MediaLibraryInfo(
+            name: "Test Library",
+            url: URL(fileURLWithPath: "/tmp/Test.library"),
+            kind: .eagle,
+            folders: []
+        )
+        mediaStore.folders = []
+        mediaStore.items = [
+            mediaItem(id: "clip", ext: "mp4", duration: 240, folderIDs: [], isStarred: false),
+            mediaItem(id: "image", ext: "png", duration: nil, folderIDs: [], isStarred: false)
+        ]
+        mediaStore.clearFilters()
+
+        var responseSnapshot = PreviewWorkbenchRuntimeClient().loadSnapshot()
+        responseSnapshot.hostActionIntents = [
+            WorkbenchHostActionIntent(
+                id: "host-action-open-media",
+                toolID: "gee.app.openSurface",
+                arguments: ["gear_id": .string("media.library")]
+            ),
+            WorkbenchHostActionIntent(
+                id: "host-action-filter-video",
+                toolID: "gee.gear.invoke",
+                arguments: [
+                    "gear_id": .string("media.library"),
+                    "capability_id": .string("media.filter"),
+                    "args": .object(["kind": .string("video")])
+                ]
+            )
+        ]
+        let store = WorkbenchStore(runtimeClient: HostActionRuntimeClient(snapshot: responseSnapshot))
+
+        store.sendMessage("Show video files in the media library.")
+
+        try await waitUntil(timeout: 2.0) {
+            mediaStore.filter.mediaKind == .video && store.pendingGearWindowRequest?.gearID == "media.library"
+        }
+        XCTAssertEqual(mediaStore.filteredItems.map(\.id), ["clip"])
+
+        mediaStore.clearFilters()
+        XCTAssertEqual(mediaStore.filter.mediaKind, .all)
+
+        store.sendMessage("Show video files in the media library.")
+
+        try await waitUntil(timeout: 2.0) {
+            mediaStore.filter.mediaKind == .video
+        }
+        XCTAssertEqual(mediaStore.filteredItems.map(\.id), ["clip"])
     }
 
     func testSubmitQuickInputIgnoresEmptyDrafts() {
@@ -921,8 +1021,82 @@ private struct FixedSnapshotRuntimeClient: WorkbenchRuntimeClient {
         in snapshot: WorkbenchSnapshot
     ) async throws -> WorkbenchSnapshot { snapshot }
 
+    func completeHostActionTurn(
+        _ completions: [WorkbenchHostActionCompletion],
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+
     func invokeTool(_ invocation: ToolInvocation) async throws -> WorkbenchToolOutcome {
         .completed(toolID: invocation.toolID, payload: [:])
+    }
+}
+
+private struct HostActionRuntimeClient: WorkbenchRuntimeClient {
+    var snapshot: WorkbenchSnapshot
+
+    func loadSnapshot() -> WorkbenchSnapshot { snapshot }
+    func createConversation(in snapshot: WorkbenchSnapshot) async throws -> WorkbenchSnapshot { snapshot }
+    func activateConversation(
+        _ conversationID: ConversationThread.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func deleteConversation(
+        _ conversationID: ConversationThread.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func sendMessage(
+        _ message: String,
+        in snapshot: WorkbenchSnapshot,
+        conversationID: ConversationThread.ID
+    ) async throws -> WorkbenchSnapshot { self.snapshot }
+    func performTaskAction(
+        _ action: WorkbenchTaskAction,
+        in snapshot: WorkbenchSnapshot,
+        taskID: WorkbenchTaskRecord.ID
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func setActiveAgentProfile(
+        _ profileID: AgentProfileRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func installAgentPack(
+        at packPath: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func reloadAgentProfile(
+        _ profileID: AgentProfileRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func deleteAgentProfile(
+        _ profileID: AgentProfileRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func deleteTerminalPermissionRule(
+        _ ruleID: TerminalPermissionRuleRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func setHighestAuthorizationEnabled(
+        _ enabled: Bool,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func loadChatRoutingSettings() async throws -> ChatRoutingSettings {
+        try await PreviewWorkbenchRuntimeClient().loadChatRoutingSettings()
+    }
+    func saveChatRoutingSettings(
+        _ settings: ChatRoutingSettings,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func submitQuickPrompt(
+        _ prompt: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { self.snapshot }
+
+    func completeHostActionTurn(
+        _ completions: [WorkbenchHostActionCompletion],
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { self.snapshot }
+
+    func invokeTool(_ invocation: ToolInvocation) async throws -> WorkbenchToolOutcome {
+        try await PreviewWorkbenchRuntimeClient().invokeTool(invocation)
     }
 }
 
@@ -988,6 +1162,12 @@ private struct FailingSetActiveRuntimeClient: WorkbenchRuntimeClient {
         _ prompt: String,
         in snapshot: WorkbenchSnapshot
     ) async throws -> WorkbenchSnapshot { snapshot }
+
+    func completeHostActionTurn(
+        _ completions: [WorkbenchHostActionCompletion],
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+
     func invokeTool(_ invocation: ToolInvocation) async throws -> WorkbenchToolOutcome {
         .completed(toolID: invocation.toolID, payload: [:])
     }

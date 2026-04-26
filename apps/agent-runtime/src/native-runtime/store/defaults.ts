@@ -96,5 +96,6 @@ export function defaultRuntimeStore(now = currentTimestamp()): RuntimeStore {
       ],
       agent_skins: [{ skin_id: "default.operator", display_name: "Default Operator" }],
     },
+    host_action_intents: [],
   };
 }

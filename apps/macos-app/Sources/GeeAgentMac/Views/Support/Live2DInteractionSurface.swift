@@ -14,7 +14,6 @@ struct Live2DInteractionSurface: NSViewRepresentable {
     var onDrag: (CGSize) -> Void
     var onScale: (Double) -> Void
     var onResetViewport: () -> Void
-    var excludedHitTestRects: [CGRect] = []
 
     func makeNSView(context: Context) -> InteractionView {
         let view = InteractionView()
@@ -30,8 +29,7 @@ struct Live2DInteractionSurface: NSViewRepresentable {
             onResetExpression: onResetExpression,
             onDrag: onDrag,
             onScale: onScale,
-            onResetViewport: onResetViewport,
-            excludedHitTestRects: excludedHitTestRects
+            onResetViewport: onResetViewport
         )
         return view
     }
@@ -49,8 +47,7 @@ struct Live2DInteractionSurface: NSViewRepresentable {
             onResetExpression: onResetExpression,
             onDrag: onDrag,
             onScale: onScale,
-            onResetViewport: onResetViewport,
-            excludedHitTestRects: excludedHitTestRects
+            onResetViewport: onResetViewport
         )
     }
 }
@@ -68,7 +65,6 @@ final class InteractionView: NSView {
     private var onDrag: ((CGSize) -> Void)?
     private var onScale: ((Double) -> Void)?
     private var onResetViewport: (() -> Void)?
-    private var excludedHitTestRects: [CGRect] = []
 
     private var initialMouseDownPoint: NSPoint?
     private var lastDragPoint: NSPoint?
@@ -79,11 +75,6 @@ final class InteractionView: NSView {
     override var acceptsFirstResponder: Bool { true }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        let topLeftPoint = CGPoint(x: point.x, y: bounds.height - point.y)
-        if excludedHitTestRects.contains(where: { $0.contains(topLeftPoint) }) {
-            return nil
-        }
-
         return interactionPath.contains(point) ? self : nil
     }
 
@@ -155,8 +146,7 @@ final class InteractionView: NSView {
         onResetExpression: @escaping () -> Void,
         onDrag: @escaping (CGSize) -> Void,
         onScale: @escaping (Double) -> Void,
-        onResetViewport: @escaping () -> Void,
-        excludedHitTestRects: [CGRect]
+        onResetViewport: @escaping () -> Void
     ) {
         self.viewportState = viewportState
         self.catalog = catalog
@@ -170,7 +160,6 @@ final class InteractionView: NSView {
         self.onDrag = onDrag
         self.onScale = onScale
         self.onResetViewport = onResetViewport
-        self.excludedHitTestRects = excludedHitTestRects
         needsDisplay = true
     }
 

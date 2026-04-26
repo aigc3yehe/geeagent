@@ -1,64 +1,90 @@
-# GeeAgent
+<p align="center">
+  <img src="gee-nyko.png" alt="GeeAgent icon" width="112" style="border-radius: 24px;" />
+</p>
 
-![GeeAgent banner](apps/macos-app/Resources/bg.png)
+<h1 align="center">GeeAgent</h1>
 
-[中文](README.zh-CN.md) | [日本語](README.ja.md)
+<p align="center">Make your agent unique</p>
 
-[Public Docs](https://aigc3yehe.github.io/geeagent/)
+<p align="center">
+  <img alt="macOS 15+" src="https://img.shields.io/badge/macOS-15%2B-000000?logo=apple&logoColor=white" />
+  <img alt="Swift 6.1" src="https://img.shields.io/badge/Swift-6.1-FA7343?logo=swift&logoColor=white" />
+  <img alt="SwiftUI" src="https://img.shields.io/badge/SwiftUI-Native_UI-0A84FF?logo=swift&logoColor=white" />
+  <img alt="AppKit" src="https://img.shields.io/badge/AppKit-macOS_Framework-1F6FEB" />
+  <img alt="TypeScript Agent Runtime" src="https://img.shields.io/badge/TypeScript-Agent_Runtime-3178C6?logo=typescript&logoColor=white" />
+  <img alt="MIT License" src="https://img.shields.io/badge/License-MIT-green.svg" />
+</p>
 
-![macOS](https://img.shields.io/badge/macOS-15%2B-000000?logo=apple&logoColor=white)
-![Swift](https://img.shields.io/badge/Swift-6.1-FA7343?logo=swift&logoColor=white)
-![SwiftUI](https://img.shields.io/badge/SwiftUI-Native_UI-0A84FF?logo=swift&logoColor=white)
-![AppKit](https://img.shields.io/badge/AppKit-macOS_Framework-1F6FEB)
-![TypeScript](https://img.shields.io/badge/TypeScript-Agent_Runtime-3178C6?logo=typescript&logoColor=white)
-![Node.js](https://img.shields.io/badge/Node.js-SDK_Sidecar-339933?logo=node.js&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-green.svg)
+<p align="center">
+  <a href="README.zh-CN.md">中文</a> | <a href="README.ja.md">日本語</a>
+</p>
 
-GeeAgent is a macOS-first AI workbench built around companion-style interaction, visible task execution, and modular runtime orchestration.
+GeeAgent is a lightweight macOS AI workbench for persona-driven agents, local app assistance, and AI visual production.
 
-The project combines a native macOS app with a TypeScript agent runtime so that interaction, routing, approvals, task state, and module execution can remain inspectable as the system grows.
+It is not trying to become a huge, heavy, all-purpose agent that swallows every workflow. GeeAgent is designed to stay small enough to feel close at hand: a native desktop companion for daily tasks, files, apps, creative planning, image generation, video generation, editing, and publishing.
+
+The hope behind GeeAgent is simple: make agents feel different from one another, with their own presence, memory, taste, and way of helping.
 
 ## Why GeeAgent
 
-Most AI products still start from a chat box or a CLI. GeeAgent explores a different interface model:
+Most agent tools still begin with a blank chat box. GeeAgent begins with a different question: what if an agent could feel like a durable creative presence, not just a prompt window?
 
-- a summonable desktop-native assistant instead of a browser tab
-- a workbench that makes task state, approvals, and execution progress visible
-- modular runtime paths instead of a single opaque agent loop
-- local-first configuration for user-specific state and workflows
-- an architecture that stays open to extension, debugging, and contributor inspection
+GeeAgent is built around three ideas:
 
-## Tech Stack
+- **Agent Persona**: an agent should have a stable identity, voice, visual presence, boundaries, and tool posture. Persona is not decoration. It is how humans build trust, memory, taste, and collaboration with an AI agent over time.
+- **Gear**: useful agent work should not be trapped inside one monolithic app. Gears are optional local apps, widgets, and capability packages that can grow into an open desktop app market.
+- **Lightweight Focus**: GeeAgent should be simple, fast, and readable. It helps with everyday local work, but it has a special bias toward AI visual creation: images, videos, clips, publishing flows, and creator operations.
 
-GeeAgent currently uses the following core components:
+<p align="center">
+  <img src="ui.png" alt="GeeAgent UI preview" />
+</p>
 
-- `SwiftUI` and `AppKit` for the native macOS shell and companion-facing UI
-- `Swift Package Manager` for the macOS application package
-- `TypeScript` and `Node.js` for the GeeAgent runtime and Agent SDK session loop
-- `TOML` configuration for routing and module definitions
+## Agent Persona
 
-## Architecture
+GeeAgent treats persona as a first-class product layer. A persona can define how an agent speaks, what it cares about, how it appears, which skills it prefers, and which tools it is allowed to use.
 
-At a high level, GeeAgent is organized as:
+The long-term direction is to connect persona with an agent actor protocol. In that future, a persona is not just a local skin or prompt file. It can become the human-readable surface of a deeper actor record: identity, capabilities, creative history, licensing rules, attribution, and economic participation. The desktop agent becomes the place where that actor is experienced, directed, trusted, and put to work.
 
-1. A native macOS shell for the companion, workbench, menu-bar flows, and operator-facing UI.
-2. A TypeScript runtime that owns routing, execution contracts, workspace state, approvals, conversations, and task progression.
-3. A Agent SDK session layer inside the TypeScript runtime for the live agent loop.
-4. A modular integration boundary for first-party actions and external services.
+This matters especially for creative AI. If AI characters, performers, assistants, and collaborators are going to appear across stories, videos, tools, and markets, they need more than text prompts. They need continuity.
 
-Representative runtime modules:
+## Gear: An Open App Market
 
-- `apps/agent-runtime/src/native-runtime`: persisted runtime state, snapshots, tools, turns, approvals, and command dispatch
-- `apps/agent-runtime/src/session.ts`: Agent SDK session wrapper and permission callback handling
-- `apps/agent-runtime/src/gateway.ts`: Anthropic-compatible gateway for the configured model route
-- `apps/agent-runtime/src/chat-runtime.ts`: chat routing settings and provider readiness
+GeeAgent's Gear system is the path toward an open local app market.
 
-Important active paths:
+A Gear can be a native app, a Home widget, a local tool surface, or a capability package. Gears are meant to stay optional: a missing, disabled, broken, or uninstalled Gear should not break the main workbench.
 
-- `apps/macos-app`: native macOS app
-- `apps/agent-runtime`: TypeScript GeeAgent runtime and Agent SDK integration
-- `config/*`: routing and module configuration
-- `examples/agent-packs/*`: example agent-pack layouts
+The goal is practical and creator-friendly:
+
+- install or copy small local tools without bloating the core app
+- keep app-specific logic inside the Gear boundary
+- expose only declared capabilities to the agent
+- preserve a path for third-party creators to build focused tools around media, automation, publishing, and local workflows
+
+GeeAgent should feel like a small studio bench, not a maze of plugins.
+
+## Built For Visual Creators
+
+GeeAgent is shaped around two strong use cases.
+
+First, it helps with local app assistance: files, commands, task state, approvals, settings, and small pieces of desktop work that are easier when an agent can see the workflow instead of only answering in chat.
+
+Second, it is optimized for AI visual production. The product direction gives extra weight to:
+
+- image generation and prompt iteration
+- video generation and shot planning
+- clip selection, editing, and packaging
+- publishing workflows for short films, social video, and visual assets
+- persona-driven creative agents that can keep style, taste, and role consistent
+
+GeeAgent should be capable, but not heavy. Its best version is a compact creative cockpit for people who make things with AI.
+
+## For Builders
+
+GeeAgent is still young, which is part of the charm. The project is close enough to the ground that contributors can still shape its language, its rituals, and its extension culture.
+
+The codebase has two main centers: a native macOS workbench and a TypeScript runtime. Around them, persona and Gear are the two doors we expect many contributors to walk through: one for giving agents continuity and presence, the other for giving creators small tools that do one thing well.
+
+If you want to help, the best contributions are focused and humane: make one workflow clearer, one creative tool easier to reach, one persona easier to understand, or one local task safer to hand to an agent.
 
 ## Getting Started
 
@@ -91,15 +117,21 @@ swift test --package-path apps/macos-app --scratch-path apps/macos-app/.swift-bu
 
 ## Contributing
 
-Contributions are welcome. A few repository expectations help keep the project clean and reviewable:
+Contributions are welcome, especially around:
 
-- prefer focused PRs with a clear runtime, UI, or architecture objective
-- keep machine-specific files, secrets, caches, and local planning materials out of version control
-- document contract changes when they affect routing, task lifecycle, workspace snapshots, or module boundaries
-- include tests when changing runtime behavior
+- persona packages, visual presence, and creative agent design
+- Gear development for local tools, media workflows, and creator utilities
+- native macOS interaction, accessibility, and desktop polish
+- runtime reliability, task continuation, approvals, and observable execution
 
-If you extend the runtime surface, it is especially helpful to note which TypeScript module owns the contract and which UI surface consumes it.
+Please keep PRs focused and avoid committing local secrets, caches, or machine-specific files.
 
 ## License
 
 MIT
+
+## Public Docs
+
+The public docs go deeper than this README, but they are not meant to turn the project into a pile of implementation notes. They describe the ideas GeeAgent wants to keep stable as the product grows.
+
+[Public Docs](https://aigc3yehe.github.io/geeagent/) | [Agent Persona](https://aigc3yehe.github.io/geeagent/?doc=docs/en/agent-persona.md) | [Gear Development](https://aigc3yehe.github.io/geeagent/?doc=docs/en/gear-development.md) | [Gee Basic Development](https://aigc3yehe.github.io/geeagent/?doc=docs/en/gee-basic-development.md)

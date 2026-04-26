@@ -70,6 +70,12 @@ type ManagedSession = {
   waiters: Array<(event: RuntimeEvent) => void>;
 };
 
+type RuntimeTurnOptions = {
+  availableTools?: string[];
+  autoApproveTools?: string[];
+  disallowedTools?: string[];
+};
+
 const ITERATIVE_TURN_MAX_STEPS = 8;
 const PERSONA_SKILL_PROMPT_CHAR_LIMIT = 20_000;
 const DEFAULT_SDK_EVENT_IDLE_TIMEOUT_MS = 75_000;
@@ -85,8 +91,9 @@ export async function runSdkRuntimeTurn(
   activeProfile: AgentProfile,
   prompt: string,
   transientAllowedTerminalScopes: TerminalAccessScope[] = [],
+  options: RuntimeTurnOptions = {},
 ): Promise<SdkTurnResult> {
-  const managed = await ensureSession(configDir, runtimeSessionId, route, activeProfile);
+  const managed = await ensureSession(configDir, runtimeSessionId, route, activeProfile, options);
   const turn = emptyTurnResult();
   managed.session.send(prompt);
   try {
@@ -166,6 +173,7 @@ async function ensureSession(
   sessionId: string,
   route: TurnRoute,
   activeProfile: AgentProfile,
+  options: RuntimeTurnOptions = {},
 ): Promise<ManagedSession> {
   const existing = sessions.get(sessionId);
   if (existing) {
@@ -203,8 +211,9 @@ async function ensureSession(
           "ls",
         ],
       } satisfies RuntimeContext,
-      autoApproveTools: DEFAULT_SDK_AUTO_APPROVE_TOOLS,
-      disallowedTools: DEFAULT_SDK_DISALLOWED_TOOLS,
+      ...(options.availableTools ? { availableTools: options.availableTools } : {}),
+      autoApproveTools: options.autoApproveTools ?? DEFAULT_SDK_AUTO_APPROVE_TOOLS,
+      disallowedTools: options.disallowedTools ?? DEFAULT_SDK_DISALLOWED_TOOLS,
       gatewayBaseUrl: activeGateway.baseUrl,
       gatewayApiKey: activeGateway.apiKey,
     },

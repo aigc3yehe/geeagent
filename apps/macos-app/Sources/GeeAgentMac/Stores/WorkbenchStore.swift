@@ -635,6 +635,139 @@ final class WorkbenchStore {
         }
     }
 
+    private func applyHostActionIntents(_ intents: [WorkbenchHostActionIntent]) {
+        guard !intents.isEmpty else {
+            return
+        }
+
+        let runtimeClient = self.runtimeClient
+        let currentSnapshot = snapshot
+        Task { [weak self, runtimeClient, intents, currentSnapshot] in
+            var completions: [WorkbenchHostActionCompletion] = []
+            for intent in intents {
+                let invocation = ToolInvocation(
+                    toolID: intent.toolID,
+                    arguments: intent.arguments
+                )
+                do {
+                    let outcome = try await runtimeClient.invokeTool(invocation)
+                    completions.append(Self.hostActionCompletion(for: intent, outcome: outcome))
+                    await MainActor.run {
+                        guard let self else { return }
+                        self.applyToolOutcome(outcome, from: invocation)
+                    }
+                } catch {
+                    completions.append(
+                        WorkbenchHostActionCompletion(
+                            hostActionID: intent.id,
+                            toolID: intent.toolID,
+                            status: "failed",
+                            summary: nil,
+                            error: error.localizedDescription
+                        )
+                    )
+                    await MainActor.run {
+                        self?.lastErrorMessage = error.localizedDescription
+                    }
+                }
+            }
+
+            guard !completions.isEmpty else { return }
+            do {
+                let nextSnapshot = try await runtimeClient.completeHostActionTurn(
+                    completions,
+                    in: currentSnapshot
+                )
+                await MainActor.run {
+                    guard let self else { return }
+                    self.snapshot = nextSnapshot
+                    self.quickInputLatestResult = nextSnapshot.lastOutcome
+                }
+            } catch {
+                await MainActor.run {
+                    self?.lastErrorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private static func hostActionCompletion(
+        for intent: WorkbenchHostActionIntent,
+        outcome: WorkbenchToolOutcome
+    ) -> WorkbenchHostActionCompletion {
+        switch outcome {
+        case let .completed(_, payload):
+            return WorkbenchHostActionCompletion(
+                hostActionID: intent.id,
+                toolID: intent.toolID,
+                status: "succeeded",
+                summary: hostActionSummary(for: intent, payload: payload),
+                error: nil
+            )
+        case let .needsApproval(_, _, prompt):
+            return WorkbenchHostActionCompletion(
+                hostActionID: intent.id,
+                toolID: intent.toolID,
+                status: "failed",
+                summary: nil,
+                error: "The Gear action needs approval before it can complete: \(prompt)"
+            )
+        case let .denied(_, reason):
+            return WorkbenchHostActionCompletion(
+                hostActionID: intent.id,
+                toolID: intent.toolID,
+                status: "failed",
+                summary: nil,
+                error: reason
+            )
+        case let .error(_, _, message):
+            return WorkbenchHostActionCompletion(
+                hostActionID: intent.id,
+                toolID: intent.toolID,
+                status: "failed",
+                summary: nil,
+                error: message
+            )
+        }
+    }
+
+    private static func hostActionSummary(
+        for intent: WorkbenchHostActionIntent,
+        payload: [String: Any]
+    ) -> String {
+        if let gearID = payload["gear_id"] as? String,
+           let capabilityID = payload["capability_id"] as? String
+        {
+            var parts = ["\(gearID) \(capabilityID) completed"]
+            if let action = payload["action"] as? String {
+                parts.append("action: \(action)")
+            }
+            if let visibleSummary = payload["visible_summary"] as? String,
+               !visibleSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            {
+                parts.append("visible media: \(visibleSummary)")
+            }
+            if let filteredCount = payload["filtered_count"],
+               let totalCount = payload["total_count"]
+            {
+                parts.append("visible count: \(filteredCount) of \(totalCount)")
+            }
+            return parts.joined(separator: "; ")
+        }
+
+        if let intentName = payload["intent"] as? String {
+            if let moduleID = payload["module_id"] as? String {
+                return "\(intent.toolID) completed \(intentName) for \(moduleID)"
+            }
+            if let section = payload["section"] as? String {
+                return "\(intent.toolID) completed \(intentName) for \(section)"
+            }
+            return "\(intent.toolID) completed \(intentName)"
+        }
+
+        return "\(intent.toolID) completed."
+    }
+
     private func applyNavigationIntent(_ intent: WorkbenchToolNavigationIntent) {
         switch intent {
         case let .section(section):
@@ -786,6 +919,7 @@ final class WorkbenchStore {
                     }
                     self.isSubmittingQuickInput = false
                     self.snapshot = nextSnapshot
+                    self.applyHostActionIntents(nextSnapshot.hostActionIntents)
                     if useAutoConversationRouting,
                        let routedConversationID = nextSnapshot.conversations.first(where: \.isActive)?.id {
                         self.selectedConversationID = routedConversationID
@@ -908,6 +1042,7 @@ final class WorkbenchStore {
                     self.isCreatingConversation = false
                     self.isSendingMessage = false
                     self.snapshot = nextSnapshot
+                    self.applyHostActionIntents(nextSnapshot.hostActionIntents)
                     if openSection {
                         self.selectedSection = .chat
                     }
@@ -1037,7 +1172,11 @@ final class WorkbenchStore {
                 )
                 await MainActor.run {
                     guard let self else { return }
+                    self.conversationTitleOverrides.removeValue(forKey: conversationID)
+                    self.clearPendingChatTurn(conversationID: conversationID)
                     self.snapshot = nextSnapshot
+                    self.selectedConversationID = nextSnapshot.conversations.first(where: \.isActive)?.id
+                        ?? nextSnapshot.conversations.first?.id
                     self.selectedSection = .chat
                     self.isDeletingConversation = false
                 }
@@ -1591,6 +1730,7 @@ final class WorkbenchStore {
                     self.clearPendingChatTurn(conversationID: conversationID)
                     self.isSendingMessage = false
                     self.snapshot = nextSnapshot
+                    self.applyHostActionIntents(nextSnapshot.hostActionIntents)
                     if openSection {
                         self.selectedSection = .chat
                     }

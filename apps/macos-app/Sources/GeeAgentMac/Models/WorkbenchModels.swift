@@ -325,6 +325,13 @@ struct WorkbenchSnapshot {
     var quickReply: String = "Ready for the next request."
     var contextBudget: ContextBudgetRecord = .empty
     var lastOutcome: WorkbenchRequestOutcome? = nil
+    var hostActionIntents: [WorkbenchHostActionIntent] = []
+}
+
+struct WorkbenchHostActionIntent: Hashable, Identifiable {
+    var id: String
+    var toolID: String
+    var arguments: [String: WorkbenchToolArgumentValue]
 }
 
 struct WorkbenchSecurityPreferences: Hashable {

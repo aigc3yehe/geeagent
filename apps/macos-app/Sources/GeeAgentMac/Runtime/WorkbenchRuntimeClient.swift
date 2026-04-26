@@ -59,6 +59,14 @@ protocol WorkbenchRuntimeClient: Sendable {
         in snapshot: WorkbenchSnapshot
     ) async throws -> WorkbenchSnapshot
 
+    /// Completes a runtime-routed Gear turn after the native host has executed
+    /// the requested actions. The backend uses these structured results to ask
+    /// the agent/LLM for the final user-facing reply.
+    func completeHostActionTurn(
+        _ completions: [WorkbenchHostActionCompletion],
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot
+
     /// Invokes a tool through the backend dispatcher. Returns the raw outcome;
     /// the store decides how to apply it (navigate, pop approval sheet, etc.).
     func invokeTool(_ invocation: ToolInvocation) async throws -> WorkbenchToolOutcome

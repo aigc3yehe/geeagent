@@ -126,6 +126,8 @@ A persona may affect:
 - visual presentation;
 - local appearance interaction state.
 
+The core runtime prompt still owns Gee's default task boundary. Gee is not coding-first by default: unless the user explicitly asks for code development, bug fixing, refactoring, or code edits, the agent should not satisfy ordinary app control, file management, research, or configuration requests by modifying local project source code. This boundary does not prevent scripts, data-processing helpers, inspection utilities, or temporary automation code when those are necessary implementation details.
+
 A persona must not own:
 
 - run lineage;
@@ -148,7 +150,9 @@ Imported profile files remain editable after import. Reload reads the local work
 
 If the field is omitted, the persona uses workspace defaults. If the field is present, only matching tools are allowed. Patterns may use a trailing `*` prefix match, such as `navigate.*`.
 
-The frontend cannot elevate a persona's tool permissions. The native runtime resolves the active persona and enforces the allow-list before execution.
+The frontend cannot elevate a persona's non-Gee tool permissions. The native runtime resolves the active persona and enforces the allow-list before execution for ordinary local tools such as shell and file operations.
+
+Gee host-managed bridge tools, such as `gee.app.*` and `gee.gear.*`, are treated as first-party product controls rather than persona-owned generic tools. They bypass persona allow-list filtering, but they still validate enabled gears, declared capabilities, policy state, and arguments inside the Gee host bridge.
 
 ## Import, Reload, Delete
 

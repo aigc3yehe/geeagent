@@ -347,23 +347,6 @@ struct MediaLibraryModuleView: View {
                 .padding(.horizontal, 6)
                 .padding(.bottom, 8)
             }
-
-            if !store.selectedItemIDs.isEmpty {
-                Divider().opacity(0.18)
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("\(store.selectedItemIDs.count) selected")
-                        .font(.geeBodyMedium(11))
-                        .foregroundStyle(.secondary)
-                    Button(role: .destructive) {
-                        Task { await store.deleteSelectedItems() }
-                    } label: {
-                        Label("Delete", systemImage: "trash")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(EaglePillButtonStyle(variant: .danger))
-                }
-                .padding(10)
-            }
         }
         .frame(width: 220)
         .background(EaglePalette.sidebar)
@@ -508,7 +491,10 @@ struct MediaLibraryModuleView: View {
             .buttonStyle(EagleIconButtonStyle(isActive: isSidebarVisible))
             .help(isSidebarVisible ? "Hide folders" : "Show folders")
 
-            MediaKindSegmentedPicker(selection: $store.filter.mediaKind)
+            MediaKindSegmentedPicker(
+                selection: store.filter.mediaKind,
+                onSelect: store.selectMediaKindFromUI
+            )
 
             Button {
                 store.filter.starredOnly.toggle()
@@ -547,12 +533,21 @@ struct MediaLibraryModuleView: View {
             Text("No media matches the current view.")
                 .font(.geeBodyMedium(13))
                 .foregroundStyle(.secondary)
-            Button {
-                Task { await store.importFilesWithPanel() }
-            } label: {
-                Label("Import Media", systemImage: "square.and.arrow.down")
+            if store.hasActiveFilters {
+                Button {
+                    store.clearFilters()
+                } label: {
+                    Label("Clear filters", systemImage: "line.3.horizontal.decrease.circle")
+                }
+                .buttonStyle(EaglePillButtonStyle())
+            } else {
+                Button {
+                    Task { await store.importFilesWithPanel() }
+                } label: {
+                    Label("Import Media", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(EaglePillButtonStyle(variant: .primary))
             }
-            .buttonStyle(EaglePillButtonStyle(variant: .primary))
         }
         .frame(maxWidth: .infinity, minHeight: 300)
     }
@@ -588,17 +583,21 @@ struct MediaLibraryModuleView: View {
             } else if store.library != nil {
                 Text(store.visibleSummary)
                     .foregroundStyle(.secondary)
-                if !store.filter.selectedExtensions.isEmpty
-                    || store.filter.starredOnly
-                    || store.filter.mediaKind != .all
-                    || store.filter.minimumDurationSeconds != nil
-                    || !store.filter.searchText.isEmpty
-                {
+                if store.hasActiveFilters {
                     Text("Filtered")
                         .font(.geeDisplaySemibold(9))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 3)
                         .background(Color.accentColor.opacity(0.18), in: Capsule())
+                    Button {
+                        store.clearFilters()
+                    } label: {
+                        Text("Clear")
+                            .font(.geeDisplaySemibold(9))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.white.opacity(0.72))
+                    .help("Clear media filters")
                 }
             } else {
                 Text("Optional gear. Open it when you need media management.")
@@ -927,7 +926,8 @@ private struct GeeFocusBadge: View {
 }
 
 private struct MediaKindSegmentedPicker: View {
-    @Binding var selection: MediaLibraryMediaKind
+    var selection: MediaLibraryMediaKind
+    var onSelect: (MediaLibraryMediaKind) -> Void
 
     private let options: [(MediaLibraryMediaKind, String, String)] = [
         (.all, "All", "rectangle.grid.2x2"),
@@ -940,7 +940,7 @@ private struct MediaKindSegmentedPicker: View {
             ForEach(options, id: \.0) { option in
                 let isSelected = selection == option.0
                 Button {
-                    selection = option.0
+                    onSelect(option.0)
                 } label: {
                     Label(option.1, systemImage: option.2)
                         .labelStyle(.titleAndIcon)
