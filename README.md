@@ -1,6 +1,10 @@
 # GeeAgent
 
+![GeeAgent banner](apps/macos-app/Resources/bg.png)
+
 [中文](README.zh-CN.md) | [日本語](README.ja.md)
+
+[Public Docs](https://aigc3yehe.github.io/geeagent/)
 
 ![macOS](https://img.shields.io/badge/macOS-15%2B-000000?logo=apple&logoColor=white)
 ![Swift](https://img.shields.io/badge/Swift-6.1-FA7343?logo=swift&logoColor=white)
