@@ -1,9 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// Centered 720-wide floating quick-input. Visual language matches the Home
-/// launcher cards: dark underlay + `.ultraThinMaterial` highlight,
-/// top→bottom light/dark sheen, thin white stroke.
+/// Centered 720-wide floating quick-input. Visual language is intentionally
+/// solid rather than glassy: a dark command panel with one strong input row.
 ///
 /// The input itself is an NSTextField wrapper (`FocusAwareTextField`) rather
 /// than SwiftUI's `TextField(.plain)` — the SwiftUI variant installs a field
@@ -33,7 +32,7 @@ struct QuickInputPanelView: View {
         }
         .padding(14)
         .frame(width: 720, alignment: .topLeading)
-        .background(homeCardGlass)
+        .background(commandPanelBackground)
         .onAppear {
             focusRequestToken &+= 1
         }
@@ -47,8 +46,8 @@ struct QuickInputPanelView: View {
             Image(systemName: "bolt.fill")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(
-                    // Milky, translucent white so the icon reads as decorative
-                    // glass rather than a solid accent button.
+                    // Soft white so the icon reads as a cue rather than a
+                    // solid accent button.
                     Color.white.opacity(store.canUseQuickInput ? 0.78 : 0.34)
                 )
                 .frame(width: 22, height: 22)
@@ -93,13 +92,13 @@ struct QuickInputPanelView: View {
         .frame(height: fieldRowHeight)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.white.opacity(0.05))
+                .fill(isFocused ? QuickInputPalette.fieldFocused : QuickInputPalette.field)
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Color.white.opacity(isFocused ? 0.18 : 0.08), lineWidth: 0.8)
+                        .stroke(isFocused ? QuickInputPalette.focusStroke : QuickInputPalette.stroke, lineWidth: 0.9)
                 )
                 // The background shape must not intercept mouse events, or
-                // AppKit will consider the surrounding glass a hit target
+                // AppKit will consider the surrounding panel a hit target
                 // and prevent the window from being dragged by grabbing it.
                 .allowsHitTesting(false)
         )
@@ -159,10 +158,7 @@ struct QuickInputPanelView: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(outcome.kind.tint)
                 .frame(width: 22, height: 22)
-                .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(outcome.kind.tint.opacity(0.22))
-                )
+                .background(QuickInputPalette.badge, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
             VStack(alignment: .leading, spacing: 2) {
                 Text(outcome.kind.title)
                     .font(.geeBodyMedium(10))
@@ -188,32 +184,29 @@ struct QuickInputPanelView: View {
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.white.opacity(0.05))
+                .fill(QuickInputPalette.card)
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(Color.white.opacity(0.08), lineWidth: 0.8)
+                        .stroke(QuickInputPalette.stroke, lineWidth: 0.8)
                 )
                 .allowsHitTesting(false)
         )
     }
 
-    // MARK: home-card glass (inline mirror of `View.glassCard` in HomeView)
+    // MARK: solid command panel
 
-    private var homeCardGlass: some View {
+    private var commandPanelBackground: some View {
         ZStack {
             RoundedRectangle(cornerRadius: outerCornerRadius, style: .continuous)
-                .fill(Color.black.opacity(0.24))
-
-            RoundedRectangle(cornerRadius: outerCornerRadius, style: .continuous)
-                .fill(.ultraThinMaterial.opacity(0.78))
+                .fill(QuickInputPalette.panel)
 
             RoundedRectangle(cornerRadius: outerCornerRadius, style: .continuous)
                 .fill(
                     LinearGradient(
                         colors: [
-                            Color.white.opacity(0.12),
-                            Color.clear,
-                            Color.black.opacity(0.16)
+                            QuickInputPalette.panelTop,
+                            QuickInputPalette.panel,
+                            QuickInputPalette.panelBottom
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
@@ -221,11 +214,11 @@ struct QuickInputPanelView: View {
                 )
 
             RoundedRectangle(cornerRadius: outerCornerRadius, style: .continuous)
-                .stroke(Color.white.opacity(0.12), lineWidth: 0.9)
+                .stroke(QuickInputPalette.outerStroke, lineWidth: 0.9)
 
             RoundedRectangle(cornerRadius: max(outerCornerRadius - 1, 0), style: .continuous)
                 .inset(by: 1)
-                .stroke(Color.white.opacity(0.04), lineWidth: 0.6)
+                .stroke(QuickInputPalette.innerStroke, lineWidth: 0.6)
         }
         .allowsHitTesting(false)
     }
@@ -233,6 +226,20 @@ struct QuickInputPanelView: View {
     private func submit() {
         store.submitQuickInput()
     }
+}
+
+private enum QuickInputPalette {
+    static let panel = Color(red: 0.045, green: 0.05, blue: 0.064)
+    static let panelTop = Color(red: 0.062, green: 0.07, blue: 0.088)
+    static let panelBottom = Color(red: 0.028, green: 0.031, blue: 0.04)
+    static let field = Color(red: 0.072, green: 0.079, blue: 0.098)
+    static let fieldFocused = Color(red: 0.085, green: 0.094, blue: 0.116)
+    static let card = Color(red: 0.066, green: 0.073, blue: 0.09)
+    static let badge = Color(red: 0.105, green: 0.118, blue: 0.145)
+    static let stroke = Color(red: 0.20, green: 0.22, blue: 0.26)
+    static let focusStroke = Color(red: 0.44, green: 0.55, blue: 0.72)
+    static let outerStroke = Color(red: 0.24, green: 0.26, blue: 0.31)
+    static let innerStroke = Color(red: 0.10, green: 0.115, blue: 0.14)
 }
 
 // MARK: - FocusAwareTextField
@@ -341,7 +348,7 @@ private struct FocusAwareTextField: NSViewRepresentable {
 }
 
 /// `NSTextField` subclass that (1) forwards first-responder transitions so
-/// the SwiftUI glass can recolor its stroke, and (2) reapplies the custom
+/// the SwiftUI command row can recolor its stroke, and (2) reapplies the custom
 /// insertion-point color on the field editor (which is re-attached per
 /// focus cycle, so setting it once in `makeNSView` is not sufficient).
 private final class GeeQuickTextField: NSTextField {

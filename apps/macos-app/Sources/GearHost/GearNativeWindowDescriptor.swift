@@ -26,6 +26,30 @@ struct GearHostNativeWindowScenes: Scene {
             width: GearHost.hyperframesStudioWindowDescriptor.defaultWidth,
             height: GearHost.hyperframesStudioWindowDescriptor.defaultHeight
         )
+
+        Window(GearHost.smartYTMediaWindowDescriptor.title, id: GearHost.smartYTMediaWindowDescriptor.windowID) {
+            GearHost.makeNativeWindowView(for: GearHost.smartYTMediaWindowDescriptor.gearID)
+        }
+        .defaultSize(
+            width: GearHost.smartYTMediaWindowDescriptor.defaultWidth,
+            height: GearHost.smartYTMediaWindowDescriptor.defaultHeight
+        )
+
+        Window(GearHost.twitterCaptureWindowDescriptor.title, id: GearHost.twitterCaptureWindowDescriptor.windowID) {
+            GearHost.makeNativeWindowView(for: GearHost.twitterCaptureWindowDescriptor.gearID)
+        }
+        .defaultSize(
+            width: GearHost.twitterCaptureWindowDescriptor.defaultWidth,
+            height: GearHost.twitterCaptureWindowDescriptor.defaultHeight
+        )
+
+        Window(GearHost.bookmarkVaultWindowDescriptor.title, id: GearHost.bookmarkVaultWindowDescriptor.windowID) {
+            GearHost.makeNativeWindowView(for: GearHost.bookmarkVaultWindowDescriptor.gearID)
+        }
+        .defaultSize(
+            width: GearHost.bookmarkVaultWindowDescriptor.defaultWidth,
+            height: GearHost.bookmarkVaultWindowDescriptor.defaultHeight
+        )
     }
 }
 

@@ -1,6 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-
 import {
   loadXenodiaGatewayBackend,
   type XenodiaGatewayBackend,
@@ -22,6 +19,7 @@ import {
 } from "./store/terminal-permissions.js";
 import type { AgentProfile } from "./store/types.js";
 import { loadSecurityPreferences } from "./store/persistence.js";
+import { skillPromptMetadataForProfile } from "./store/skill-sources.js";
 import { runtimeProjectPath } from "./paths.js";
 
 export type TurnRoute = {
@@ -77,7 +75,6 @@ type RuntimeTurnOptions = {
 };
 
 const ITERATIVE_TURN_MAX_STEPS = 8;
-const PERSONA_SKILL_PROMPT_CHAR_LIMIT = 20_000;
 const DEFAULT_SDK_EVENT_IDLE_TIMEOUT_MS = 75_000;
 
 const sessions = new Map<string, ManagedSession>();
@@ -192,7 +189,7 @@ async function ensureSession(
       cwd: runtimeProjectPath(runtimeFacts.cwd),
       model: "sonnet",
       maxTurns: ITERATIVE_TURN_MAX_STEPS,
-      systemPrompt: await activeAgentSystemPrompt(activeProfile),
+      systemPrompt: await activeAgentSystemPrompt(configDir, activeProfile),
       runtimeContext: {
         localTime: runtimeFacts.localTime,
         timezone: runtimeFacts.timezone,
@@ -522,37 +519,16 @@ function isExpectedNoMatchLsofResult(
   );
 }
 
-async function activeAgentSystemPrompt(profile: AgentProfile): Promise<string> {
+async function activeAgentSystemPrompt(
+  configDir: string,
+  profile: AgentProfile,
+): Promise<string> {
   const sections = [profile.personality_prompt.trim()];
-  const skillSections: string[] = [];
-  for (const skill of profile.skills ?? []) {
-    if (!skill.path) {
-      continue;
-    }
-    try {
-      const raw = await readFile(join(skill.path, "SKILL.md"), "utf8");
-      const body = truncatePersonaSkillPrompt(raw);
-      if (body.trim()) {
-        skillSections.push(`## ${skill.id.trim()}\nPath: ${skill.path}\n\n${body}`);
-      }
-    } catch {
-      continue;
-    }
-  }
-  if (skillSections.length > 0) {
-    sections.push(
-      `[PERSONA SKILL WHITELIST]\nOnly the following persona skills are enabled. When a user request matches one of these skills, follow that skill's SKILL.md instructions. Do not assume access to unlisted local skills.\n\n${skillSections.join("\n\n")}`,
-    );
+  const skillMetadata = await skillPromptMetadataForProfile(configDir, profile);
+  if (skillMetadata) {
+    sections.push(skillMetadata);
   }
   return sections.map((section) => section.trim()).filter(Boolean).join("\n\n");
-}
-
-function truncatePersonaSkillPrompt(raw: string): string {
-  const trimmed = raw.trim();
-  if (trimmed.length <= PERSONA_SKILL_PROMPT_CHAR_LIMIT) {
-    return trimmed;
-  }
-  return `${trimmed.slice(0, PERSONA_SKILL_PROMPT_CHAR_LIMIT)}\n\n[Skill content truncated by GeeAgent to fit the active turn context.]`;
 }
 
 function captureRuntimeFacts(surface: string): {
@@ -664,6 +640,7 @@ function summarizePrompt(prompt: string, maxLength: number): string {
 }
 
 export const __sdkTurnRunnerTestHooks = {
+  activeAgentSystemPrompt,
   closeUnfinishedToolEventsOnFailure,
   sdkBashRequestFromInput,
   sdkEventIdleTimeoutMs,

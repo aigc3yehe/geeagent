@@ -37,7 +37,9 @@ function printUsage(): void {
       "install-agent-pack, reload-agent-profile, delete-agent-profile, " +
       "delete-terminal-access-rule, submit-workspace-message, " +
       "submit-quick-prompt, perform-task-action, get-chat-routing-settings, " +
-      "save-chat-routing-settings, set-highest-authorization, invoke-tool, serve\n",
+      "save-chat-routing-settings, set-highest-authorization, add-system-skill-source, " +
+      "remove-system-skill-source, add-persona-skill-source, remove-persona-skill-source, " +
+      "invoke-tool, serve\n",
   );
 }
 

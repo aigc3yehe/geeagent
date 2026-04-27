@@ -332,6 +332,7 @@ struct PreviewWorkbenchRuntimeClient: WorkbenchRuntimeClient {
                 )
             ],
             activeAgentProfileID: "gee",
+            skillSources: .empty,
             settings: [
                 SettingsPaneSummary(
                     id: "settings-runtime",
@@ -687,6 +688,71 @@ struct PreviewWorkbenchRuntimeClient: WorkbenchRuntimeClient {
             detail: "Preview deleted agent definition \(profileID).",
             taskID: nil
         )
+        return nextSnapshot
+    }
+
+    func addSystemSkillSource(
+        at sourcePath: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        var nextSnapshot = snapshot
+        let source = SkillSourceRecord(
+            id: "preview-system-\(UUID().uuidString)",
+            path: sourcePath,
+            scope: "system",
+            profileID: nil,
+            enabled: true,
+            addedAt: "Preview",
+            lastScannedAt: "Preview",
+            status: "ready",
+            error: nil,
+            skills: []
+        )
+        nextSnapshot.skillSources.systemSources.append(source)
+        return nextSnapshot
+    }
+
+    func removeSystemSkillSource(
+        _ sourceID: SkillSourceRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        var nextSnapshot = snapshot
+        nextSnapshot.skillSources.systemSources.removeAll { $0.id == sourceID }
+        return nextSnapshot
+    }
+
+    func addPersonaSkillSource(
+        profileID: AgentProfileRecord.ID,
+        sourcePath: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        var nextSnapshot = snapshot
+        var sources = nextSnapshot.skillSources.personaSources[profileID] ?? []
+        sources.append(
+            SkillSourceRecord(
+                id: "preview-persona-\(UUID().uuidString)",
+                path: sourcePath,
+                scope: "persona",
+                profileID: profileID,
+                enabled: true,
+                addedAt: "Preview",
+                lastScannedAt: "Preview",
+                status: "ready",
+                error: nil,
+                skills: []
+            )
+        )
+        nextSnapshot.skillSources.personaSources[profileID] = sources
+        return nextSnapshot
+    }
+
+    func removePersonaSkillSource(
+        profileID: AgentProfileRecord.ID,
+        sourceID: SkillSourceRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        var nextSnapshot = snapshot
+        nextSnapshot.skillSources.personaSources[profileID]?.removeAll { $0.id == sourceID }
         return nextSnapshot
     }
 

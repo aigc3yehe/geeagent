@@ -1,0 +1,87 @@
+{
+  "schema": "gee.gear.v1",
+  "id": "twitter.capture",
+  "name": "Twitter Capture",
+  "description": "Native Twitter/X capture gear for saving tweet, list, or user timeline content into a local file database.",
+  "developer": "Gee",
+  "version": "0.1.0",
+  "category": "Research",
+  "kind": "atmosphere",
+  "display_mode": "full_canvas",
+  "entry": {
+    "type": "native",
+    "native_id": "twitter.capture"
+  },
+  "permissions": [
+    "network.api",
+    "process.spawn",
+    "filesystem.write.gear_storage",
+    "filesystem.read.user_selected"
+  ],
+  "dependencies": {
+    "install_strategy": "on_open",
+    "items": [
+      {
+        "id": "python3",
+        "kind": "runtime",
+        "scope": "global",
+        "required": true,
+        "detect": {
+          "command": "python3",
+          "args": ["--version"],
+          "min_version": "3.11.0"
+        },
+        "installer": {
+          "type": "recipe",
+          "id": "brew.install.python"
+        }
+      },
+      {
+        "id": "twikit-httpx",
+        "kind": "runtime",
+        "scope": "global",
+        "required": true,
+        "detect": {
+          "command": "python3",
+          "args": ["-c", "import twikit, httpx"]
+        },
+        "installer": {
+          "type": "recipe",
+          "id": "python3.install.user.twikit"
+        }
+      }
+    ]
+  },
+  "agent": {
+    "enabled": true,
+    "capabilities": [
+      {
+        "id": "twitter.fetch_tweet",
+        "title": "Fetch tweet URL",
+        "description": "Create a Twitter Capture task for one tweet URL and return the saved tweet content.",
+        "examples": [
+          "Fetch this tweet URL",
+          "Download the content from this X post"
+        ]
+      },
+      {
+        "id": "twitter.fetch_list",
+        "title": "Fetch list URL",
+        "description": "Create a Twitter Capture task for a Twitter/X list URL and return the first N tweet records.",
+        "examples": [
+          "Fetch the first 20 tweets from this Twitter list",
+          "Download 50 tweets from this X list"
+        ]
+      },
+      {
+        "id": "twitter.fetch_user",
+        "title": "Fetch user tweets",
+        "description": "Create a Twitter Capture task for a username or profile URL and return the first N tweet records.",
+        "examples": [
+          "Fetch the latest 30 tweets from @openai",
+          "Download the first 20 tweets from this username"
+        ]
+      }
+    ]
+  }
+}

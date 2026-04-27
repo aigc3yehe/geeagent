@@ -1,10 +1,42 @@
+export type AgentSkillReference = {
+  id: string;
+  name?: string;
+  description?: string;
+  path?: string;
+  skill_file_path?: string;
+  source_id?: string;
+  source_scope?: "system" | "persona" | "profile";
+  source_path?: string;
+  profile_id?: string;
+  status?: "ready" | "unavailable" | "invalid";
+  error?: string;
+};
+
+export type RuntimeSkillSourceRecord = {
+  id: string;
+  path: string;
+  scope: "system" | "persona";
+  profile_id?: string;
+  enabled: boolean;
+  added_at: string;
+  last_scanned_at?: string;
+  status: "ready" | "unavailable" | "invalid";
+  error?: string;
+  skills: AgentSkillReference[];
+};
+
+export type RuntimeSkillSourcesSnapshot = {
+  system_sources: RuntimeSkillSourceRecord[];
+  persona_sources: Record<string, RuntimeSkillSourceRecord[]>;
+};
+
 export type AgentProfile = {
   id: string;
   name: string;
   tagline: string;
   personality_prompt: string;
   appearance: Record<string, unknown>;
-  skills?: Array<{ id: string; path?: string }>;
+  skills?: AgentSkillReference[];
   allowed_tool_ids?: string[];
   source: string;
   version: string;
@@ -78,4 +110,5 @@ export type RuntimeSnapshot = Omit<
   terminal_access_rules: unknown[];
   security_preferences: RuntimeSecurityPreferences;
   host_action_intents: RuntimeHostActionIntent[];
+  skill_sources: RuntimeSkillSourcesSnapshot;
 };

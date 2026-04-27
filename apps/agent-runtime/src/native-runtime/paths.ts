@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 export const RUNTIME_STORE_FILE = "runtime-store.json";
 export const RUNTIME_SECURITY_FILE = "runtime-security.json";
 export const TERMINAL_ACCESS_FILE = "terminal-access.json";
+export const SKILL_SOURCES_FILE = "runtime-skill-sources.json";
 
 export function resolveConfigDir(configDir?: string): string {
   if (configDir?.trim()) {
@@ -39,6 +40,10 @@ export function runtimeSecurityPath(configDir: string): string {
 
 export function terminalAccessPath(configDir: string): string {
   return join(configDir, TERMINAL_ACCESS_FILE);
+}
+
+export function runtimeSkillSourcesPath(configDir: string): string {
+  return join(configDir, SKILL_SOURCES_FILE);
 }
 
 export function agentsDir(configDir: string): string {

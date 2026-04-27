@@ -105,6 +105,9 @@ struct AgentsView: View {
                 summarySection(profile)
                     .padding(.horizontal)
 
+                skillSourcesSection(profile)
+                    .padding(.horizontal)
+
                 fileLocationsSection(profile)
                     .padding(.horizontal)
 
@@ -348,6 +351,99 @@ struct AgentsView: View {
         }
     }
 
+    private func skillSourcesSection(_ profile: AgentProfileRecord) -> some View {
+        let sources = store.skillSources.personaSources(for: profile.id)
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Skill Sources")
+                    .font(.headline)
+
+                Spacer()
+
+                Text("Refreshes on Reload")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Button(action: { choosePersonaSkillSource(profile) }) {
+                    Label("Add Source", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(store.isAddingPersonaSkillSource)
+            }
+
+            if sources.isEmpty {
+                Text("No persona-specific skill sources.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(sources) { source in
+                        skillSourceRow(source) {
+                            removePersonaSkillSource(source, from: profile)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 0.8)
+        }
+    }
+
+    private func skillSourceRow(
+        _ source: SkillSourceRecord,
+        removeAction: @escaping () -> Void
+    ) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: source.status == "ready" ? "checkmark.seal" : "exclamationmark.triangle")
+                .foregroundStyle(source.status == "ready" ? Color.green : Color.orange)
+                .frame(width: 18)
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Text(source.skillsSummary)
+                        .font(.subheadline.weight(.semibold))
+                    Text(source.statusTitle)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+
+                Text(source.path)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+
+                if let error = source.error, !error.isEmpty {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            Button(role: .destructive, action: removeAction) {
+                Image(systemName: "minus.circle")
+            }
+            .buttonStyle(.borderless)
+            .help("Remove source")
+            .disabled(store.isRemovingSkillSource)
+        }
+        .padding(10)
+        .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.white.opacity(0.06), lineWidth: 0.8)
+        }
+    }
+
     private func fileLocationsSection(_ profile: AgentProfileRecord) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("File Locations")
@@ -529,6 +625,47 @@ struct AgentsView: View {
             } catch {
                 errorMessage = AgentsFeedbackMessage(
                     title: "Import Failed",
+                    message: error.localizedDescription
+                )
+            }
+        }
+    }
+
+    private func choosePersonaSkillSource(_ profile: AgentProfileRecord) {
+        let panel = NSOpenPanel()
+        panel.title = "Add Persona Skill Source"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+
+        guard panel.runModal() == .OK, let sourceURL = panel.url else { return }
+        Task {
+            do {
+                try await store.addPersonaSkillSource(from: sourceURL, to: profile)
+                showSuccessBanner(
+                    title: "Skill Source Added",
+                    message: "\(profile.name) will refresh this source on Reload."
+                )
+            } catch {
+                errorMessage = AgentsFeedbackMessage(
+                    title: "Skill Source Failed",
+                    message: error.localizedDescription
+                )
+            }
+        }
+    }
+
+    private func removePersonaSkillSource(_ source: SkillSourceRecord, from profile: AgentProfileRecord) {
+        Task {
+            do {
+                try await store.removePersonaSkillSource(source, from: profile)
+                showSuccessBanner(
+                    title: "Skill Source Removed",
+                    message: "\(profile.name) no longer uses this source."
+                )
+            } catch {
+                errorMessage = AgentsFeedbackMessage(
+                    title: "Remove Skill Source Failed",
                     message: error.localizedDescription
                 )
             }

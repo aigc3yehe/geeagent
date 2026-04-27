@@ -25,6 +25,53 @@ async function tempConfigDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "geeagent-native-runtime-"));
 }
 
+async function writeSkill(
+  sourceRoot: string,
+  skillDirName: string,
+  metadata: { name: string; description?: string },
+  body: string,
+): Promise<string> {
+  const skillRoot = join(sourceRoot, skillDirName);
+  await mkdir(skillRoot, { recursive: true });
+  const frontmatter = [
+    "---",
+    `name: ${metadata.name}`,
+    metadata.description ? `description: ${metadata.description}` : "",
+    "---",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  await writeFile(join(skillRoot, "SKILL.md"), `${frontmatter}\n\n${body}\n`, "utf8");
+  return skillRoot;
+}
+
+async function writeAgentPack(root: string, id: string): Promise<void> {
+  await mkdir(root, { recursive: true });
+  await writeFile(
+    join(root, "agent.json"),
+    JSON.stringify(
+      {
+        definition_version: "2",
+        id,
+        name: "Skill Test Persona",
+        tagline: "Persona with explicit local skills",
+        identity_prompt_path: "identity-prompt.md",
+        soul_path: "soul.md",
+        playbook_path: "playbook.md",
+        appearance: { kind: "abstract" },
+        source: "module_pack",
+        version: "1.0.0",
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  await writeFile(join(root, "identity-prompt.md"), "Identity layer.", "utf8");
+  await writeFile(join(root, "soul.md"), "Soul layer.", "utf8");
+  await writeFile(join(root, "playbook.md"), "Playbook layer.", "utf8");
+}
+
 function send(
   child: ChildProcessWithoutNullStreams,
   request: Record<string, unknown>,
@@ -228,6 +275,266 @@ describe("native runtime command modules", () => {
     assert.equal(
       snapshot.active_agent_profile.appearance.bundle_path,
       join(live2DRoot, "Gee.model3.json"),
+    );
+  });
+
+  it("adds explicit system skill sources and hot-refreshes metadata without scanning unrelated folders", async () => {
+    const configDir = await tempConfigDir();
+    const systemSourceRoot = join(configDir, "skills", "global");
+    await writeSkill(
+      systemSourceRoot,
+      "draft-helper",
+      {
+        name: "draft-helper",
+        description: "Helps Gee draft concise local replies",
+      },
+      "SECRET SYSTEM SKILL BODY SHOULD NOT BE INJECTED",
+    );
+    await writeSkill(
+      join(configDir, "unregistered-skills"),
+      "unlisted-helper",
+      {
+        name: "unlisted-helper",
+        description: "This folder was never added as a source",
+      },
+      "UNREGISTERED BODY",
+    );
+
+    const added = JSON.parse(
+      await handleNativeRuntimeCommand("add-system-skill-source", [systemSourceRoot], {
+        configDir,
+      }),
+    );
+    assert.deepEqual(
+      added.skill_sources.system_sources.flatMap(
+        (source: { skills?: Array<{ id: string }> }) =>
+          (source.skills ?? []).map((skill) => skill.id),
+      ),
+      ["draft-helper"],
+    );
+    assert.equal(
+      added.active_agent_profile.skills.some(
+        (skill: { id?: string }) => skill.id === "unlisted-helper",
+      ),
+      false,
+    );
+
+    await writeSkill(
+      systemSourceRoot,
+      "image-helper",
+      {
+        name: "image-helper",
+        description: "Summarizes image editing requests",
+      },
+      "HOT UPDATED BODY SHOULD NOT BE INJECTED",
+    );
+
+    const hot = JSON.parse(
+      await handleNativeRuntimeCommand("snapshot", [], { configDir }),
+    );
+    assert.deepEqual(
+      hot.active_agent_profile.skills
+        .filter((skill: { source_scope?: string }) => skill.source_scope === "system")
+        .map((skill: { id: string }) => skill.id)
+        .sort(),
+      ["draft-helper", "image-helper"],
+    );
+  });
+
+  it("injects skill metadata into the SDK prompt without injecting SKILL.md bodies", async () => {
+    const configDir = await tempConfigDir();
+    const systemSourceRoot = join(configDir, "skills", "global");
+    await writeSkill(
+      systemSourceRoot,
+      "metadata-only",
+      {
+        name: "metadata-only",
+        description: "Visible description only",
+      },
+      "FULL BODY SENTINEL: never expose this instruction text to the agent prompt.",
+    );
+    const snapshot = JSON.parse(
+      await handleNativeRuntimeCommand("add-system-skill-source", [systemSourceRoot], {
+        configDir,
+      }),
+    );
+    const hooks = __sdkTurnRunnerTestHooks as typeof __sdkTurnRunnerTestHooks & {
+      activeAgentSystemPrompt: (
+        configDir: string,
+        profile: typeof snapshot.active_agent_profile,
+      ) => Promise<string>;
+    };
+
+    const prompt = await hooks.activeAgentSystemPrompt(
+      configDir,
+      snapshot.active_agent_profile,
+    );
+
+    assert.match(prompt, /metadata-only/);
+    assert.match(prompt, /Visible description only/);
+    assert.doesNotMatch(prompt, /FULL BODY SENTINEL/);
+    assert.doesNotMatch(prompt, /never expose this instruction text/);
+  });
+
+  it("refreshes persona skill sources only when the persona is reloaded", async () => {
+    const configDir = await tempConfigDir();
+    const packRoot = join(configDir, "packs", "skill-test-persona");
+    await writeAgentPack(packRoot, "skill-test-persona");
+    await handleNativeRuntimeCommand("install-agent-pack", [packRoot], { configDir });
+
+    const personaSourceRoot = join(configDir, "skills", "persona");
+    await writeSkill(
+      personaSourceRoot,
+      "persona-alpha",
+      {
+        name: "persona-alpha",
+        description: "First persona-level skill",
+      },
+      "ALPHA BODY",
+    );
+
+    const afterAdd = JSON.parse(
+      await handleNativeRuntimeCommand(
+        "add-persona-skill-source",
+        ["skill-test-persona", personaSourceRoot],
+        { configDir },
+      ),
+    );
+    assert.deepEqual(
+      afterAdd.agent_profiles
+        .find((profile: { id: string }) => profile.id === "skill-test-persona")
+        .skills.filter(
+          (skill: { source_scope?: string }) => skill.source_scope === "persona",
+        )
+        .map((skill: { id: string }) => skill.id),
+      ["persona-alpha"],
+    );
+
+    await writeSkill(
+      personaSourceRoot,
+      "persona-beta",
+      {
+        name: "persona-beta",
+        description: "Second persona-level skill",
+      },
+      "BETA BODY",
+    );
+
+    const beforeReload = JSON.parse(
+      await handleNativeRuntimeCommand("snapshot", [], { configDir }),
+    );
+    assert.equal(
+      beforeReload.agent_profiles
+        .find((profile: { id: string }) => profile.id === "skill-test-persona")
+        .skills.some((skill: { id: string }) => skill.id === "persona-beta"),
+      false,
+    );
+
+    const afterReload = JSON.parse(
+      await handleNativeRuntimeCommand("reload-agent-profile", ["skill-test-persona"], {
+        configDir,
+      }),
+    );
+    assert.deepEqual(
+      afterReload.agent_profiles
+        .find((profile: { id: string }) => profile.id === "skill-test-persona")
+        .skills.filter(
+          (skill: { source_scope?: string }) => skill.source_scope === "persona",
+        )
+        .map((skill: { id: string }) => skill.id)
+        .sort(),
+      ["persona-alpha", "persona-beta"],
+    );
+  });
+
+  it("removes persona skill source bindings when deleting the persona", async () => {
+    const configDir = await tempConfigDir();
+    const packRoot = join(configDir, "packs", "skill-delete-persona");
+    await writeAgentPack(packRoot, "skill-delete-persona");
+    await handleNativeRuntimeCommand("install-agent-pack", [packRoot], { configDir });
+
+    const personaSourceRoot = join(configDir, "skills", "delete-persona");
+    await writeSkill(
+      personaSourceRoot,
+      "delete-me",
+      {
+        name: "delete-me",
+        description: "Persona source that should be removed with the persona",
+      },
+      "DELETE BODY",
+    );
+    await handleNativeRuntimeCommand(
+      "add-persona-skill-source",
+      ["skill-delete-persona", personaSourceRoot],
+      { configDir },
+    );
+
+    const afterDelete = JSON.parse(
+      await handleNativeRuntimeCommand("delete-agent-profile", ["skill-delete-persona"], {
+        configDir,
+      }),
+    );
+
+    assert.equal(afterDelete.skill_sources.persona_sources["skill-delete-persona"], undefined);
+    assert.equal(
+      afterDelete.agent_profiles.some(
+        (profile: { id: string }) => profile.id === "skill-delete-persona",
+      ),
+      false,
+    );
+    const persistedSkillSources = JSON.parse(
+      await readFile(join(configDir, "runtime-skill-sources.json"), "utf8"),
+    );
+    assert.equal(
+      persistedSkillSources.persona_sources["skill-delete-persona"],
+      undefined,
+    );
+  });
+
+  it("removes persona skill sources without leaving empty registry buckets", async () => {
+    const configDir = await tempConfigDir();
+    const packRoot = join(configDir, "packs", "skill-remove-persona");
+    await writeAgentPack(packRoot, "skill-remove-persona");
+    await handleNativeRuntimeCommand("install-agent-pack", [packRoot], { configDir });
+
+    const personaSourceRoot = join(configDir, "skills", "remove-persona");
+    await writeSkill(
+      personaSourceRoot,
+      "remove-me",
+      {
+        name: "remove-me",
+        description: "Persona source that should be removed cleanly",
+      },
+      "REMOVE BODY",
+    );
+    const afterAdd = JSON.parse(
+      await handleNativeRuntimeCommand(
+        "add-persona-skill-source",
+        ["skill-remove-persona", personaSourceRoot],
+        { configDir },
+      ),
+    );
+    const sourceId =
+      afterAdd.skill_sources.persona_sources["skill-remove-persona"][0].id;
+
+    const afterRemove = JSON.parse(
+      await handleNativeRuntimeCommand(
+        "remove-persona-skill-source",
+        ["skill-remove-persona", sourceId],
+        { configDir },
+      ),
+    );
+
+    assert.deepEqual(
+      afterRemove.skill_sources.persona_sources["skill-remove-persona"],
+      [],
+    );
+    const persistedSkillSources = JSON.parse(
+      await readFile(join(configDir, "runtime-skill-sources.json"), "utf8"),
+    );
+    assert.equal(
+      persistedSkillSources.persona_sources["skill-remove-persona"],
+      undefined,
     );
   });
 
@@ -684,6 +991,68 @@ describe("native runtime command modules", () => {
       const latest = snapshot.active_conversation.messages.at(-1);
       assert.equal(latest.role, "user");
       assert.equal(latest.content, "show png image files in the media browser");
+    } finally {
+      if (previousKey === undefined) {
+        delete process.env.XENODIA_API_KEY;
+      } else {
+        process.env.XENODIA_API_KEY = previousKey;
+      }
+    }
+  });
+
+  it("routes simple Twitter capture requests into Gear host actions", async () => {
+    const configDir = await tempConfigDir();
+    const previousKey = process.env.XENODIA_API_KEY;
+    delete process.env.XENODIA_API_KEY;
+    try {
+      const raw = await handleNativeRuntimeCommand(
+        "submit-workspace-message",
+        ["fetch the first 12 tweets from @openai on twitter"],
+        { configDir },
+      );
+      const snapshot = JSON.parse(raw);
+      assert.equal(snapshot.last_request_outcome.kind, "host_action_pending");
+      assert.equal(snapshot.host_action_intents.length, 2);
+      assert.deepEqual(snapshot.host_action_intents[0].arguments, { gear_id: "twitter.capture" });
+      assert.deepEqual(snapshot.host_action_intents[1].arguments, {
+        gear_id: "twitter.capture",
+        capability_id: "twitter.fetch_user",
+        args: { username: "openai", limit: 12 },
+      });
+      const latest = snapshot.active_conversation.messages.at(-1);
+      assert.equal(latest.role, "user");
+      assert.equal(latest.content, "fetch the first 12 tweets from @openai on twitter");
+    } finally {
+      if (previousKey === undefined) {
+        delete process.env.XENODIA_API_KEY;
+      } else {
+        process.env.XENODIA_API_KEY = previousKey;
+      }
+    }
+  });
+
+  it("routes bookmark save requests into the Bookmark Vault Gear", async () => {
+    const configDir = await tempConfigDir();
+    const previousKey = process.env.XENODIA_API_KEY;
+    delete process.env.XENODIA_API_KEY;
+    try {
+      const raw = await handleNativeRuntimeCommand(
+        "submit-workspace-message",
+        ["bookmark this video https://example.com/watch?v=demo"],
+        { configDir },
+      );
+      const snapshot = JSON.parse(raw);
+      assert.equal(snapshot.last_request_outcome.kind, "host_action_pending");
+      assert.equal(snapshot.host_action_intents.length, 2);
+      assert.deepEqual(snapshot.host_action_intents[0].arguments, { gear_id: "bookmark.vault" });
+      assert.deepEqual(snapshot.host_action_intents[1].arguments, {
+        gear_id: "bookmark.vault",
+        capability_id: "bookmark.save",
+        args: { content: "video https://example.com/watch?v=demo" },
+      });
+      const latest = snapshot.active_conversation.messages.at(-1);
+      assert.equal(latest.role, "user");
+      assert.equal(latest.content, "bookmark this video https://example.com/watch?v=demo");
     } finally {
       if (previousKey === undefined) {
         delete process.env.XENODIA_API_KEY;

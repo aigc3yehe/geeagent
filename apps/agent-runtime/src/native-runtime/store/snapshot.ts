@@ -6,6 +6,10 @@ import {
   loadRuntimeStore,
   loadSecurityPreferences,
 } from "./persistence.js";
+import {
+  profilesWithEffectiveSkills,
+  skillSourcesSnapshot,
+} from "./skill-sources.js";
 import { loadTerminalAccessRuleRecords } from "./terminal-permissions.js";
 import type { AgentProfile, RuntimeSnapshot, RuntimeStore } from "./types.js";
 
@@ -21,7 +25,19 @@ export async function snapshotFromStore(
   configDir: string,
 ): Promise<RuntimeSnapshot> {
   await refreshAgentProfiles(store, configDir);
-  const activeProfile = activeAgentProfile(store);
+  const skillSources = await skillSourcesSnapshot(
+    configDir,
+    store.agent_profiles.map((profile) => profile.id),
+  );
+  const agentProfiles = await profilesWithEffectiveSkills(
+    configDir,
+    store.agent_profiles,
+    skillSources,
+  );
+  const activeProfile =
+    agentProfiles.find((profile) => profile.id === store.active_agent_profile_id) ??
+    agentProfiles[0] ??
+    activeAgentProfile(store);
   const chatRuntime = await snapshotChatRuntime(store, configDir);
   const active = activeConversation(store);
 
@@ -30,7 +46,7 @@ export async function snapshotFromStore(
     quick_reply: store.quick_reply,
     context_budget: store.context_budget,
     active_agent_profile: activeProfile,
-    agent_profiles: store.agent_profiles,
+    agent_profiles: agentProfiles,
     interaction_capabilities: store.interaction_capabilities,
     last_request_outcome: store.last_request_outcome,
     last_run_state: store.last_run_state,
@@ -49,6 +65,7 @@ export async function snapshotFromStore(
     terminal_access_rules: await loadTerminalAccessRuleRecords(configDir),
     security_preferences: await loadSecurityPreferences(configDir),
     host_action_intents: store.host_action_intents ?? [],
+    skill_sources: skillSources,
     workspace_focus: store.workspace_focus,
     workspace_runtime: store.workspace_runtime,
   };

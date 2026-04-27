@@ -14,7 +14,7 @@ persona 层必须和运行时执行真相分开。run、session、event、approv
 - 导入后的 persona 会复制到本地 persona workspace。
 - active persona 会暴露在 runtime snapshot 中。
 - active persona 会影响 SDK system prompt。
-- persona skill whitelist 可以注入 prompt。
+- 显式添加的 skill source metadata 可以暴露给 prompt，但不会注入完整 `SKILL.md` 正文。
 - persona tool allow-list 会由 native runtime tool dispatcher 强制执行。
 - 如果存在视觉资产，persona visual layer 会驱动原生 Home surface。
 
@@ -83,6 +83,20 @@ GeeAgent 按以下顺序编译 persona context：
 
 编译结果会成为 persona 的 runtime `personality_prompt`。
 
+## Skill Sources
+
+GeeAgent 只识别用户显式添加的 skill 文件夹。它不会自动扫描本机所有 Claude、Codex 或 agent skill 目录。
+
+Settings 可以添加系统级 skill source 文件夹。系统级 source 对所有 persona 生效，并会在 runtime 构建新 snapshot 或 prompt 时热更新。
+
+Agents 详情页可以添加 persona 级 skill source 文件夹。persona 级 source 只对该 persona 生效。persona 级 skill 列表会在 persona Reload 时刷新。
+
+skill source 可以是一个包含 `SKILL.md` 的单个 skill 文件夹，也可以是一个 collection 文件夹，其直接子文件夹包含 `SKILL.md`。
+
+runtime 只会把 skill metadata 暴露给 active agent prompt，例如 name、description、scope 和 file path。完整 `SKILL.md` 内容不会自动注入。如果 agent 需要完整指令，必须通过正常 runtime file/tool 路径和权限模型检查该 skill 文件。
+
+skill availability 是上下文，不是安全沙箱。tool execution 仍然由 GeeAgent runtime permissions、approval flow 和 persona `allowed_tool_ids` 控制。
+
 ## 视觉层
 
 支持的 persona visual kind：
@@ -121,7 +135,7 @@ persona 的影响被刻意保持为轻量。
 persona 可以影响：
 
 - system prompt 内容；
-- 白名单 persona skills；
+- 显式配置的 skill metadata；
 - tool allow-list 的建议和约束；
 - 视觉展示；
 - 本地 appearance 交互状态。
@@ -168,6 +182,7 @@ Reload：
 
 - 重新读取本地 persona workspace；
 - 重新编译 layered context；
+- 刷新 persona 级 skill source metadata；
 - 如果校验失败，保留之前已加载的 profile。
 
 Delete：

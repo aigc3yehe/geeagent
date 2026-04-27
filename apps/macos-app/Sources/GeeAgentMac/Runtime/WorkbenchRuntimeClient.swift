@@ -38,6 +38,24 @@ protocol WorkbenchRuntimeClient: Sendable {
         _ profileID: AgentProfileRecord.ID,
         in snapshot: WorkbenchSnapshot
     ) async throws -> WorkbenchSnapshot
+    func addSystemSkillSource(
+        at sourcePath: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot
+    func removeSystemSkillSource(
+        _ sourceID: SkillSourceRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot
+    func addPersonaSkillSource(
+        profileID: AgentProfileRecord.ID,
+        sourcePath: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot
+    func removePersonaSkillSource(
+        profileID: AgentProfileRecord.ID,
+        sourceID: SkillSourceRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot
     func deleteTerminalPermissionRule(
         _ ruleID: TerminalPermissionRuleRecord.ID,
         in snapshot: WorkbenchSnapshot
@@ -70,4 +88,54 @@ protocol WorkbenchRuntimeClient: Sendable {
     /// Invokes a tool through the backend dispatcher. Returns the raw outcome;
     /// the store decides how to apply it (navigate, pop approval sheet, etc.).
     func invokeTool(_ invocation: ToolInvocation) async throws -> WorkbenchToolOutcome
+}
+
+extension WorkbenchRuntimeClient {
+    func addSystemSkillSource(
+        at sourcePath: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        _ = sourcePath
+        _ = snapshot
+        throw RuntimeProcessError.unsupported(
+            "This runtime client does not support global skill sources."
+        )
+    }
+
+    func removeSystemSkillSource(
+        _ sourceID: SkillSourceRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        _ = sourceID
+        _ = snapshot
+        throw RuntimeProcessError.unsupported(
+            "This runtime client does not support global skill sources."
+        )
+    }
+
+    func addPersonaSkillSource(
+        profileID: AgentProfileRecord.ID,
+        sourcePath: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        _ = profileID
+        _ = sourcePath
+        _ = snapshot
+        throw RuntimeProcessError.unsupported(
+            "This runtime client does not support persona skill sources."
+        )
+    }
+
+    func removePersonaSkillSource(
+        profileID: AgentProfileRecord.ID,
+        sourceID: SkillSourceRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        _ = profileID
+        _ = sourceID
+        _ = snapshot
+        throw RuntimeProcessError.unsupported(
+            "This runtime client does not support persona skill sources."
+        )
+    }
 }

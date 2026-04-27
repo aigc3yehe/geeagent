@@ -146,9 +146,15 @@ actor GearPreparationService {
             return await runBrewInstall(package: "node")
         case "brew.install.ffmpeg":
             return await runBrewInstall(package: "ffmpeg")
+        case "brew.install.yt-dlp":
+            return await runBrewInstall(package: "yt-dlp")
+        case "brew.install.python":
+            return await runBrewInstall(package: "python")
         case "npm.install.global.hyperframes":
             let version = installer.version ?? "0.4.20"
             return await runner.run("npm", arguments: ["install", "-g", "hyperframes@\(version)"])
+        case "python3.install.user.twikit":
+            return await runner.run("python3", arguments: ["-m", "pip", "install", "--user", "twikit", "httpx"])
         default:
             return GearCommandResult(exitCode: 1, stdout: "", stderr: "Unknown installer recipe `\(id)`.")
         }

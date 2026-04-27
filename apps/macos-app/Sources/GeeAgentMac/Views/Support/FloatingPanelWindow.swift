@@ -10,8 +10,8 @@ import SwiftUI
 ///   the panel can keep itself exactly as tall as its SwiftUI content —
 ///   needed once the quick-input panel grows to include a latest-result card.
 /// - Non-activating so the host app doesn't steal focus when the panel shows.
-/// - Hides on resignKey (blur-to-dismiss), sending the caller-supplied
-///   `onDismiss` closure.
+/// - Can optionally hide on resignKey for menu popovers; command surfaces such
+///   as Quick Input stay open until an explicit dismiss.
 /// - Honors `Escape` via a cheap `keyDown` override (no global handlers).
 final class FloatingPanelWindow: NSPanel {
     var onDismiss: (() -> Void)?
@@ -20,14 +20,18 @@ final class FloatingPanelWindow: NSPanel {
     /// given a fixed `.frame(width:)` by each panel surface.
     private let contentWidth: CGFloat
     private let contentCornerRadius: CGFloat
+    private let dismissesOnResignKey: Bool
 
     init<Content: View>(
         size: CGSize,
         cornerRadius: CGFloat = 12,
+        level: NSWindow.Level = .floating,
+        dismissesOnResignKey: Bool = true,
         @ViewBuilder content: () -> Content
     ) {
         self.contentWidth = size.width
         self.contentCornerRadius = cornerRadius
+        self.dismissesOnResignKey = dismissesOnResignKey
         super.init(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.nonactivatingPanel, .fullSizeContentView, .borderless],
@@ -36,7 +40,7 @@ final class FloatingPanelWindow: NSPanel {
         )
 
         self.isFloatingPanel = true
-        self.level = .floating
+        self.level = level
         self.becomesKeyOnlyIfNeeded = false
         self.hidesOnDeactivate = false
         self.isReleasedWhenClosed = false
@@ -46,8 +50,8 @@ final class FloatingPanelWindow: NSPanel {
         self.titleVisibility = .hidden
         self.titlebarAppearsTransparent = true
         // Allow the whole panel to be dragged by clicking anywhere on the
-        // glass (the text field / submit button still intercept their own
-        // clicks because they're real NSViews). Combined with the
+        // panel surface (the text field / submit button still intercept their
+        // own clicks because they're real NSViews). Combined with the
         // `AutoSizingHostingView.mouseDownCanMoveWindow` override below.
         self.isMovable = true
         self.isMovableByWindowBackground = true
@@ -89,6 +93,7 @@ final class FloatingPanelWindow: NSPanel {
     }
 
     @objc private func handleResignKey(_ notification: Notification) {
+        guard dismissesOnResignKey else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, self.isVisible else { return }
             self.onDismiss?()
@@ -145,6 +150,6 @@ private final class AutoSizingHostingView<Root: View>: NSHostingView<Root> {
     /// AppKit only consults this on the *target* view of a mouse-down, so
     /// real NSView subviews (NSTextField, NSButton) still receive their
     /// clicks normally — drag only kicks in when the click lands on the
-    /// SwiftUI glass backgrounds (which have no backing NSView).
+    /// SwiftUI panel backgrounds (which have no backing NSView).
     override var mouseDownCanMoveWindow: Bool { true }
 }

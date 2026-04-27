@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SettingsView: View {
@@ -6,6 +7,7 @@ struct SettingsView: View {
     @State private var isConfirmingHighestAuthorization = false
     @State private var selectedProvider = ""
     @State private var modelName = ""
+    @State private var skillSourceError: SettingsFeedbackMessage?
 
     var body: some View {
         ScrollView {
@@ -18,6 +20,9 @@ struct SettingsView: View {
                     .padding(.horizontal)
 
                 conversationRoutingPanel
+                    .padding(.horizontal)
+
+                skillSourcesPanel
                     .padding(.horizontal)
 
                 terminalPermissionsPanel
@@ -53,6 +58,13 @@ struct SettingsView: View {
             }
         } message: {
             Text("When enabled, the agent will receive full computer-control permissions and will stop asking for approval. Are you sure you want to enable this mode?")
+        }
+        .alert(item: $skillSourceError) { message in
+            Alert(
+                title: Text(message.title),
+                message: Text(message.message),
+                dismissButton: .default(Text("OK"))
+            )
         }
     }
 
@@ -230,6 +242,103 @@ struct SettingsView: View {
         }
     }
 
+    private var skillSourcesPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("Agent Skills", systemImage: "wand.and.rays")
+                    .font(.geeDisplaySemibold(18))
+
+                Spacer()
+
+                Button(action: chooseSystemSkillSource) {
+                    Label("Add Source", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(store.isAddingSystemSkillSource)
+            }
+
+            HStack(spacing: 8) {
+                Text("\(store.skillSources.systemSources.count) global")
+                Text("Hot updates")
+                    .foregroundStyle(.green)
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+
+            if store.skillSources.systemSources.isEmpty {
+                Text("No global skill sources configured.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(store.skillSources.systemSources) { source in
+                        skillSourceRow(source) {
+                            removeSystemSkillSource(source)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 0.8)
+        }
+    }
+
+    private func skillSourceRow(
+        _ source: SkillSourceRecord,
+        removeAction: @escaping () -> Void
+    ) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: source.status == "ready" ? "checkmark.seal" : "exclamationmark.triangle")
+                .foregroundStyle(source.status == "ready" ? Color.green : Color.orange)
+                .frame(width: 18)
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Text(source.skillsSummary)
+                        .font(.subheadline.weight(.semibold))
+                    Text(source.statusTitle)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+
+                Text(source.path)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+
+                if let error = source.error, !error.isEmpty {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            Button(role: .destructive, action: removeAction) {
+                Image(systemName: "minus.circle")
+            }
+            .buttonStyle(.borderless)
+            .help("Remove source")
+            .disabled(store.isRemovingSkillSource)
+        }
+        .padding(10)
+        .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.white.opacity(0.06), lineWidth: 0.8)
+        }
+    }
+
     private var providerOptions: [String] {
         var options = store.chatRoutingSettings?.providerChoices ?? []
         if let provider = store.runtimeStatus.providerName,
@@ -268,6 +377,39 @@ struct SettingsView: View {
 
         if selectedProvider.isEmpty {
             selectedProvider = store.runtimeStatus.providerName ?? providerOptions.first ?? "xenodia"
+        }
+    }
+
+    private func chooseSystemSkillSource() {
+        let panel = NSOpenPanel()
+        panel.title = "Add Global Skill Source"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            do {
+                try await store.addSystemSkillSource(from: url)
+            } catch {
+                skillSourceError = SettingsFeedbackMessage(
+                    title: "Skill Source Failed",
+                    message: error.localizedDescription
+                )
+            }
+        }
+    }
+
+    private func removeSystemSkillSource(_ source: SkillSourceRecord) {
+        Task {
+            do {
+                try await store.removeSystemSkillSource(source)
+            } catch {
+                skillSourceError = SettingsFeedbackMessage(
+                    title: "Remove Skill Source Failed",
+                    message: error.localizedDescription
+                )
+            }
         }
     }
 
@@ -408,6 +550,12 @@ struct SettingsView: View {
             }
         }
     }
+}
+
+private struct SettingsFeedbackMessage: Identifiable {
+    let id = UUID()
+    var title: String
+    var message: String
 }
 
 private struct TerminalPermissionRuleRow: View {

@@ -49,6 +49,9 @@ final class WorkbenchStore {
     var isSendingMessage = false
     var isPerformingTaskAction = false
     var isDeletingTerminalPermissionRule = false
+    var isAddingSystemSkillSource = false
+    var isAddingPersonaSkillSource = false
+    var isRemovingSkillSource = false
     var isUpdatingHighestAuthorization = false
     var isLoadingChatRoutingSettings = false
     var isSavingChatRoutingSettings = false
@@ -193,6 +196,7 @@ final class WorkbenchStore {
     var settingsPanes: [SettingsPaneSummary] { snapshot.settings }
     var terminalPermissionRules: [TerminalPermissionRuleRecord] { snapshot.terminalPermissionRules }
     var securityPreferences: WorkbenchSecurityPreferences { snapshot.securityPreferences }
+    var skillSources: SkillSourcesRecord { snapshot.skillSources }
     var runtimeStatus: WorkbenchRuntimeStatus { snapshot.runtimeStatus }
     var interactionCapabilities: WorkbenchInteractionCapabilities { snapshot.interactionCapabilities }
     var contextBudget: ContextBudgetRecord { snapshot.contextBudget }
@@ -423,6 +427,78 @@ final class WorkbenchStore {
         snapshot = nextSnapshot
     }
 
+    func addSystemSkillSource(from folderURL: URL) async throws {
+        guard !isAddingSystemSkillSource else { return }
+        isAddingSystemSkillSource = true
+        lastErrorMessage = nil
+        defer { isAddingSystemSkillSource = false }
+
+        do {
+            snapshot = try await runtimeClient.addSystemSkillSource(
+                at: folderURL.path,
+                in: snapshot
+            )
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    func removeSystemSkillSource(_ source: SkillSourceRecord) async throws {
+        guard !isRemovingSkillSource else { return }
+        isRemovingSkillSource = true
+        lastErrorMessage = nil
+        defer { isRemovingSkillSource = false }
+
+        do {
+            snapshot = try await runtimeClient.removeSystemSkillSource(
+                source.id,
+                in: snapshot
+            )
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    func addPersonaSkillSource(from folderURL: URL, to profile: AgentProfileRecord) async throws {
+        guard !isAddingPersonaSkillSource else { return }
+        isAddingPersonaSkillSource = true
+        lastErrorMessage = nil
+        defer { isAddingPersonaSkillSource = false }
+
+        do {
+            snapshot = try await runtimeClient.addPersonaSkillSource(
+                profileID: profile.id,
+                sourcePath: folderURL.path,
+                in: snapshot
+            )
+            selectedAgentProfileID = profile.id
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    func removePersonaSkillSource(_ source: SkillSourceRecord, from profile: AgentProfileRecord) async throws {
+        guard !isRemovingSkillSource else { return }
+        isRemovingSkillSource = true
+        lastErrorMessage = nil
+        defer { isRemovingSkillSource = false }
+
+        do {
+            snapshot = try await runtimeClient.removePersonaSkillSource(
+                profileID: profile.id,
+                sourceID: source.id,
+                in: snapshot
+            )
+            selectedAgentProfileID = profile.id
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
     func deleteTerminalPermissionRule(_ ruleID: TerminalPermissionRuleRecord.ID) {
         guard !isDeletingTerminalPermissionRule else { return }
         isDeletingTerminalPermissionRule = true
@@ -579,9 +655,10 @@ final class WorkbenchStore {
         Task { [weak self, runtimeClient, invocation] in
             do {
                 let outcome = try await runtimeClient.invokeTool(invocation)
+                let resolvedOutcome = await GeeHostToolRouter.resolveCompletedIntent(outcome) ?? outcome
                 await MainActor.run {
                     guard let self else { return }
-                    self.applyToolOutcome(outcome, from: invocation)
+                    self.applyToolOutcome(resolvedOutcome, from: invocation)
                     self.isInvokingTool = false
                 }
             } catch {
@@ -614,11 +691,10 @@ final class WorkbenchStore {
         _ outcome: WorkbenchToolOutcome,
         from invocation: ToolInvocation
     ) {
-        let resolvedOutcome = GeeHostToolRouter.resolveCompletedIntent(outcome) ?? outcome
-        lastToolOutcome = resolvedOutcome
-        switch resolvedOutcome {
+        lastToolOutcome = outcome
+        switch outcome {
         case .completed:
-            if let intent = resolvedOutcome.navigationIntent {
+            if let intent = outcome.navigationIntent {
                 applyNavigationIntent(intent)
             }
         case let .needsApproval(_, blastRadius, prompt):
@@ -650,7 +726,8 @@ final class WorkbenchStore {
                     arguments: intent.arguments
                 )
                 do {
-                    let outcome = try await runtimeClient.invokeTool(invocation)
+                    let rawOutcome = try await runtimeClient.invokeTool(invocation)
+                    let outcome = await GeeHostToolRouter.resolveCompletedIntent(rawOutcome) ?? rawOutcome
                     completions.append(Self.hostActionCompletion(for: intent, outcome: outcome))
                     await MainActor.run {
                         guard let self else { return }
@@ -663,7 +740,8 @@ final class WorkbenchStore {
                             toolID: intent.toolID,
                             status: "failed",
                             summary: nil,
-                            error: error.localizedDescription
+                            error: error.localizedDescription,
+                            resultJSON: nil
                         )
                     )
                     await MainActor.run {
@@ -697,12 +775,15 @@ final class WorkbenchStore {
     ) -> WorkbenchHostActionCompletion {
         switch outcome {
         case let .completed(_, payload):
+            let payloadStatus = (payload["status"] as? String)?.lowercased()
+            let payloadError = payload["error"] as? String
             return WorkbenchHostActionCompletion(
                 hostActionID: intent.id,
                 toolID: intent.toolID,
-                status: "succeeded",
+                status: payloadStatus == "failed" ? "failed" : "succeeded",
                 summary: hostActionSummary(for: intent, payload: payload),
-                error: nil
+                error: payloadStatus == "failed" ? payloadError : nil,
+                resultJSON: hostActionResultJSON(from: payload)
             )
         case let .needsApproval(_, _, prompt):
             return WorkbenchHostActionCompletion(
@@ -710,7 +791,8 @@ final class WorkbenchStore {
                 toolID: intent.toolID,
                 status: "failed",
                 summary: nil,
-                error: "The Gear action needs approval before it can complete: \(prompt)"
+                error: "The Gear action needs approval before it can complete: \(prompt)",
+                resultJSON: nil
             )
         case let .denied(_, reason):
             return WorkbenchHostActionCompletion(
@@ -718,7 +800,8 @@ final class WorkbenchStore {
                 toolID: intent.toolID,
                 status: "failed",
                 summary: nil,
-                error: reason
+                error: reason,
+                resultJSON: nil
             )
         case let .error(_, _, message):
             return WorkbenchHostActionCompletion(
@@ -726,7 +809,8 @@ final class WorkbenchStore {
                 toolID: intent.toolID,
                 status: "failed",
                 summary: nil,
-                error: message
+                error: message,
+                resultJSON: nil
             )
         }
     }
@@ -752,6 +836,20 @@ final class WorkbenchStore {
             {
                 parts.append("visible count: \(filteredCount) of \(totalCount)")
             }
+            if let taskID = payload["task_id"] as? String {
+                parts.append("task: \(taskID)")
+            }
+            if let tweetCount = payload["tweet_count"] {
+                parts.append("tweets: \(tweetCount)")
+            }
+            if let taskPath = payload["task_path"] as? String {
+                parts.append("task path: \(taskPath)")
+            }
+            if let status = payload["status"] as? String, status == "failed",
+               let error = payload["error"] as? String
+            {
+                parts.append("error: \(error)")
+            }
             return parts.joined(separator: "; ")
         }
 
@@ -766,6 +864,20 @@ final class WorkbenchStore {
         }
 
         return "\(intent.toolID) completed."
+    }
+
+    private static func hostActionResultJSON(from payload: [String: Any]) -> String? {
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+              var text = String(data: data, encoding: .utf8)
+        else {
+            return nil
+        }
+        let maxLength = 30_000
+        if text.count > maxLength {
+            text = String(text.prefix(maxLength)) + "...[truncated]"
+        }
+        return text
     }
 
     private func applyNavigationIntent(_ intent: WorkbenchToolNavigationIntent) {

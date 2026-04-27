@@ -32,6 +32,14 @@ import {
   persistRuntimeStore,
   persistSecurityPreferences,
 } from "./store/persistence.js";
+import {
+  addPersonaSkillSource,
+  addSystemSkillSource,
+  refreshPersonaSkillSources,
+  removePersonaSkillSource,
+  removePersonaSkillSourcesForProfile,
+  removeSystemSkillSource,
+} from "./store/skill-sources.js";
 import { loadSnapshot, snapshotFromStore } from "./store/snapshot.js";
 import type { RuntimeCommandContext } from "./protocol.js";
 import { invokeTool, type ToolRequest } from "./tools.js";
@@ -66,11 +74,13 @@ export async function handleNativeRuntimeCommand(
       assertArgCount(command, args, 1);
       return mutateStore(configDir, async (store) => {
         await reloadAgentProfile(store, configDir, args[0]);
+        await refreshPersonaSkillSources(configDir, args[0]);
       });
     case "delete-agent-profile":
       assertArgCount(command, args, 1);
       return mutateStore(configDir, async (store) => {
         await deleteAgentProfile(store, configDir, args[0]);
+        await removePersonaSkillSourcesForProfile(configDir, args[0]);
       });
     case "create-conversation":
       assertArgCount(command, args, 0);
@@ -107,6 +117,23 @@ export async function handleNativeRuntimeCommand(
       assertArgCount(command, args, 1);
       await deleteTerminalAccessRule(configDir, args[0]);
       return stringify(await loadSnapshot(configDir));
+    case "add-system-skill-source":
+      assertArgCount(command, args, 1);
+      await addSystemSkillSource(configDir, args[0]);
+      return stringify(await loadSnapshot(configDir));
+    case "remove-system-skill-source":
+      assertArgCount(command, args, 1);
+      await removeSystemSkillSource(configDir, args[0]);
+      return stringify(await loadSnapshot(configDir));
+    case "add-persona-skill-source":
+      assertArgCount(command, args, 2);
+      await requireKnownAgentProfile(configDir, args[0]);
+      await addPersonaSkillSource(configDir, args[0], args[1]);
+      return stringify(await loadSnapshot(configDir));
+    case "remove-persona-skill-source":
+      assertArgCount(command, args, 2);
+      await removePersonaSkillSource(configDir, args[0], args[1]);
+      return stringify(await loadSnapshot(configDir));
     case "submit-workspace-message":
       assertArgCount(command, args, 1);
       return stringify(await submitWorkspaceMessage(configDir, args[0]));
@@ -140,6 +167,16 @@ export async function handleNativeRuntimeCommand(
     }
     default:
       throw new Error("unsupported command or wrong argument count");
+  }
+}
+
+async function requireKnownAgentProfile(
+  configDir: string,
+  profileId: string,
+): Promise<void> {
+  const store = await loadRuntimeStore(configDir);
+  if (!store.agent_profiles.some((profile) => profile.id === profileId.trim())) {
+    throw new Error(`unknown agent profile \`${profileId.trim()}\``);
   }
 }
 
@@ -178,6 +215,7 @@ function parseHostActionCompletions(raw: string): RuntimeHostActionCompletion[] 
       status: record.status,
       summary: typeof record.summary === "string" ? record.summary : undefined,
       error: typeof record.error === "string" ? record.error : undefined,
+      result_json: typeof record.result_json === "string" ? record.result_json : undefined,
     };
   });
 }

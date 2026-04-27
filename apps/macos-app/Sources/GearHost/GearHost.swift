@@ -4,6 +4,9 @@ import SwiftUI
 enum GearHost {
     static let mediaLibraryWindowID = "media-library"
     static let hyperframesStudioWindowID = "hyperframes-studio"
+    static let smartYTMediaWindowID = "smartyt-media"
+    static let twitterCaptureWindowID = "twitter-capture"
+    static let bookmarkVaultWindowID = "bookmark-vault"
     static let mediaLibraryWindowDescriptor = GearNativeWindowDescriptor(
         gearID: MediaLibraryGearDescriptor.gearID,
         windowID: mediaLibraryWindowID,
@@ -18,9 +21,33 @@ enum GearHost {
         defaultWidth: 1280,
         defaultHeight: 820
     )
+    static let smartYTMediaWindowDescriptor = GearNativeWindowDescriptor(
+        gearID: SmartYTMediaGearDescriptor.gearID,
+        windowID: smartYTMediaWindowID,
+        title: "SmartYT Media",
+        defaultWidth: 1180,
+        defaultHeight: 760
+    )
+    static let twitterCaptureWindowDescriptor = GearNativeWindowDescriptor(
+        gearID: TwitterCaptureGearDescriptor.gearID,
+        windowID: twitterCaptureWindowID,
+        title: "Twitter Capture",
+        defaultWidth: 1180,
+        defaultHeight: 760
+    )
+    static let bookmarkVaultWindowDescriptor = GearNativeWindowDescriptor(
+        gearID: BookmarkVaultGearDescriptor.gearID,
+        windowID: bookmarkVaultWindowID,
+        title: "Bookmark Vault",
+        defaultWidth: 1180,
+        defaultHeight: 760
+    )
     static let nativeWindowDescriptors: [GearNativeWindowDescriptor] = [
         mediaLibraryWindowDescriptor,
-        hyperframesStudioWindowDescriptor
+        hyperframesStudioWindowDescriptor,
+        smartYTMediaWindowDescriptor,
+        twitterCaptureWindowDescriptor,
+        bookmarkVaultWindowDescriptor
     ]
 
     private static let manifestFileName = "gear.json"
@@ -103,6 +130,12 @@ enum GearHost {
             return AnyView(MediaLibraryModuleView())
         case HyperframesStudioGearDescriptor.gearID:
             return AnyView(HyperframesStudioModuleView())
+        case SmartYTMediaGearDescriptor.gearID:
+            return AnyView(SmartYTMediaGearModuleView())
+        case TwitterCaptureGearDescriptor.gearID:
+            return AnyView(TwitterCaptureGearModuleView())
+        case BookmarkVaultGearDescriptor.gearID:
+            return AnyView(BookmarkVaultGearModuleView())
         default:
             return nil
         }
@@ -118,6 +151,12 @@ enum GearHost {
             return AnyView(MediaLibraryModuleWindow())
         case HyperframesStudioGearDescriptor.gearID:
             return AnyView(HyperframesStudioModuleWindow())
+        case SmartYTMediaGearDescriptor.gearID:
+            return AnyView(SmartYTMediaGearWindow())
+        case TwitterCaptureGearDescriptor.gearID:
+            return AnyView(TwitterCaptureGearWindow())
+        case BookmarkVaultGearDescriptor.gearID:
+            return AnyView(BookmarkVaultGearWindow())
         default:
             return AnyView(GearUnavailableWindowView(title: displayTitle(for: gearID)))
         }
@@ -292,6 +331,18 @@ enum MediaLibraryGearDescriptor {
 
 enum HyperframesStudioGearDescriptor {
     static let gearID = "hyperframes.studio"
+}
+
+enum SmartYTMediaGearDescriptor {
+    static let gearID = "smartyt.media"
+}
+
+enum TwitterCaptureGearDescriptor {
+    static let gearID = "twitter.capture"
+}
+
+enum BookmarkVaultGearDescriptor {
+    static let gearID = "bookmark.vault"
 }
 
 struct GearWindowRequest: Equatable, Identifiable {

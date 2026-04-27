@@ -14,7 +14,7 @@ The current persona system is a foundation, not a finished persona marketplace.
 - Imported personas are copied into a local persona workspace.
 - The active persona is exposed in runtime snapshots.
 - The active persona affects the SDK system prompt.
-- Persona skill whitelists can be injected into the prompt.
+- Explicit skill source metadata can be exposed to the prompt without injecting full `SKILL.md` bodies.
 - Persona tool allow-lists are enforced by the native runtime tool dispatcher.
 - Persona visuals drive the native home surface when visual assets are present.
 
@@ -83,6 +83,20 @@ GeeAgent compiles persona context in this order:
 
 The compiled result becomes the persona's runtime `personality_prompt`.
 
+## Skill Sources
+
+GeeAgent only recognizes skill folders that the user explicitly adds. It does not automatically scan all local Claude, Codex, or agent skill directories.
+
+Settings can add system-level skill source folders. These sources apply to every persona and are hot-updated when the runtime builds a new snapshot or prompt.
+
+The Agents detail view can add persona-level skill source folders. These sources apply only to that persona. Persona-level skill lists refresh when the persona is reloaded.
+
+A skill source may be either a single skill folder containing `SKILL.md`, or a collection folder whose direct child folders contain `SKILL.md`.
+
+The runtime exposes only skill metadata to the active agent prompt, such as name, description, scope, and file path. Full `SKILL.md` contents are not injected automatically. If the agent needs the full instructions, it must inspect the skill file through the normal runtime file/tool path and permission model.
+
+Skill availability is context, not a security sandbox. Tool execution is still governed by GeeAgent's runtime permissions, approval flow, and persona `allowed_tool_ids`.
+
 ## Visual Layer
 
 Supported persona visual kinds:
@@ -121,7 +135,7 @@ Persona influence is intentionally light.
 A persona may affect:
 
 - system prompt content;
-- whitelisted persona skills;
+- explicitly configured skill metadata;
 - tool allow-list recommendations and constraints;
 - visual presentation;
 - local appearance interaction state.
@@ -168,6 +182,7 @@ Reload:
 
 - re-read the local persona workspace;
 - recompile the layered context;
+- refresh persona-level skill source metadata;
 - keep the previous loaded profile if validation fails.
 
 Delete:

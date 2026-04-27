@@ -1,0 +1,49 @@
+{
+  "schema": "gee.gear.v1",
+  "id": "bookmark.vault",
+  "name": "Bookmark Vault",
+  "description": "Universal bookmark gear for saving arbitrary text or URLs, enriching links with media, Twitter/X, and web metadata when available.",
+  "developer": "Gee",
+  "version": "0.1.0",
+  "category": "Knowledge",
+  "kind": "atmosphere",
+  "display_mode": "full_canvas",
+  "entry": {
+    "type": "native",
+    "native_id": "bookmark.vault"
+  },
+  "dependencies": {
+    "install_strategy": "on_open",
+    "items": [
+      {
+        "id": "yt-dlp",
+        "kind": "binary",
+        "scope": "global",
+        "required": true,
+        "detect": {
+          "command": "yt-dlp",
+          "args": ["--version"]
+        },
+        "installer": {
+          "type": "recipe",
+          "id": "brew.install.yt-dlp"
+        }
+      }
+    ]
+  },
+  "agent": {
+    "enabled": true,
+    "capabilities": [
+      {
+        "id": "bookmark.save",
+        "title": "Save bookmark",
+        "description": "Save arbitrary user-provided content. If the content contains a URL, enrich it with media metadata, Twitter/X embed metadata, or basic web metadata before writing it to the gear file database.",
+        "examples": [
+          "Save this link as a bookmark",
+          "把这个链接存进书签",
+          "Bookmark this video URL"
+        ]
+      }
+    ]
+  }
+}

@@ -120,7 +120,13 @@ final class MenuBarController {
 
     func toggleQuickInput() {
         if let panel = quickInputPanel, panel.isVisible {
-            panel.dismiss()
+            if panel.isKeyWindow {
+                panel.dismiss()
+            } else {
+                positionQuickInputPanel(panel)
+                panel.present(at: panel.frame.origin)
+                NSApp.activate(ignoringOtherApps: true)
+            }
             return
         }
         showQuickInputPanel()
@@ -189,7 +195,12 @@ final class MenuBarController {
         if let existing = quickInputPanel {
             panel = existing
         } else {
-            panel = FloatingPanelWindow(size: CGSize(width: 720, height: 112), cornerRadius: 14) {
+            panel = FloatingPanelWindow(
+                size: CGSize(width: 720, height: 112),
+                cornerRadius: 14,
+                level: .statusBar,
+                dismissesOnResignKey: false
+            ) {
                 QuickInputPanelView(
                     store: self.store,
                     onOpenChat: { [weak self] in

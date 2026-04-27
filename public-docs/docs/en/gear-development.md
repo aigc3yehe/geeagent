@@ -2,7 +2,7 @@
 
 ## Status And Date
 
-Document date: 2026-04-26.
+Document date: 2026-04-27.
 
 Status: Gear Platform V1 public development standard. This document records both current implementation state and the target architecture. Implemented behavior is marked as current. Confirmed direction that is not fully implemented yet is described as target state or V1 standard.
 
@@ -75,6 +75,9 @@ Current bundled gear package skeletons live in:
 apps/macos-app/Gears/
 ├── media.library/
 ├── hyperframes.studio/
+├── smartyt.media/
+├── twitter.capture/
+├── bookmark.vault/
 ├── btc.price/
 └── system.monitor/
 ```
@@ -84,6 +87,9 @@ Current first-party native gear implementations are still compiled by the host:
 ```text
 apps/macos-app/Sources/GeeAgentMac/Modules/MediaLibrary/
 apps/macos-app/Sources/GeeAgentMac/Modules/HyperframesStudio/
+apps/macos-app/Sources/GeeAgentMac/Modules/SmartYTMedia/
+apps/macos-app/Sources/GeeAgentMac/Modules/TwitterCapture/
+apps/macos-app/Sources/GeeAgentMac/Modules/BookmarkVault/
 apps/macos-app/Sources/GeeAgentMac/Views/Content/HomeWidgetsView.swift
 ```
 
@@ -100,6 +106,7 @@ Current capabilities already present:
 - Gears catalog states for checking, installing, failed, and open.
 - Native windows for first-party `media.library` and `hyperframes.studio`.
 - First V1 host bridge surface for `gee.app.openSurface`, progressive Gear capability disclosure, and shared Gear invocation.
+- `bookmark.vault` is a current first-party Gear app. It saves arbitrary text or URLs into `gear-data/bookmark.vault`, enriches media URLs through the same `yt-dlp` metadata family used by `smartyt.media`, enriches Twitter/X tweet URLs through an embed metadata path, and falls back to basic web metadata fetch for other sites.
 - Transitional host action intents let first-party runtime turns hand native Gear actions back to GeeAgentMac while full SDK/MCP tool exposure is still being completed.
 - Home widget direction for `btc.price` and `system.monitor`.
 
@@ -659,6 +666,8 @@ Current V1 implements the first host bridge surface for native Gee usage:
 
 Gear execution results are structured data, not final prose. A Gear capability, native adapter, or transitional router may report state changes, counts, artifacts, warnings, and errors, but it must not hardcode the final user-facing completion sentence. After all Gear actions in a turn finish, GeeAgent must return those structured results to the active agent/LLM, and the agent must compose the final reply in the user's language. If the LLM continuation cannot run, GeeAgent should show a transparent pending or failure state instead of a fake hardcoded success message.
 
+When the native host completes a Gear action, it may pass both a concise summary and a bounded `result_json` payload back to the continuation turn. The summary is for quick display; `result_json` is the source of truth for task ids, paths, counts, artifacts, captured records, and structured errors. Large result payloads should be saved inside the Gear data directory and referenced by path instead of flooding the agent context.
+
 Progressive disclosure is required. The agent should first request `detail: "summary"`, then request `detail: "capabilities"` for one `gear_id`, then request `detail: "schema"` for one `capability_id` before invoking. GeeAgent should not dump every Gear capability schema into the model context by default.
 
 Current invocation shape:
@@ -737,6 +746,25 @@ First-party gears should gradually move into real package boundaries.
 - Dependency failure affects only Hyperframes.
 - Business logic and project data must not enter the main app store.
 
+`smartyt.media`:
+
+- Target: native URL media acquisition gear adapted from the SmartYT reference project.
+- The Gear accepts a URL, sniffs media metadata, downloads audio or video, and extracts transcript text.
+- V1 uses `yt-dlp` for metadata, downloads, and subtitle extraction, and `ffmpeg` / `ffprobe` for media conversion support.
+- Transcript extraction should prefer platform subtitles first. If no subtitle is available, the Gear may fall back to local speech tooling such as Whisper when installed. If no speech backend is available, the Gear must return a structured failure that explains the missing transcription backend instead of pretending the conversion completed.
+- Job state belongs in `~/Library/Application Support/GeeAgent/gear-data/smartyt.media/`, while downloaded media, extracted subtitles, and transcript text default to `~/Downloads/SmartYT/<job-id>/` unless an agent call provides an explicit `output_dir`.
+- Agent capabilities are `smartyt.sniff`, `smartyt.download`, and `smartyt.transcribe`. They return structured job or artifact results; the active agent/LLM owns the final user-facing reply.
+
+`twitter.capture`:
+
+- Target: native Twitter/X content capture gear adapted from the Workbench reference project's Twikit capture flow.
+- The Gear accepts one Tweet URL, one List URL plus a limit, or one username / profile URL plus a limit.
+- V1 uses a package-local Python sidecar under `apps/macos-app/Gears/twitter.capture/scripts/` and the `twikit` library. The sidecar requires a user-provided authenticated Twitter/X cookie JSON file; GeeAgent does not bundle credentials.
+- Task state and captured results belong in `~/Library/Application Support/GeeAgent/gear-data/twitter.capture/tasks/<task-id>/task.json`.
+- Captured tweet records include ids, URLs, author handles, text, language, counts, timestamps, reply / retweet flags, and normalized media metadata when available.
+- Agent capabilities are `twitter.fetch_tweet`, `twitter.fetch_list`, and `twitter.fetch_user`. Each capability creates a Gear task, stores the result in the file database, and returns structured task/result data for the active agent/LLM to summarize.
+- Missing cookies, expired sessions, rate limits, or Twikit failures must be returned as structured task failures. The Gear must not fake successful capture.
+
 `btc.price`:
 
 - Target: Home widget.
@@ -759,6 +787,8 @@ apps/macos-app/
 ├── Gears/
 │   ├── media.library/
 │   ├── hyperframes.studio/
+│   ├── smartyt.media/
+│   ├── twitter.capture/
 │   ├── btc.price/
 │   └── system.monitor/
 └── Sources/

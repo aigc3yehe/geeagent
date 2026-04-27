@@ -136,6 +136,7 @@ struct WorkbenchHostActionCompletion: Codable, Hashable, Sendable {
     var status: String
     var summary: String?
     var error: String?
+    var resultJSON: String?
 
     enum CodingKeys: String, CodingKey {
         case hostActionID = "host_action_id"
@@ -143,6 +144,7 @@ struct WorkbenchHostActionCompletion: Codable, Hashable, Sendable {
         case status
         case summary
         case error
+        case resultJSON = "result_json"
     }
 }
 

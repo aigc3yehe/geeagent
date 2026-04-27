@@ -1,0 +1,94 @@
+{
+  "schema": "gee.gear.v1",
+  "id": "smartyt.media",
+  "name": "SmartYT Media",
+  "description": "URL media sniffer for downloading video or audio and extracting transcript text through subtitles or local speech tooling.",
+  "developer": "Gee",
+  "version": "0.1.0",
+  "category": "Media",
+  "kind": "atmosphere",
+  "display_mode": "full_canvas",
+  "entry": {
+    "type": "native",
+    "native_id": "smartyt.media"
+  },
+  "dependencies": {
+    "install_strategy": "on_open",
+    "items": [
+      {
+        "id": "yt-dlp",
+        "kind": "binary",
+        "scope": "global",
+        "required": true,
+        "detect": {
+          "command": "yt-dlp",
+          "args": ["--version"]
+        },
+        "installer": {
+          "type": "recipe",
+          "id": "brew.install.yt-dlp"
+        }
+      },
+      {
+        "id": "ffmpeg",
+        "kind": "binary",
+        "scope": "global",
+        "required": true,
+        "detect": {
+          "command": "ffmpeg",
+          "args": ["-version"]
+        },
+        "installer": {
+          "type": "recipe",
+          "id": "brew.install.ffmpeg"
+        }
+      },
+      {
+        "id": "ffprobe",
+        "kind": "binary",
+        "scope": "global",
+        "required": true,
+        "detect": {
+          "command": "ffprobe",
+          "args": ["-version"]
+        },
+        "installer": {
+          "type": "recipe",
+          "id": "brew.install.ffmpeg"
+        }
+      }
+    ]
+  },
+  "agent": {
+    "enabled": true,
+    "capabilities": [
+      {
+        "id": "smartyt.sniff",
+        "title": "Sniff URL media",
+        "description": "Inspect a URL and return structured media metadata such as title, platform, duration, thumbnail, extension, and available formats.",
+        "examples": [
+          "Inspect this YouTube URL",
+          "Sniff media information from this video link"
+        ]
+      },
+      {
+        "id": "smartyt.download",
+        "title": "Download URL media",
+        "description": "Queue a video, audio, or combined media download for a URL using yt-dlp and ffmpeg.",
+        "examples": [
+          "Download audio from this URL",
+          "Download the video from this link"
+        ]
+      },
+      {
+        "id": "smartyt.transcribe",
+        "title": "Convert media to text",
+        "description": "Queue transcript extraction for a URL. The gear first tries platform subtitles, then falls back to local Whisper tooling when available.",
+        "examples": [
+          "Convert this video URL to text",
+          "Transcribe the audio from this link"
+        ]
+      }
+    ]
+  }
+}

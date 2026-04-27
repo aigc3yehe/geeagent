@@ -305,6 +305,7 @@ struct WorkbenchSnapshot {
     var activeAgentProfileID: AgentProfileRecord.ID? = nil
     var terminalPermissionRules: [TerminalPermissionRuleRecord] = []
     var securityPreferences: WorkbenchSecurityPreferences = .disabled
+    var skillSources: SkillSourcesRecord = .empty
     var settings: [SettingsPaneSummary]
     var preferredSection: WorkbenchSection = .home
     var runtimeStatus: WorkbenchRuntimeStatus = WorkbenchRuntimeStatus(
@@ -924,7 +925,52 @@ enum AgentProfileAppearanceRecord: Hashable {
 struct AgentSkillReferenceRecord: Identifiable, Hashable {
     let id: String
     var name: String
+    var description: String? = nil
     var path: String? = nil
+    var skillFilePath: String? = nil
+    var sourceID: String? = nil
+    var sourceScope: String? = nil
+    var sourcePath: String? = nil
+    var profileID: String? = nil
+    var status: String? = nil
+    var error: String? = nil
+}
+
+struct SkillSourceRecord: Identifiable, Hashable {
+    let id: String
+    var path: String
+    var scope: String
+    var profileID: String?
+    var enabled: Bool
+    var addedAt: String
+    var lastScannedAt: String?
+    var status: String
+    var error: String?
+    var skills: [AgentSkillReferenceRecord]
+
+    var statusTitle: String {
+        switch status {
+        case "ready": "Ready"
+        case "unavailable": "Unavailable"
+        case "invalid": "Invalid"
+        default: status.isEmpty ? "Unknown" : status.capitalized
+        }
+    }
+
+    var skillsSummary: String {
+        skills.count == 1 ? "1 skill" : "\(skills.count) skills"
+    }
+}
+
+struct SkillSourcesRecord: Hashable {
+    var systemSources: [SkillSourceRecord]
+    var personaSources: [String: [SkillSourceRecord]]
+
+    static let empty = SkillSourcesRecord(systemSources: [], personaSources: [:])
+
+    func personaSources(for profileID: String) -> [SkillSourceRecord] {
+        personaSources[profileID] ?? []
+    }
 }
 
 struct AgentProfileFileEntryRecord: Identifiable, Hashable {

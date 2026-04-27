@@ -169,7 +169,34 @@ private struct RuntimeAgentProfileGlobalBackgroundDTO: Decodable {
 
 private struct RuntimeAgentSkillRefDTO: Decodable {
     let id: String
+    let name: String?
+    let description: String?
     let path: String?
+    let skillFilePath: String?
+    let sourceId: String?
+    let sourceScope: String?
+    let sourcePath: String?
+    let profileId: String?
+    let status: String?
+    let error: String?
+}
+
+private struct RuntimeSkillSourceDTO: Decodable {
+    let id: String
+    let path: String
+    let scope: String
+    let profileId: String?
+    let enabled: Bool
+    let addedAt: String
+    let lastScannedAt: String?
+    let status: String
+    let error: String?
+    let skills: [RuntimeAgentSkillRefDTO]?
+}
+
+private struct RuntimeSkillSourcesDTO: Decodable {
+    let systemSources: [RuntimeSkillSourceDTO]?
+    let personaSources: [String: [RuntimeSkillSourceDTO]]?
 }
 
 private struct RuntimeAgentProfileFileEntryDTO: Decodable {
@@ -328,6 +355,7 @@ private struct RuntimeSnapshotDTO: Decodable {
     let activeAgentProfile: RuntimeAgentProfileDTO?
     let agentProfiles: [RuntimeAgentProfileDTO]?
     let hostActionIntents: [RuntimeHostActionIntentDTO]?
+    let skillSources: RuntimeSkillSourcesDTO?
 }
 
 private struct RuntimeHostActionIntentDTO: Decodable {
@@ -539,6 +567,22 @@ private final class AgentRuntimeProcess {
 
     func deleteAgentProfile(_ profileID: String) throws -> RuntimeSnapshotDTO {
         try decodeSnapshot(arguments: ["delete-agent-profile", profileID])
+    }
+
+    func addSystemSkillSource(at sourcePath: String) throws -> RuntimeSnapshotDTO {
+        try decodeSnapshot(arguments: ["add-system-skill-source", sourcePath])
+    }
+
+    func removeSystemSkillSource(_ sourceID: String) throws -> RuntimeSnapshotDTO {
+        try decodeSnapshot(arguments: ["remove-system-skill-source", sourceID])
+    }
+
+    func addPersonaSkillSource(profileID: String, sourcePath: String) throws -> RuntimeSnapshotDTO {
+        try decodeSnapshot(arguments: ["add-persona-skill-source", profileID, sourcePath])
+    }
+
+    func removePersonaSkillSource(profileID: String, sourceID: String) throws -> RuntimeSnapshotDTO {
+        try decodeSnapshot(arguments: ["remove-persona-skill-source", profileID, sourceID])
     }
 
     func deleteTerminalAccessRule(_ ruleID: String) throws -> RuntimeSnapshotDTO {
@@ -1137,6 +1181,60 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
         return map(nextSnapshot)
     }
 
+    func addSystemSkillSource(
+        at sourcePath: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        _ = snapshot
+        let trimmed = sourcePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return snapshot }
+        let nextSnapshot = try await runOffMainThread {
+            try self.runtime.addSystemSkillSource(at: trimmed)
+        }
+        storeRawSnapshot(nextSnapshot)
+        return map(nextSnapshot)
+    }
+
+    func removeSystemSkillSource(
+        _ sourceID: SkillSourceRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        _ = snapshot
+        let nextSnapshot = try await runOffMainThread {
+            try self.runtime.removeSystemSkillSource(sourceID)
+        }
+        storeRawSnapshot(nextSnapshot)
+        return map(nextSnapshot)
+    }
+
+    func addPersonaSkillSource(
+        profileID: AgentProfileRecord.ID,
+        sourcePath: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        _ = snapshot
+        let trimmed = sourcePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return snapshot }
+        let nextSnapshot = try await runOffMainThread {
+            try self.runtime.addPersonaSkillSource(profileID: profileID, sourcePath: trimmed)
+        }
+        storeRawSnapshot(nextSnapshot)
+        return map(nextSnapshot)
+    }
+
+    func removePersonaSkillSource(
+        profileID: AgentProfileRecord.ID,
+        sourceID: SkillSourceRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        _ = snapshot
+        let nextSnapshot = try await runOffMainThread {
+            try self.runtime.removePersonaSkillSource(profileID: profileID, sourceID: sourceID)
+        }
+        storeRawSnapshot(nextSnapshot)
+        return map(nextSnapshot)
+    }
+
     func deleteTerminalPermissionRule(
         _ ruleID: TerminalPermissionRuleRecord.ID,
         in snapshot: WorkbenchSnapshot
@@ -1369,6 +1467,7 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
             securityPreferences: WorkbenchSecurityPreferences(
                 highestAuthorizationEnabled: snapshot.securityPreferences?.highestAuthorizationEnabled ?? false
             ),
+            skillSources: mapSkillSources(snapshot.skillSources),
             settings: settings,
             preferredSection: WorkbenchSection(rawValue: snapshot.workspaceRuntime?.activeSection ?? "") ?? .home,
             runtimeStatus: runtimeStatus(from: snapshot.chatRuntime),
@@ -1472,9 +1571,7 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
         )
 
         let source = AgentProfileSourceRecord(rawValue: dto.source) ?? .userCreated
-        let skills = (dto.skills ?? []).map { ref in
-            AgentSkillReferenceRecord(id: ref.id, name: humanize(ref.id), path: ref.path)
-        }
+        let skills = (dto.skills ?? []).map(mapSkillReference)
         let fileState = AgentProfileFileStateRecord(
             workspaceRootPath: dto.fileState?.workspaceRootPath,
             manifestPath: dto.fileState?.manifestPath,
@@ -1503,6 +1600,49 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
             source: source,
             version: dto.version,
             fileState: fileState
+        )
+    }
+
+    private func mapSkillSources(_ dto: RuntimeSkillSourcesDTO?) -> SkillSourcesRecord {
+        guard let dto else { return .empty }
+        var personaSources: [String: [SkillSourceRecord]] = [:]
+        for (profileID, sources) in dto.personaSources ?? [:] {
+            personaSources[profileID] = sources.map(mapSkillSource)
+        }
+        return SkillSourcesRecord(
+            systemSources: (dto.systemSources ?? []).map(mapSkillSource),
+            personaSources: personaSources
+        )
+    }
+
+    private func mapSkillSource(_ dto: RuntimeSkillSourceDTO) -> SkillSourceRecord {
+        SkillSourceRecord(
+            id: dto.id,
+            path: dto.path,
+            scope: dto.scope,
+            profileID: dto.profileId,
+            enabled: dto.enabled,
+            addedAt: dto.addedAt,
+            lastScannedAt: dto.lastScannedAt,
+            status: dto.status,
+            error: dto.error,
+            skills: (dto.skills ?? []).map(mapSkillReference)
+        )
+    }
+
+    private func mapSkillReference(_ ref: RuntimeAgentSkillRefDTO) -> AgentSkillReferenceRecord {
+        AgentSkillReferenceRecord(
+            id: ref.id,
+            name: ref.name ?? humanize(ref.id),
+            description: ref.description,
+            path: ref.path,
+            skillFilePath: ref.skillFilePath,
+            sourceID: ref.sourceId,
+            sourceScope: ref.sourceScope,
+            sourcePath: ref.sourcePath,
+            profileID: ref.profileId,
+            status: ref.status,
+            error: ref.error
         )
     }
 
@@ -2032,6 +2172,7 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
             automations: [],
             installedApps: [],
             agentSkins: [],
+            skillSources: .empty,
             settings: [
                 SettingsPaneSummary(
                     id: "runtime-error",

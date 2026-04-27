@@ -2,7 +2,7 @@ import Foundation
 
 @MainActor
 enum GeeHostToolRouter {
-    static func resolveCompletedIntent(_ outcome: WorkbenchToolOutcome) -> WorkbenchToolOutcome? {
+    static func resolveCompletedIntent(_ outcome: WorkbenchToolOutcome) async -> WorkbenchToolOutcome? {
         guard case let .completed(toolID, payload) = outcome,
               let intent = payload["intent"] as? String
         else {
@@ -13,7 +13,7 @@ enum GeeHostToolRouter {
         case "gear.list_capabilities":
             return listCapabilities(toolID: toolID, payload: payload)
         case "gear.invoke":
-            return invokeGear(toolID: toolID, payload: payload)
+            return await invokeGear(toolID: toolID, payload: payload)
         default:
             return nil
         }
@@ -158,7 +158,7 @@ enum GeeHostToolRouter {
     private static func invokeGear(
         toolID: String,
         payload: [String: Any]
-    ) -> WorkbenchToolOutcome {
+    ) async -> WorkbenchToolOutcome {
         guard let gearID = payload["gear_id"] as? String, !gearID.isEmpty else {
             return .error(toolID: toolID, code: "gear.args.gear_id", message: "`gear_id` is required.")
         }
@@ -170,6 +170,12 @@ enum GeeHostToolRouter {
         switch gearID {
         case MediaLibraryGearDescriptor.gearID:
             return invokeMediaLibrary(toolID: toolID, capabilityID: capabilityID, args: args)
+        case SmartYTMediaGearDescriptor.gearID:
+            return invokeSmartYTMedia(toolID: toolID, capabilityID: capabilityID, args: args)
+        case TwitterCaptureGearDescriptor.gearID:
+            return await invokeTwitterCapture(toolID: toolID, capabilityID: capabilityID, args: args)
+        case BookmarkVaultGearDescriptor.gearID:
+            return await invokeBookmarkVault(toolID: toolID, capabilityID: capabilityID, args: args)
         default:
             return .error(
                 toolID: toolID,
@@ -177,6 +183,28 @@ enum GeeHostToolRouter {
                 message: "`\(gearID)` is not connected to the Gee host invocation bridge yet."
             )
         }
+    }
+
+    private static func invokeBookmarkVault(
+        toolID: String,
+        capabilityID: String,
+        args: [String: Any]
+    ) async -> WorkbenchToolOutcome {
+        guard capabilityID == "bookmark.save" else {
+            return .error(
+                toolID: toolID,
+                code: "gear.bookmark.capability_unsupported",
+                message: "bookmark.vault does not support `\(capabilityID)` yet."
+            )
+        }
+        guard let content = stringArg(args, "content") ?? stringArg(args, "raw_content"),
+              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return .error(toolID: toolID, code: "gear.args.content", message: "`content` is required.")
+        }
+
+        let payload = await BookmarkVaultGearStore.shared.saveAgentBookmark(content: content)
+        return .completed(toolID: toolID, payload: payload)
     }
 
     private static func invokeMediaLibrary(
@@ -256,6 +284,86 @@ enum GeeHostToolRouter {
         }
     }
 
+    private static func invokeSmartYTMedia(
+        toolID: String,
+        capabilityID: String,
+        args: [String: Any]
+    ) -> WorkbenchToolOutcome {
+        guard ["smartyt.sniff", "smartyt.download", "smartyt.transcribe"].contains(capabilityID) else {
+            return .error(
+                toolID: toolID,
+                code: "gear.smartyt.capability_unsupported",
+                message: "smartyt.media does not support `\(capabilityID)` yet."
+            )
+        }
+        guard let url = stringArg(args, "url"), !url.isEmpty else {
+            return .error(toolID: toolID, code: "gear.args.url", message: "`url` is required.")
+        }
+
+        let requestedKind = stringArg(args, "download_kind")
+            ?? stringArg(args, "media_type")
+            ?? stringArg(args, "download_type")
+        let downloadKind: SmartYTDownloadKind?
+        if let requestedKind, !requestedKind.isEmpty {
+            guard let parsedKind = SmartYTDownloadKind(rawValue: requestedKind) else {
+                return .error(
+                    toolID: toolID,
+                    code: "gear.args.download_kind",
+                    message: "`download_kind` must be audio, video, or both."
+                )
+            }
+            downloadKind = parsedKind
+        } else {
+            downloadKind = nil
+        }
+
+        let payload = SmartYTMediaGearStore.shared.enqueueAgentAction(
+            capabilityID: capabilityID,
+            url: url,
+            downloadKind: downloadKind,
+            language: stringArg(args, "language"),
+            outputDirectory: stringArg(args, "output_dir") ?? stringArg(args, "output_directory")
+        )
+        return .completed(toolID: toolID, payload: payload)
+    }
+
+    private static func invokeTwitterCapture(
+        toolID: String,
+        capabilityID: String,
+        args: [String: Any]
+    ) async -> WorkbenchToolOutcome {
+        guard ["twitter.fetch_tweet", "twitter.fetch_list", "twitter.fetch_user"].contains(capabilityID) else {
+            return .error(
+                toolID: toolID,
+                code: "gear.twitter.capability_unsupported",
+                message: "twitter.capture does not support `\(capabilityID)` yet."
+            )
+        }
+
+        switch capabilityID {
+        case "twitter.fetch_tweet":
+            guard stringArg(args, "url") ?? stringArg(args, "tweet_url") != nil else {
+                return .error(toolID: toolID, code: "gear.args.url", message: "`url` is required.")
+            }
+        case "twitter.fetch_list":
+            guard stringArg(args, "url") ?? stringArg(args, "list_url") != nil else {
+                return .error(toolID: toolID, code: "gear.args.url", message: "`url` is required.")
+            }
+        case "twitter.fetch_user":
+            guard stringArg(args, "username") ?? stringArg(args, "handle") ?? stringArg(args, "url") != nil else {
+                return .error(toolID: toolID, code: "gear.args.username", message: "`username` is required.")
+            }
+        default:
+            break
+        }
+
+        let payload = await TwitterCaptureGearStore.shared.runAgentAction(
+            capabilityID: capabilityID,
+            args: args
+        )
+        return .completed(toolID: toolID, payload: payload)
+    }
+
     private static func mediaLibraryCompletionPayload(
         toolID: String,
         capabilityID: String,
@@ -304,6 +412,81 @@ enum GeeHostToolRouter {
                 "additionalProperties": false,
                 "properties": [
                     "folder_name": ["type": "string"]
+                ]
+            ]
+        case (SmartYTMediaGearDescriptor.gearID, "smartyt.sniff"):
+            return [
+                "type": "object",
+                "required": ["url"],
+                "additionalProperties": false,
+                "properties": [
+                    "url": ["type": "string", "format": "uri"]
+                ]
+            ]
+        case (SmartYTMediaGearDescriptor.gearID, "smartyt.download"):
+            return [
+                "type": "object",
+                "required": ["url"],
+                "additionalProperties": false,
+                "properties": [
+                    "url": ["type": "string", "format": "uri"],
+                    "download_kind": ["type": "string", "enum": ["audio", "video", "both"]],
+                    "output_dir": ["type": "string"]
+                ]
+            ]
+        case (SmartYTMediaGearDescriptor.gearID, "smartyt.transcribe"):
+            return [
+                "type": "object",
+                "required": ["url"],
+                "additionalProperties": false,
+                "properties": [
+                    "url": ["type": "string", "format": "uri"],
+                    "language": ["type": "string"],
+                    "output_dir": ["type": "string"]
+                ]
+            ]
+        case (TwitterCaptureGearDescriptor.gearID, "twitter.fetch_tweet"):
+            return [
+                "type": "object",
+                "required": ["url"],
+                "additionalProperties": false,
+                "properties": [
+                    "url": ["type": "string", "format": "uri"],
+                    "cookie_file": ["type": "string"]
+                ]
+            ]
+        case (TwitterCaptureGearDescriptor.gearID, "twitter.fetch_list"):
+            return [
+                "type": "object",
+                "required": ["url"],
+                "additionalProperties": false,
+                "properties": [
+                    "url": ["type": "string", "format": "uri"],
+                    "limit": ["type": "integer", "minimum": 1, "maximum": 200],
+                    "cookie_file": ["type": "string"]
+                ]
+            ]
+        case (TwitterCaptureGearDescriptor.gearID, "twitter.fetch_user"):
+            return [
+                "type": "object",
+                "required": ["username"],
+                "additionalProperties": false,
+                "properties": [
+                    "username": ["type": "string"],
+                    "limit": ["type": "integer", "minimum": 1, "maximum": 200],
+                    "cookie_file": ["type": "string"]
+                ]
+            ]
+        case (BookmarkVaultGearDescriptor.gearID, "bookmark.save"):
+            return [
+                "type": "object",
+                "required": ["content"],
+                "additionalProperties": false,
+                "properties": [
+                    "content": [
+                        "type": "string",
+                        "description": "Any user-provided content to save. If it contains a URL, Bookmark Vault enriches the bookmark with link metadata when available."
+                    ]
                 ]
             ]
         default:

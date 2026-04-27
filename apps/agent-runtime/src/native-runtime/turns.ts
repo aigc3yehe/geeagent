@@ -50,6 +50,7 @@ export type RuntimeHostActionCompletion = {
   status: "succeeded" | "failed";
   summary?: string;
   error?: string;
+  result_json?: string;
 };
 
 export async function submitWorkspaceMessage(
@@ -360,10 +361,12 @@ function composeGearCompletionPrompt(
   const resultLines = completions.map((completion) => {
     const summary = completion.summary?.trim();
     const error = completion.error?.trim();
+    const resultJSON = completion.result_json?.trim();
     const detail = completion.status === "succeeded"
       ? (summary || "completed without a text summary")
       : (error || summary || "failed without a text error");
-    return `- ${completion.tool_id} (${completion.host_action_id}): ${completion.status}. ${detail}`;
+    const result = resultJSON ? `\n  Structured result: ${resultJSON}` : "";
+    return `- ${completion.tool_id} (${completion.host_action_id}): ${completion.status}. ${detail}${result}`;
   });
   return [
     "You are GeeAgent continuing the same user turn after native Gear host actions completed.",
