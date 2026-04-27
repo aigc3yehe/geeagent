@@ -81,6 +81,15 @@
         ]
       },
       {
+        "id": "smartyt.download_now",
+        "title": "Download media and return files",
+        "description": "Download URL media immediately for multi-Gear workflows and return completed local artifact paths.",
+        "examples": [
+          "Download this video and give me the local file path",
+          "Fetch this media file now so it can be imported into the media library"
+        ]
+      },
+      {
         "id": "smartyt.transcribe",
         "title": "Convert media to text",
         "description": "Queue transcript extraction for a URL. The gear first tries platform subtitles, then falls back to local Whisper tooling when available.",

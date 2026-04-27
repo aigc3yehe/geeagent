@@ -106,17 +106,14 @@ function mentionsBookmarkVault(text: string): boolean {
   const hasURL = firstURL(text) !== null;
   return (
     text.includes("bookmark") ||
-    text.includes("书签") ||
-    text.includes("收藏") ||
-    (hasURL && /\b(save|store|remember)\b/.test(text)) ||
-    (hasURL && (text.includes("保存") || text.includes("存起来") || text.includes("存一下")))
+    text.includes("favorite") ||
+    (hasURL && /\b(save|store|remember|archive|capture)\b/.test(text))
   );
 }
 
 function bookmarkContent(rawText: string): string {
   return rawText
-    .replace(/^(?:please\s+)?(?:bookmark|save|store|remember)\s+(?:this\s+)?(?:bookmark|link|url|content|note)?\s*[:：-]?\s*/i, "")
-    .replace(/^(?:请|帮我)?(?:把|将)?\s*(?:这个|这条|该)?(?:链接|网址|内容|文本)?\s*(?:存进|存到|存为|保存到|保存为|加入|添加到)?(?:书签|收藏)?\s*[:：-]?\s*/u, "")
+    .replace(/^(?:please\s+)?(?:bookmark|save|store|remember|archive|capture)\s+(?:this\s+)?(?:bookmark|link|url|content|note)?\s*[:\uFF1A-]?\s*/i, "")
     .trim() || rawText.trim();
 }
 
@@ -174,22 +171,19 @@ function mentionsTwitterCapture(text: string): boolean {
   return (
     text.includes("twitter") ||
     text.includes("x.com") ||
-    text.includes("tweet") ||
-    text.includes("推文") ||
-    text.includes("推特")
+    text.includes("tweet")
   );
 }
 
 function firstURL(text: string): string | null {
-  const match = text.match(/https?:\/\/[^\s"'<>，。]+/);
-  return match?.[0] ?? null;
+  const match = text.match(/https?:\/\/[^\s"'<>]+/);
+  return match?.[0]?.replace(/[.,;:!?)\]\uFF0C\u3002\uFF1B\uFF1A\uFF01\uFF09\u3011]+$/, "") ?? null;
 }
 
 function requestedLimit(text: string): number {
   const patterns = [
     /(?:first|latest|top)\s+(\d{1,3})/,
-    /(?:前|最近)\s*(\d{1,3})/,
-    /(\d{1,3})\s*(?:tweets|tweet|条|个)/,
+    /(\d{1,3})\s*(?:tweets|tweet|items|posts)/,
   ];
   for (const pattern of patterns) {
     const match = text.match(pattern);

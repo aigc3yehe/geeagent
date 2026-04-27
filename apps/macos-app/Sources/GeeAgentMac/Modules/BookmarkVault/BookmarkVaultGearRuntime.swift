@@ -19,6 +19,7 @@ struct BookmarkVaultRecord: Codable, Identifiable, Hashable {
     var durationSeconds: Double?
     var extensionHint: String?
     var formatCount: Int?
+    var localMediaPaths: [String]? = nil
     var extras: [String: String]
 
     enum CodingKeys: String, CodingKey {
@@ -39,6 +40,7 @@ struct BookmarkVaultRecord: Codable, Identifiable, Hashable {
         case durationSeconds = "duration_seconds"
         case extensionHint = "extension_hint"
         case formatCount = "format_count"
+        case localMediaPaths = "local_media_paths"
         case extras
     }
 
@@ -87,6 +89,7 @@ struct BookmarkVaultRecord: Codable, Identifiable, Hashable {
         if let durationSeconds { payload["duration_seconds"] = durationSeconds }
         if let extensionHint = extensionHint?.nilIfBlank { payload["extension_hint"] = extensionHint }
         if let formatCount { payload["format_count"] = formatCount }
+        if let localMediaPaths, !localMediaPaths.isEmpty { payload["local_media_paths"] = localMediaPaths }
         return payload
     }
 }
@@ -607,8 +610,12 @@ final class BookmarkVaultGearStore: ObservableObject {
         }
     }
 
-    func saveAgentBookmark(content: String) async -> [String: Any] {
-        guard let record = await saveBookmark(content: content, capabilityID: "bookmark.save") else {
+    func saveAgentBookmark(content: String, localMediaPaths: [String]? = nil) async -> [String: Any] {
+        guard let record = await saveBookmark(
+            content: content,
+            capabilityID: "bookmark.save",
+            localMediaPaths: localMediaPaths
+        ) else {
             return [
                 "gear_id": BookmarkVaultGearDescriptor.gearID,
                 "capability_id": "bookmark.save",
@@ -628,7 +635,11 @@ final class BookmarkVaultGearStore: ObservableObject {
     }
 
     @discardableResult
-    func saveBookmark(content: String, capabilityID: String? = nil) async -> BookmarkVaultRecord? {
+    func saveBookmark(
+        content: String,
+        capabilityID: String? = nil,
+        localMediaPaths: [String]? = nil
+    ) async -> BookmarkVaultRecord? {
         let raw = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else {
             statusMessage = "Enter content to save."
@@ -665,6 +676,7 @@ final class BookmarkVaultGearStore: ObservableObject {
             durationSeconds: metadata?.durationSeconds,
             extensionHint: metadata?.extensionHint,
             formatCount: metadata?.formatCount,
+            localMediaPaths: localMediaPaths?.map { NSString(string: $0).expandingTildeInPath },
             extras: metadata?.extras ?? [:]
         )
 

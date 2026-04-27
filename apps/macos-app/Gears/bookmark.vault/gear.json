@@ -37,10 +37,10 @@
       {
         "id": "bookmark.save",
         "title": "Save bookmark",
-        "description": "Save arbitrary user-provided content. If the content contains a URL, enrich it with media metadata, Twitter/X embed metadata, or basic web metadata before writing it to the gear file database.",
+        "description": "Save arbitrary user-provided content. If the content contains a URL, enrich it with media metadata, Twitter/X embed metadata, or basic web metadata before writing it to the gear file database. Optional local media paths can be attached to the bookmark.",
         "examples": [
           "Save this link as a bookmark",
-          "把这个链接存进书签",
+          "Save this media link with imported local files",
           "Bookmark this video URL"
         ]
       }

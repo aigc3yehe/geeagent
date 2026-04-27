@@ -225,6 +225,24 @@ struct BookmarkVaultGearWindow: View {
                             BookmarkVaultDetailSection(title: "Description", text: description)
                         }
 
+                        if let localMediaPaths = bookmark.localMediaPaths, !localMediaPaths.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Local Media")
+                                    .font(.geeDisplaySemibold(12))
+                                    .foregroundStyle(.white.opacity(0.62))
+                                ForEach(localMediaPaths, id: \.self) { path in
+                                    Text(path)
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundStyle(.white.opacity(0.66))
+                                        .textSelection(.enabled)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, 10)
+                                        .frame(minHeight: 30, alignment: .center)
+                                        .background(Color.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                }
+                            }
+                        }
+
                         if !bookmark.extras.isEmpty {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("Extra Fields")

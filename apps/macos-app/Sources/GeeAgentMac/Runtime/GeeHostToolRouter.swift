@@ -169,9 +169,9 @@ enum GeeHostToolRouter {
 
         switch gearID {
         case MediaLibraryGearDescriptor.gearID:
-            return invokeMediaLibrary(toolID: toolID, capabilityID: capabilityID, args: args)
+            return await invokeMediaLibrary(toolID: toolID, capabilityID: capabilityID, args: args)
         case SmartYTMediaGearDescriptor.gearID:
-            return invokeSmartYTMedia(toolID: toolID, capabilityID: capabilityID, args: args)
+            return await invokeSmartYTMedia(toolID: toolID, capabilityID: capabilityID, args: args)
         case TwitterCaptureGearDescriptor.gearID:
             return await invokeTwitterCapture(toolID: toolID, capabilityID: capabilityID, args: args)
         case BookmarkVaultGearDescriptor.gearID:
@@ -203,7 +203,10 @@ enum GeeHostToolRouter {
             return .error(toolID: toolID, code: "gear.args.content", message: "`content` is required.")
         }
 
-        let payload = await BookmarkVaultGearStore.shared.saveAgentBookmark(content: content)
+        let payload = await BookmarkVaultGearStore.shared.saveAgentBookmark(
+            content: content,
+            localMediaPaths: stringArrayArg(args, "local_media_paths")
+        )
         return .completed(toolID: toolID, payload: payload)
     }
 
@@ -211,7 +214,7 @@ enum GeeHostToolRouter {
         toolID: String,
         capabilityID: String,
         args: [String: Any]
-    ) -> WorkbenchToolOutcome {
+    ) async -> WorkbenchToolOutcome {
         let store = MediaLibraryModuleStore.shared
 
         switch capabilityID {
@@ -275,6 +278,48 @@ enum GeeHostToolRouter {
                 capabilityID: capabilityID,
                 action: "applied_filter"
             )
+        case "media.import_files":
+            let paths = stringArrayArg(args, "paths") ?? stringArrayArg(args, "file_paths") ?? []
+            guard !paths.isEmpty else {
+                return .error(
+                    toolID: toolID,
+                    code: "gear.args.paths",
+                    message: "`paths` is required and must include at least one local file path."
+                )
+            }
+            let expandedPaths = paths.map { NSString(string: $0).expandingTildeInPath }
+            let missingPaths = expandedPaths.filter { !FileManager.default.fileExists(atPath: $0) }
+            do {
+                let imported = try await store.importMediaForAgent(paths: paths)
+                return .completed(
+                    toolID: toolID,
+                    payload: [
+                        "gear_id": MediaLibraryGearDescriptor.gearID,
+                        "capability_id": capabilityID,
+                        "action": "imported_files",
+                        "requested_paths": paths,
+                        "missing_paths": missingPaths,
+                        "imported_count": imported.count,
+                        "library_path": store.library?.url.path ?? NSNull(),
+                        "imported_items": imported.map { item in
+                            [
+                                "id": item.id,
+                                "name": item.name,
+                                "ext": item.ext,
+                                "file_path": item.fileURL.path,
+                                "media_kind": item.mediaKind.rawValue,
+                                "duration_seconds": item.durationSeconds ?? NSNull()
+                            ] as [String: Any]
+                        }
+                    ]
+                )
+            } catch {
+                return .error(
+                    toolID: toolID,
+                    code: "gear.media.import_failed",
+                    message: error.localizedDescription
+                )
+            }
         default:
             return .error(
                 toolID: toolID,
@@ -288,8 +333,8 @@ enum GeeHostToolRouter {
         toolID: String,
         capabilityID: String,
         args: [String: Any]
-    ) -> WorkbenchToolOutcome {
-        guard ["smartyt.sniff", "smartyt.download", "smartyt.transcribe"].contains(capabilityID) else {
+    ) async -> WorkbenchToolOutcome {
+        guard ["smartyt.sniff", "smartyt.download", "smartyt.download_now", "smartyt.transcribe"].contains(capabilityID) else {
             return .error(
                 toolID: toolID,
                 code: "gear.smartyt.capability_unsupported",
@@ -315,6 +360,15 @@ enum GeeHostToolRouter {
             downloadKind = parsedKind
         } else {
             downloadKind = nil
+        }
+
+        if capabilityID == "smartyt.download_now" {
+            let payload = await SmartYTMediaGearStore.shared.runImmediateAgentDownload(
+                url: url,
+                downloadKind: downloadKind,
+                outputDirectory: stringArg(args, "output_dir") ?? stringArg(args, "output_directory")
+            )
+            return .completed(toolID: toolID, payload: payload)
         }
 
         let payload = SmartYTMediaGearStore.shared.enqueueAgentAction(
@@ -434,6 +488,20 @@ enum GeeHostToolRouter {
                     "output_dir": ["type": "string"]
                 ]
             ]
+        case (SmartYTMediaGearDescriptor.gearID, "smartyt.download_now"):
+            return [
+                "type": "object",
+                "required": ["url"],
+                "additionalProperties": false,
+                "properties": [
+                    "url": ["type": "string", "format": "uri"],
+                    "download_kind": ["type": "string", "enum": ["audio", "video", "both"]],
+                    "output_dir": [
+                        "type": "string",
+                        "description": "Optional local directory for completed artifacts. Defaults to ~/Downloads/SmartYT/<job-id>."
+                    ]
+                ]
+            ]
         case (SmartYTMediaGearDescriptor.gearID, "smartyt.transcribe"):
             return [
                 "type": "object",
@@ -486,6 +554,24 @@ enum GeeHostToolRouter {
                     "content": [
                         "type": "string",
                         "description": "Any user-provided content to save. If it contains a URL, Bookmark Vault enriches the bookmark with link metadata when available."
+                    ],
+                    "local_media_paths": [
+                        "type": "array",
+                        "items": ["type": "string"],
+                        "description": "Optional local media paths associated with this bookmark, usually imported Media Library item paths."
+                    ]
+                ]
+            ]
+        case (MediaLibraryGearDescriptor.gearID, "media.import_files"):
+            return [
+                "type": "object",
+                "required": ["paths"],
+                "additionalProperties": false,
+                "properties": [
+                    "paths": [
+                        "type": "array",
+                        "items": ["type": "string"],
+                        "description": "Local media file paths to import into the currently open media library."
                     ]
                 ]
             ]

@@ -738,6 +738,7 @@ First-party gears should gradually move into real package boundaries.
 - Package includes manifest, README, assets, setup metadata, storage notes, and future capability declarations.
 - Native Swift implementation may remain host-compiled during migration, but the business boundary must move out of the main app.
 - Folder management, filtering, starring, Quick Look, Finder handoff, video / gif hover playback, and live presentation mode belong to the media gear, not the main workbench.
+- Agent capabilities include `media.filter`, `media.focus_folder`, and `media.import_files`. `media.import_files` imports local media paths into the currently open library, returns imported item paths for multi-Gear workflows, and reports `missing_paths` when requested source files cannot be found.
 
 `hyperframes.studio`:
 
@@ -753,7 +754,7 @@ First-party gears should gradually move into real package boundaries.
 - V1 uses `yt-dlp` for metadata, downloads, and subtitle extraction, and `ffmpeg` / `ffprobe` for media conversion support.
 - Transcript extraction should prefer platform subtitles first. If no subtitle is available, the Gear may fall back to local speech tooling such as Whisper when installed. If no speech backend is available, the Gear must return a structured failure that explains the missing transcription backend instead of pretending the conversion completed.
 - Job state belongs in `~/Library/Application Support/GeeAgent/gear-data/smartyt.media/`, while downloaded media, extracted subtitles, and transcript text default to `~/Downloads/SmartYT/<job-id>/` unless an agent call provides an explicit `output_dir`.
-- Agent capabilities are `smartyt.sniff`, `smartyt.download`, and `smartyt.transcribe`. They return structured job or artifact results; the active agent/LLM owns the final user-facing reply.
+- Agent capabilities are `smartyt.sniff`, `smartyt.download`, `smartyt.download_now`, and `smartyt.transcribe`. `smartyt.download` queues work for the app UI, while `smartyt.download_now` blocks until artifacts exist and returns `output_paths` for multi-Gear workflows. The active agent/LLM owns the final user-facing reply.
 
 `twitter.capture`:
 
@@ -764,6 +765,20 @@ First-party gears should gradually move into real package boundaries.
 - Captured tweet records include ids, URLs, author handles, text, language, counts, timestamps, reply / retweet flags, and normalized media metadata when available.
 - Agent capabilities are `twitter.fetch_tweet`, `twitter.fetch_list`, and `twitter.fetch_user`. Each capability creates a Gear task, stores the result in the file database, and returns structured task/result data for the active agent/LLM to summarize.
 - Missing cookies, expired sessions, rate limits, or Twikit failures must be returned as structured task failures. The Gear must not fake successful capture.
+
+`bookmark.vault`:
+
+- Target: universal information capture Gear.
+- The Gear saves arbitrary raw content. If the content contains a URL, it enriches metadata through Twitter/X embed metadata, `yt-dlp` media metadata, or basic web fetch in that order.
+- Bookmark records belong in `~/Library/Application Support/GeeAgent/gear-data/bookmark.vault/bookmarks/<bookmark-id>/bookmark.json`.
+- Agent capability `bookmark.save` accepts `content` and optional `local_media_paths`. Multi-Gear workflows should pass Media Library imported item paths when a URL's related media has been downloaded and imported.
+
+Information capture workflow:
+
+- Pure text should go straight to `bookmark.save`.
+- URL metadata capture should save through `bookmark.save`; use `twitter.capture` or `smartyt.media` only when the user asks for deeper Twitter/media content or when the URL strongly implies media acquisition.
+- Strong media acquisition should use `smartyt.download_now`, then `media.import_files`, then `bookmark.save` with `local_media_paths`.
+- If no media library is open, keep downloaded paths in Bookmark Vault and ask the user to open or create a media library before claiming import succeeded.
 
 `btc.price`:
 

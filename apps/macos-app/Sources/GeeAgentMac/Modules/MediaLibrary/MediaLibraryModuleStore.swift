@@ -188,6 +188,40 @@ final class MediaLibraryModuleStore {
         }
     }
 
+    func importMediaForAgent(paths: [String]) async throws -> [MediaLibraryItem] {
+        guard let library else {
+            throw MediaLibraryAgentImportError.libraryMissing
+        }
+
+        let urls = paths
+            .map { NSString(string: $0).expandingTildeInPath }
+            .map { URL(fileURLWithPath: $0) }
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard !urls.isEmpty else {
+            throw MediaLibraryAgentImportError.noReadableFiles
+        }
+
+        isLoading = true
+        errorMessage = nil
+        defer { isLoading = false }
+
+        do {
+            let imported = try await service.importFiles(urls, into: library.url)
+            try reloadLibraryContents()
+            if let firstImported = imported.first {
+                focusedItemID = firstImported.id
+                selectedItemIDs = [firstImported.id]
+            }
+            if imported.isEmpty {
+                errorMessage = "No new supported media files were imported."
+            }
+            return imported
+        } catch {
+            errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
     func refresh() async {
         guard library != nil else { return }
         await runLoading {
@@ -404,6 +438,20 @@ final class MediaLibraryModuleStore {
             return []
         }
         return history
+    }
+}
+
+enum MediaLibraryAgentImportError: LocalizedError {
+    case libraryMissing
+    case noReadableFiles
+
+    var errorDescription: String? {
+        switch self {
+        case .libraryMissing:
+            return "Open or create a media library before importing downloaded media."
+        case .noReadableFiles:
+            return "No readable local media files were provided."
+        }
     }
 }
 

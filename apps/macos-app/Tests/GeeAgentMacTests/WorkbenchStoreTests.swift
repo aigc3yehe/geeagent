@@ -458,7 +458,8 @@ final class WorkbenchStoreTests: XCTestCase {
         XCTAssertEqual(summaryPayload["disclosure_level"] as? String, "summary")
         let gears = try XCTUnwrap(summaryPayload["gears"] as? [[String: Any]])
         let mediaGear = try XCTUnwrap(gears.first { $0["gear_id"] as? String == "media.library" })
-        XCTAssertEqual(mediaGear["capability_count"] as? Int, 2)
+        XCTAssertEqual(mediaGear["capability_count"] as? Int, 3)
+        XCTAssertTrue((mediaGear["capability_ids"] as? [String])?.contains("media.import_files") == true)
         XCTAssertNil(mediaGear["description"], "Summary disclosure should not include full capability copy.")
 
         store.invokeTool(

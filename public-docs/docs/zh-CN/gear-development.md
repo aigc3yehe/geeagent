@@ -738,6 +738,7 @@ Capability 示例：
 - package 内包含 manifest、README、assets、setup metadata、storage notes 和未来 capability declarations。
 - Native Swift 实现可以在迁移期继续 host-compiled，但业务边界必须从主 app 里抽离。
 - 文件夹、筛选、星标、Quick Look、Finder、视频 / gif hover playback、动态展示等行为属于 media gear，不属于主 workbench。
+- Agent capabilities 包括 `media.filter`、`media.focus_folder` 和 `media.import_files`。`media.import_files` 把本地媒体路径导入当前已经打开的媒体库，返回导入后的 item 路径供多 Gear 工作流继续使用，并在源文件不存在时通过 `missing_paths` 报告。
 
 `hyperframes.studio`：
 
@@ -753,7 +754,7 @@ Capability 示例：
 - V1 使用 `yt-dlp` 处理 metadata、下载和字幕提取，使用 `ffmpeg` / `ffprobe` 支撑媒体转换。
 - 转文本应优先走平台字幕快通道。如果没有字幕，Gear 可以在本地安装了 Whisper 等语音工具时降级到本地 speech tooling。如果没有可用 speech backend，Gear 必须返回结构化失败并说明缺少转写后端，不能假装转换已经完成。
 - Job state 应写入 `~/Library/Application Support/GeeAgent/gear-data/smartyt.media/`；下载媒体、提取字幕和 transcript text 在 agent call 未提供 `output_dir` 时默认写入 `~/Downloads/SmartYT/<job-id>/`。
-- Agent capabilities 是 `smartyt.sniff`、`smartyt.download`、`smartyt.transcribe`。它们只返回结构化 job 或 artifact 结果；最终给用户看的自然语言回复由 active agent/LLM 生成。
+- Agent capabilities 是 `smartyt.sniff`、`smartyt.download`、`smartyt.download_now`、`smartyt.transcribe`。`smartyt.download` 面向 UI 排队执行，`smartyt.download_now` 会等到 artifact 真正生成后返回 `output_paths`，供多 Gear 工作流使用。最终给用户看的自然语言回复由 active agent/LLM 生成。
 
 `twitter.capture`：
 
@@ -764,6 +765,20 @@ Capability 示例：
 - 抓取到的 tweet record 包含 id、URL、作者 handle、正文、语言、互动数量、时间、reply / retweet 标记，以及可用时的标准化 media metadata。
 - Agent capabilities 是 `twitter.fetch_tweet`、`twitter.fetch_list`、`twitter.fetch_user`。每个 capability 都创建 Gear task，把结果保存到文件数据库，并返回结构化 task / result 数据给 active agent/LLM 生成最终回复。
 - 缺少 cookies、session 过期、rate limit 或 Twikit 错误必须以结构化 task failure 返回；Gear 不能伪造抓取成功。
+
+`bookmark.vault`：
+
+- 目标是 universal information capture Gear。
+- Gear 保存任意 raw content。如果内容包含 URL，会按 Twitter/X 嵌入元数据、`yt-dlp` 媒体元数据、基础网页 fetch 的顺序尝试补充 metadata。
+- Bookmark record 写入 `~/Library/Application Support/GeeAgent/gear-data/bookmark.vault/bookmarks/<bookmark-id>/bookmark.json`。
+- Agent capability `bookmark.save` 接收 `content` 和可选 `local_media_paths`。多 Gear 工作流在下载并导入媒体后，应把 Media Library 导入后的 item path 写入 `local_media_paths`。
+
+信息采集工作流：
+
+- 纯文本直接调用 `bookmark.save`。
+- URL metadata capture 先调用 `bookmark.save`；只有当用户要求更深入的 Twitter/media 内容，或 URL 明确指向强媒体内容时，才使用 `twitter.capture` 或 `smartyt.media`。
+- 强媒体采集应依次调用 `smartyt.download_now`、`media.import_files`，再调用带 `local_media_paths` 的 `bookmark.save`。
+- 如果当前没有打开媒体库，应把下载路径先保存在 Bookmark Vault，并提示用户打开或创建媒体库，不能声称已经导入成功。
 
 `btc.price`：
 

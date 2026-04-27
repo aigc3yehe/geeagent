@@ -317,6 +317,87 @@ final class SmartYTMediaGearStore: ObservableObject {
         ]
     }
 
+    func runImmediateAgentDownload(
+        url: String,
+        downloadKind: SmartYTDownloadKind?,
+        outputDirectory: String?
+    ) async -> [String: Any] {
+        guard let cleanURL = normalizedURL(url) else {
+            return [
+                "gear_id": SmartYTMediaGearDescriptor.gearID,
+                "capability_id": "smartyt.download_now",
+                "status": "failed",
+                "error": "invalid_url"
+            ]
+        }
+
+        let now = Date()
+        let id = "smartyt-\(Self.timestamp())-\(UUID().uuidString.prefix(8))"
+        let artifactDirectory = resolvedArtifactDirectory(jobID: id, requestedPath: outputDirectory)
+        let kind = downloadKind ?? .video
+        let job = SmartYTMediaJob(
+            id: id,
+            url: cleanURL,
+            action: .download,
+            downloadKind: kind,
+            status: .running,
+            title: "Download",
+            createdAt: now,
+            updatedAt: now,
+            mediaInfo: nil,
+            outputPaths: [],
+            transcriptPath: nil,
+            transcriptPreview: nil,
+            artifactDirectoryPath: artifactDirectory.path,
+            log: "Started immediate workflow download for \(cleanURL)",
+            errorMessage: nil
+        )
+        jobs.insert(job, at: 0)
+        selectedJobID = job.id
+        persist(job)
+        isBusy = true
+        statusMessage = "Downloading media..."
+        defer { isBusy = jobs.contains { $0.status == .running || $0.status == .queued } }
+
+        do {
+            let jobRoot = try ensureArtifactDirectory(for: job)
+            let info = try? await sniff(url: cleanURL)
+            let outputs = try await download(url: cleanURL, kind: kind, into: jobRoot)
+            updateJob(id) { current in
+                current.mediaInfo = info
+                current.title = info?.title ?? "Downloaded Media"
+                current.outputPaths = outputs.map(\.path)
+                current.status = .completed
+                current.updatedAt = Date()
+                current.log.append("\nImmediate download completed with \(outputs.count) artifact(s).")
+            }
+            statusMessage = "Download completed."
+            let completed = jobs.first { $0.id == id } ?? job
+            return agentPayload(
+                capabilityID: "smartyt.download_now",
+                job: completed,
+                status: "completed",
+                outputPaths: outputs.map(\.path)
+            )
+        } catch {
+            updateJob(id) { current in
+                current.status = .failed
+                current.errorMessage = error.localizedDescription
+                current.updatedAt = Date()
+                current.log.append("\nFailed: \(error.localizedDescription)")
+            }
+            statusMessage = error.localizedDescription
+            let failed = jobs.first { $0.id == id } ?? job
+            return agentPayload(
+                capabilityID: "smartyt.download_now",
+                job: failed,
+                status: "failed",
+                outputPaths: [],
+                error: error.localizedDescription
+            )
+        }
+    }
+
     func revealSelectedJob() {
         guard let selectedJob else {
             return
@@ -364,6 +445,42 @@ final class SmartYTMediaGearStore: ObservableObject {
             await self?.run(jobID: job.id, language: language)
         }
         return job
+    }
+
+    private func agentPayload(
+        capabilityID: String,
+        job: SmartYTMediaJob,
+        status: String,
+        outputPaths: [String],
+        error: String? = nil
+    ) -> [String: Any] {
+        var payload: [String: Any] = [
+            "gear_id": SmartYTMediaGearDescriptor.gearID,
+            "capability_id": capabilityID,
+            "action": job.action.rawValue,
+            "job_id": job.id,
+            "status": status,
+            "url": job.url,
+            "download_kind": job.downloadKind.rawValue,
+            "artifact_root": artifactDirectory(for: job).path,
+            "output_paths": outputPaths
+        ]
+        if let mediaInfo = job.mediaInfo {
+            payload["media_info"] = [
+                "title": mediaInfo.title,
+                "platform": mediaInfo.platform,
+                "uploader": (mediaInfo.uploader as Any?) ?? NSNull(),
+                "duration_seconds": (mediaInfo.durationSeconds as Any?) ?? NSNull(),
+                "webpage_url": (mediaInfo.webpageURL?.absoluteString as Any?) ?? NSNull(),
+                "thumbnail_url": (mediaInfo.thumbnailURL?.absoluteString as Any?) ?? NSNull(),
+                "extension_hint": (mediaInfo.extensionHint as Any?) ?? NSNull(),
+                "format_count": mediaInfo.formatCount
+            ]
+        }
+        if let error {
+            payload["error"] = error
+        }
+        return payload
     }
 
     private func run(jobID: String, language: String?) async {

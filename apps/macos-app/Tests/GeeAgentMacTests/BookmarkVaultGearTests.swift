@@ -56,7 +56,7 @@ final class BookmarkVaultGearTests: XCTestCase {
             "https://www.example.com/watch?v=1"
         )
         XCTAssertEqual(
-            BookmarkVaultInputParser.firstURL(in: "收藏 https://example.com/a/b?x=1,"),
+            BookmarkVaultInputParser.firstURL(in: "save https://example.com/a/b?x=1,"),
             "https://example.com/a/b?x=1"
         )
     }
@@ -131,6 +131,28 @@ final class BookmarkVaultGearTests: XCTestCase {
         XCTAssertEqual(store.bookmarks.count, 1)
         let path = try XCTUnwrap(payload["bookmark_path"] as? String)
         XCTAssertTrue(FileManager.default.fileExists(atPath: path))
+    }
+
+    @MainActor
+    func testAgentSaveCanAttachLocalMediaPaths() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bookmark-vault-local-media-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = BookmarkVaultGearStore(
+            database: BookmarkVaultFileDatabase(rootURL: root),
+            runner: BookmarkVaultMockRunner()
+        )
+
+        let payload = await store.saveAgentBookmark(
+            content: "Saved media link https://example.com/video",
+            localMediaPaths: ["~/Downloads/SmartYT/demo.mp4"]
+        )
+
+        let paths = try XCTUnwrap(payload["local_media_paths"] as? [String])
+        XCTAssertEqual(paths.count, 1)
+        XCTAssertTrue(paths[0].hasSuffix("/Downloads/SmartYT/demo.mp4"))
+        XCTAssertEqual(store.bookmarks.first?.localMediaPaths, paths)
     }
 }
 
