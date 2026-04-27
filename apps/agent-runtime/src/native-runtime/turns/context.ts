@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 
-import { activeConversation, syncConversationStatuses } from "../store/conversations.js";
+import {
+  activeConversation,
+  isQuickConversation,
+  syncConversationStatuses,
+} from "../store/conversations.js";
 import { currentTimestamp } from "../store/defaults.js";
 import type { AgentProfile, RuntimeConversation, RuntimeStore } from "../store/types.js";
 import type { TurnRoute } from "../sdk-turn-runner.js";
@@ -19,7 +23,8 @@ export function prepareTurnContext(
     activeAgentProfile: resolvedActiveAgentProfile(store),
     workspaceMessages:
       route.mode === "workspace_message" ? workspaceMessagesFromStore(store) : [],
-    shouldReuseActiveConversation: shouldReuseActiveConversation(store, text),
+    shouldReuseActiveConversation:
+      route.mode === "quick_prompt" ? false : shouldReuseActiveConversation(store, text),
   };
 }
 
@@ -66,6 +71,7 @@ function bestQuickPromptConversationMatch(
     return null;
   }
   const scored = store.conversations
+    .filter((conversation) => !isQuickConversation(conversation))
     .map((conversation) => ({
       conversationId: conversation.conversation_id,
       score: conversationTopicMatchScore(conversation, keywords),
@@ -84,7 +90,12 @@ function bestQuickPromptConversationMatch(
 
 function shouldReuseActiveConversation(store: RuntimeStore, prompt: string): boolean {
   const keywords = routingTopicKeywords(prompt);
-  return keywords.size > 0 && conversationTopicMatchScore(activeConversation(store), keywords) > 0;
+  const conversation = activeConversation(store);
+  return (
+    keywords.size > 0 &&
+    !isQuickConversation(conversation) &&
+    conversationTopicMatchScore(conversation, keywords) > 0
+  );
 }
 
 function routingTopicKeywords(text: string): Set<string> {

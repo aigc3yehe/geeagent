@@ -63,6 +63,7 @@ export function defaultRuntimeStore(now = currentTimestamp()): RuntimeStore {
         conversation_id: "conv_01",
         title: "New Conversation",
         status: "active",
+        tags: [],
         messages: [
           {
             message_id: "msg_assistant_01",

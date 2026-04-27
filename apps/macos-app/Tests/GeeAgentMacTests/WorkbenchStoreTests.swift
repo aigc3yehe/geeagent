@@ -699,6 +699,8 @@ final class WorkbenchStoreTests: XCTestCase {
 
     func testSubmitQuickInputRoutesDraftAndRecordsLatestResult() async throws {
         let store = WorkbenchStore(runtimeClient: PreviewWorkbenchRuntimeClient())
+        let originalConversationID = store.selectedConversationID
+        let originalConversationCount = store.conversations.count
 
         store.quickInputDraft = "Remind me what's in the review queue"
         store.submitQuickInput()
@@ -707,6 +709,21 @@ final class WorkbenchStoreTests: XCTestCase {
 
         XCTAssertEqual(store.quickInputDraft, "")
         XCTAssertEqual(store.quickInputLatestResult?.kind, .chatReply)
+        XCTAssertEqual(store.conversations.count, originalConversationCount + 1)
+        XCTAssertNotEqual(store.selectedConversationID, originalConversationID)
+        XCTAssertEqual(store.selectedConversation?.tags, ["quick-input"])
+    }
+
+    func testSubmitQuickInputImmediatelyOpensChatAndShowsSendingState() {
+        let store = WorkbenchStore(runtimeClient: DelayedQuickInputRuntimeClient(snapshot: PreviewWorkbenchRuntimeClient().loadSnapshot()))
+        store.selectedSection = .home
+        store.quickInputDraft = "Save this link and fetch metadata"
+
+        store.submitQuickInput()
+
+        XCTAssertEqual(store.selectedSection, .chat)
+        XCTAssertTrue(store.isSubmittingQuickInput)
+        XCTAssertTrue(store.isSendingMessage)
     }
 
     func testSendMessageClearsLocalThinkingStateAfterRuntimeSnapshot() async throws {
@@ -960,7 +977,8 @@ private struct FixedSnapshotRuntimeClient: WorkbenchRuntimeClient {
     func sendMessage(
         _ message: String,
         in snapshot: WorkbenchSnapshot,
-        conversationID: ConversationThread.ID
+        conversationID: ConversationThread.ID,
+        allowAutoRouting: Bool
     ) async throws -> WorkbenchSnapshot { snapshot }
     func performTaskAction(
         _ action: WorkbenchTaskAction,
@@ -1032,7 +1050,7 @@ private struct FixedSnapshotRuntimeClient: WorkbenchRuntimeClient {
     }
 }
 
-private struct HostActionRuntimeClient: WorkbenchRuntimeClient {
+private struct DelayedQuickInputRuntimeClient: WorkbenchRuntimeClient {
     var snapshot: WorkbenchSnapshot
 
     func loadSnapshot() -> WorkbenchSnapshot { snapshot }
@@ -1048,7 +1066,83 @@ private struct HostActionRuntimeClient: WorkbenchRuntimeClient {
     func sendMessage(
         _ message: String,
         in snapshot: WorkbenchSnapshot,
-        conversationID: ConversationThread.ID
+        conversationID: ConversationThread.ID,
+        allowAutoRouting: Bool
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func performTaskAction(
+        _ action: WorkbenchTaskAction,
+        in snapshot: WorkbenchSnapshot,
+        taskID: WorkbenchTaskRecord.ID
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func setActiveAgentProfile(
+        _ profileID: AgentProfileRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func installAgentPack(
+        at packPath: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func reloadAgentProfile(
+        _ profileID: AgentProfileRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func deleteAgentProfile(
+        _ profileID: AgentProfileRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func deleteTerminalPermissionRule(
+        _ ruleID: TerminalPermissionRuleRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func setHighestAuthorizationEnabled(
+        _ enabled: Bool,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func loadChatRoutingSettings() async throws -> ChatRoutingSettings {
+        try await PreviewWorkbenchRuntimeClient().loadChatRoutingSettings()
+    }
+    func saveChatRoutingSettings(
+        _ settings: ChatRoutingSettings,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func submitQuickPrompt(
+        _ prompt: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        try await Task.sleep(nanoseconds: 500_000_000)
+        return snapshot
+    }
+    func completeHostActionTurn(
+        _ completions: [WorkbenchHostActionCompletion],
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func invokeTool(_ invocation: ToolInvocation) async throws -> WorkbenchToolOutcome {
+        .completed(toolID: invocation.toolID, payload: [:])
+    }
+}
+
+private struct HostActionRuntimeClient: WorkbenchRuntimeClient {
+    var snapshot: WorkbenchSnapshot
+
+    func loadSnapshot() -> WorkbenchSnapshot {
+        var loadedSnapshot = snapshot
+        loadedSnapshot.hostActionIntents = []
+        return loadedSnapshot
+    }
+    func createConversation(in snapshot: WorkbenchSnapshot) async throws -> WorkbenchSnapshot { snapshot }
+    func activateConversation(
+        _ conversationID: ConversationThread.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func deleteConversation(
+        _ conversationID: ConversationThread.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func sendMessage(
+        _ message: String,
+        in snapshot: WorkbenchSnapshot,
+        conversationID: ConversationThread.ID,
+        allowAutoRouting: Bool
     ) async throws -> WorkbenchSnapshot { self.snapshot }
     func performTaskAction(
         _ action: WorkbenchTaskAction,
@@ -1094,7 +1188,11 @@ private struct HostActionRuntimeClient: WorkbenchRuntimeClient {
     func completeHostActionTurn(
         _ completions: [WorkbenchHostActionCompletion],
         in snapshot: WorkbenchSnapshot
-    ) async throws -> WorkbenchSnapshot { self.snapshot }
+    ) async throws -> WorkbenchSnapshot {
+        var nextSnapshot = self.snapshot
+        nextSnapshot.hostActionIntents = []
+        return nextSnapshot
+    }
 
     func invokeTool(_ invocation: ToolInvocation) async throws -> WorkbenchToolOutcome {
         try await PreviewWorkbenchRuntimeClient().invokeTool(invocation)
@@ -1117,7 +1215,8 @@ private struct FailingSetActiveRuntimeClient: WorkbenchRuntimeClient {
     func sendMessage(
         _ message: String,
         in snapshot: WorkbenchSnapshot,
-        conversationID: ConversationThread.ID
+        conversationID: ConversationThread.ID,
+        allowAutoRouting: Bool
     ) async throws -> WorkbenchSnapshot { snapshot }
     func performTaskAction(
         _ action: WorkbenchTaskAction,

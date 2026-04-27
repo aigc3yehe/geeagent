@@ -85,7 +85,7 @@ GeeAgent 按以下顺序编译 persona context：
 
 ## Skill Sources
 
-GeeAgent 只识别用户显式添加的 skill 文件夹。它不会自动扫描本机所有 Claude、Codex 或 agent skill 目录。
+GeeAgent 只识别用户显式添加的 skill 文件夹。它不会自动扫描本机所有 agent skill 目录。
 
 Settings 可以添加系统级 skill source 文件夹。系统级 source 对所有 persona 生效，并会在 runtime 构建新 snapshot 或 prompt 时热更新。
 
@@ -93,7 +93,7 @@ Agents 详情页可以添加 persona 级 skill source 文件夹。persona 级 so
 
 skill source 可以是一个包含 `SKILL.md` 的单个 skill 文件夹，也可以是一个 collection 文件夹，其直接子文件夹包含 `SKILL.md`。
 
-runtime 只会把 skill metadata 暴露给 active agent prompt，例如 name、description、scope 和 file path。完整 `SKILL.md` 内容不会自动注入。如果 agent 需要完整指令，必须通过正常 runtime file/tool 路径和权限模型检查该 skill 文件。
+runtime 只会把 skill metadata 暴露给 active agent prompt，例如 name、description、scope 和 file path。完整 `SKILL.md` 内容不会自动注入。如果 agent 需要完整指令，必须通过正常 runtime file/tool 路径和权限模型检查该 skill 文件。GeeAgent 的 skill metadata 不是 SDK `Skill` 工具注册；当存在 `skill_file_path` 时，agent 应直接读取该文件，而不是调用 SDK skill alias。
 
 skill availability 是上下文，不是安全沙箱。tool execution 仍然由 GeeAgent runtime permissions、approval flow 和 persona `allowed_tool_ids` 控制。
 

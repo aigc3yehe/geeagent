@@ -2,26 +2,26 @@ import AppKit
 import AVFoundation
 import Foundation
 
-enum MediaLibraryKind: String, Codable, Hashable {
+enum MediaLibraryKind: String, Codable, Hashable, Sendable {
     case eagle
     case viewer
 }
 
-struct MediaLibraryInfo: Hashable {
+struct MediaLibraryInfo: Hashable, Sendable {
     var name: String
     var url: URL
     var kind: MediaLibraryKind
     var folders: [MediaLibraryFolder]
 }
 
-struct MediaLibraryFolder: Identifiable, Hashable {
+struct MediaLibraryFolder: Identifiable, Hashable, Sendable {
     var id: String
     var name: String
     var createdAt: Date
     var depth: Int
 }
 
-struct MediaLibraryItem: Identifiable, Hashable {
+struct MediaLibraryItem: Identifiable, Hashable, Sendable {
     var id: String
     var name: String
     var ext: String
@@ -47,7 +47,7 @@ struct MediaLibraryItem: Identifiable, Hashable {
     }
 }
 
-enum MediaLibraryMediaKind: String, CaseIterable, Identifiable, Hashable {
+enum MediaLibraryMediaKind: String, CaseIterable, Identifiable, Hashable, Sendable {
     case all
     case image
     case video
@@ -55,7 +55,7 @@ enum MediaLibraryMediaKind: String, CaseIterable, Identifiable, Hashable {
     var id: String { rawValue }
 }
 
-struct MediaLibraryFilterState: Hashable {
+struct MediaLibraryFilterState: Hashable, Sendable {
     var mediaKind: MediaLibraryMediaKind = .all
     var selectedExtensions: Set<String> = []
     var starredOnly = false
@@ -63,7 +63,6 @@ struct MediaLibraryFilterState: Hashable {
     var searchText = ""
 }
 
-@MainActor
 final class MediaLibraryService {
     nonisolated static let imageExtensions: Set<String> = ["jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "heic"]
     nonisolated static let videoExtensions: Set<String> = ["mp4", "mov", "avi", "webm", "mkv", "m4v"]

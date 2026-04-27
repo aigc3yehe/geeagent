@@ -9,10 +9,14 @@ import { describe, it } from "node:test";
 
 import { handleNativeRuntimeCommand } from "./native-runtime/commands.js";
 import { __sdkTurnRunnerTestHooks } from "./native-runtime/sdk-turn-runner.js";
+import { QUICK_CONVERSATION_TAG } from "./native-runtime/store/conversations.js";
+import { defaultRuntimeStore } from "./native-runtime/store/defaults.js";
 import {
   sdkRuntimeBashScope,
   terminalAccessDecisionForScope,
 } from "./native-runtime/store/terminal-permissions.js";
+import { __turnTestHooks } from "./native-runtime/turns.js";
+import { routeLocalGearIntent } from "./native-runtime/turns/gear-intents.js";
 
 type ServerEnvelope = {
   id: string;
@@ -80,6 +84,49 @@ function send(
 }
 
 describe("native runtime command modules", () => {
+  it("excludes quick-tagged conversations from automatic routing candidates", () => {
+    const now = "2026-04-27T12:00:00.000Z";
+    const store = defaultRuntimeStore(now);
+    store.conversations = [
+      {
+        conversation_id: "conv_quick",
+        title: "OpenAI article",
+        status: "idle",
+        tags: [QUICK_CONVERSATION_TAG],
+        messages: [
+          {
+            message_id: "msg_quick",
+            role: "assistant",
+            content: "OpenAI article research notes",
+            timestamp: now,
+          },
+        ],
+      },
+      {
+        conversation_id: "conv_regular",
+        title: "OpenAI article",
+        status: "idle",
+        messages: [
+          {
+            message_id: "msg_regular",
+            role: "assistant",
+            content: "OpenAI article research notes",
+            timestamp: now,
+          },
+        ],
+      },
+    ];
+    store.active_conversation_id = "conv_quick";
+
+    const routed = __turnTestHooks.routeQuickPromptToBestConversation(
+      store,
+      "find the openai article notes",
+    );
+
+    assert.equal(routed, "conv_regular");
+    assert.equal(store.active_conversation_id, "conv_regular");
+  });
+
   it("creates, activates, and deletes conversations through a small TS store", async () => {
     const configDir = await tempConfigDir();
     const firstRaw = await handleNativeRuntimeCommand("snapshot", [], { configDir });
@@ -372,6 +419,7 @@ describe("native runtime command modules", () => {
 
     assert.match(prompt, /metadata-only/);
     assert.match(prompt, /Visible description only/);
+    assert.match(prompt, /Do not invoke any SDK Skill tool/);
     assert.doesNotMatch(prompt, /FULL BODY SENTINEL/);
     assert.doesNotMatch(prompt, /never expose this instruction text/);
   });
@@ -942,23 +990,92 @@ describe("native runtime command modules", () => {
       const snapshot = JSON.parse(raw);
       assert.equal(snapshot.last_request_outcome.kind, "host_action_pending");
       assert.equal(snapshot.host_action_intents.length, 2);
-      assert.deepEqual(snapshot.host_action_intents[0], {
-        host_action_id: "host_action_open_media_library_cdb8d666",
-        tool_id: "gee.app.openSurface",
-        arguments: { gear_id: "media.library" },
-      });
-      assert.deepEqual(snapshot.host_action_intents[1], {
-        host_action_id: "host_action_media_filter_video_cdb8d666",
-        tool_id: "gee.gear.invoke",
-        arguments: {
-          gear_id: "media.library",
-          capability_id: "media.filter",
-          args: { kind: "video" },
-        },
+      assert.match(
+        snapshot.host_action_intents[0].host_action_id,
+        /^host_action_open_media_library_cdb8d666_[a-f0-9]{8}$/,
+      );
+      assert.match(
+        snapshot.host_action_intents[1].host_action_id,
+        /^host_action_media_filter_video_cdb8d666_[a-f0-9]{8}$/,
+      );
+      assert.equal(snapshot.host_action_intents[0].tool_id, "gee.app.openSurface");
+      assert.deepEqual(snapshot.host_action_intents[0].arguments, { gear_id: "media.library" });
+      assert.equal(snapshot.host_action_intents[1].tool_id, "gee.gear.invoke");
+      assert.deepEqual(snapshot.host_action_intents[1].arguments, {
+        gear_id: "media.library",
+        capability_id: "media.filter",
+        args: { kind: "video" },
       });
       const latest = snapshot.active_conversation.messages.at(-1);
       assert.equal(latest.role, "user");
       assert.equal(latest.content, "show video files in the media library");
+    } finally {
+      if (previousKey === undefined) {
+        delete process.env.XENODIA_API_KEY;
+      } else {
+        process.env.XENODIA_API_KEY = previousKey;
+      }
+    }
+  });
+
+  it("uses unique host action ids when the same routed Gear prompt repeats", async () => {
+    const configDir = await tempConfigDir();
+    const previousKey = process.env.XENODIA_API_KEY;
+    delete process.env.XENODIA_API_KEY;
+    try {
+      const firstRaw = await handleNativeRuntimeCommand(
+        "submit-workspace-message",
+        ["show video files in the media library"],
+        { configDir },
+      );
+      const secondRaw = await handleNativeRuntimeCommand(
+        "submit-workspace-message",
+        ["show video files in the media library"],
+        { configDir },
+      );
+      const first = JSON.parse(firstRaw);
+      const second = JSON.parse(secondRaw);
+      assert.equal(first.host_action_intents.length, 2);
+      assert.equal(second.host_action_intents.length, 2);
+      assert.notEqual(
+        first.host_action_intents[0].host_action_id,
+        second.host_action_intents[0].host_action_id,
+      );
+      assert.notEqual(
+        first.host_action_intents[1].host_action_id,
+        second.host_action_intents[1].host_action_id,
+      );
+    } finally {
+      if (previousKey === undefined) {
+        delete process.env.XENODIA_API_KEY;
+      } else {
+        process.env.XENODIA_API_KEY = previousKey;
+      }
+    }
+  });
+
+  it("routes media-library kind filters without falling into the SDK coding loop", async () => {
+    const configDir = await tempConfigDir();
+    const previousKey = process.env.XENODIA_API_KEY;
+    delete process.env.XENODIA_API_KEY;
+    try {
+      const raw = await handleNativeRuntimeCommand(
+        "submit-workspace-message",
+        ["media library only show video files"],
+        { configDir },
+      );
+      const snapshot = JSON.parse(raw);
+      assert.equal(snapshot.last_request_outcome.kind, "host_action_pending");
+      assert.equal(snapshot.host_action_intents.length, 2);
+      assert.deepEqual(snapshot.host_action_intents[0].arguments, { gear_id: "media.library" });
+      assert.deepEqual(snapshot.host_action_intents[1].arguments, {
+        gear_id: "media.library",
+        capability_id: "media.filter",
+        args: { kind: "video" },
+      });
+      const latest = snapshot.active_conversation.messages.at(-1);
+      assert.equal(latest.role, "user");
+      assert.equal(latest.content, "media library only show video files");
     } finally {
       if (previousKey === undefined) {
         delete process.env.XENODIA_API_KEY;
@@ -1060,6 +1177,39 @@ describe("native runtime command modules", () => {
         process.env.XENODIA_API_KEY = previousKey;
       }
     }
+  });
+
+  it("does not statically route composable info-capture requests for Twitter status URLs", () => {
+    const prompts = [
+      "use info capture skill to save https://x.com/ai_artworkgen/status/2048471354773549393?s=20",
+      "save this tweet https://x.com/ai_artworkgen/status/2048471354773549393?s=20",
+      "bookmark this X post https://twitter.com/openai/status/2048471354773549393",
+    ];
+
+    for (const prompt of prompts) {
+      assert.equal(routeLocalGearIntent(prompt), null);
+    }
+  });
+
+  it("extracts generic Gee host-action directives for any enabled Gear", () => {
+    const actions = __sdkTurnRunnerTestHooks.extractHostActionDirective([
+      'Need native Gear work.\n<gee-host-actions>{"actions":[',
+      '{"tool_id":"gee.gear.listCapabilities","arguments":{"detail":"summary"}},',
+      '{"tool_id":"gee.gear.invoke","arguments":{"gear_id":"bookmark.vault","capability_id":"bookmark.save","args":{"content":"hello"}}},',
+      '{"tool_id":"shell.run","arguments":{"command":"rm -rf /"}}',
+      "]}</gee-host-actions>",
+    ]);
+
+    assert.equal(actions.length, 2);
+    assert.equal(actions[0].tool_id, "gee.gear.listCapabilities");
+    assert.deepEqual(actions[0].arguments, { detail: "summary" });
+    assert.equal(actions[1].tool_id, "gee.gear.invoke");
+    assert.deepEqual(actions[1].arguments, {
+      gear_id: "bookmark.vault",
+      capability_id: "bookmark.save",
+      args: { content: "hello" },
+    });
+    assert.match(actions[0].host_action_id, /^host_action_directive_[a-f0-9]{8}$/);
   });
 
   it("routes English media-library extension filters without hardcoded assistant text", async () => {
@@ -1420,7 +1570,7 @@ api_key = "saved-xenodia-key"
   it("directs SDK web lookup requests to inspectable Bash network checks", () => {
     assert.match(
       __sdkTurnRunnerTestHooks.unsupportedToolDenialMessage("WebSearch"),
-      /Use Bash with an inspectable command such as curl or python urllib/,
+      /Use Bash with an inspectable command such as curl or python3 urllib/,
     );
   });
 

@@ -209,7 +209,7 @@ struct SettingsView: View {
     private var conversationRoutingPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
-                Label("Quick Input Destination", systemImage: "arrow.triangle.branch")
+                Label("Conversation Routing", systemImage: "arrow.triangle.branch")
                     .font(.geeDisplaySemibold(18))
 
                 Spacer()
@@ -218,12 +218,12 @@ struct SettingsView: View {
                     .toggleStyle(.switch)
             }
 
-            Text("When enabled, GeeAgent chooses where a Quick Input message belongs. When disabled, Quick Input uses the currently selected conversation session, matching the existing behavior.")
+            Text("This controls main app conversation auto-routing. Quick Input always starts a fresh conversation tagged quick-input, and tagged quick conversations are excluded from auto-routing targets.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text(store.autoConversationRoutingEnabled ? "Quick Input: automatic conversation choice" : "Quick Input: selected session")
+            Text(store.autoConversationRoutingEnabled ? "Main app: automatic conversation choice" : "Main app: selected conversation only")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(store.autoConversationRoutingEnabled ? Color.green : Color.secondary)
                 .padding(.horizontal, 8)

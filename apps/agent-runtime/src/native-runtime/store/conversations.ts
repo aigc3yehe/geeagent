@@ -7,6 +7,8 @@ import type {
   RuntimeStore,
 } from "./types.js";
 
+export const QUICK_CONVERSATION_TAG = "quick-input";
+
 const PREVIEW_LIMIT = 72;
 
 function summarizePreview(text: string): string {
@@ -22,6 +24,7 @@ export function summarizeConversation(
     conversation_id: conversation.conversation_id,
     title: conversation.title,
     status: conversation.status,
+    tags: normalizedConversationTags(conversation.tags),
     last_message_preview: summarizePreview(lastMessage?.content ?? "Fresh conversation."),
     last_timestamp: lastMessage?.timestamp ?? currentTimestamp(),
     is_active: conversation.conversation_id === store.active_conversation_id,
@@ -46,13 +49,18 @@ export function activeConversation(store: RuntimeStore): RuntimeConversation {
   return store.conversations[0] ?? createConversation(store, "New Conversation");
 }
 
-export function createConversation(store: RuntimeStore, title?: string): RuntimeConversation {
+export function createConversation(
+  store: RuntimeStore,
+  title?: string,
+  tags: string[] = [],
+): RuntimeConversation {
   const index = nextConversationIndex(store);
   const conversationId = newConversationId(index, store);
   const conversation: RuntimeConversation = {
     conversation_id: conversationId,
     title: title?.trim() || `Conversation ${index}`,
     status: "active",
+    tags: normalizedConversationTags(tags),
     messages: [
       {
         message_id: `msg_assistant_${String(index).padStart(2, "0")}`,
@@ -67,6 +75,24 @@ export function createConversation(store: RuntimeStore, title?: string): Runtime
   store.workspace_focus = { mode: "default", task_id: null };
   syncConversationStatuses(store);
   return conversation;
+}
+
+export function isQuickConversation(conversation: RuntimeConversation): boolean {
+  return normalizedConversationTags(conversation.tags).includes(QUICK_CONVERSATION_TAG);
+}
+
+function normalizedConversationTags(tags: unknown): string[] {
+  if (!Array.isArray(tags)) {
+    return [];
+  }
+  return Array.from(
+    new Set(
+      tags
+        .filter((tag): tag is string => typeof tag === "string")
+        .map((tag) => tag.trim())
+        .filter(Boolean),
+    ),
+  );
 }
 
 export function activateConversation(store: RuntimeStore, conversationId: string): void {

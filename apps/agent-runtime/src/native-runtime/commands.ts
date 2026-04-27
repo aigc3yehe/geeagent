@@ -21,10 +21,11 @@ import {
 import {
   completeHostActionTurn,
   performTaskAction,
-  type RuntimeHostActionCompletion,
   submitQuickPrompt,
+  submitRoutedWorkspaceMessage,
   submitWorkspaceMessage,
 } from "./turns.js";
+import type { RuntimeHostActionCompletion } from "../protocol.js";
 
 import {
   loadRuntimeStore,
@@ -137,6 +138,9 @@ export async function handleNativeRuntimeCommand(
     case "submit-workspace-message":
       assertArgCount(command, args, 1);
       return stringify(await submitWorkspaceMessage(configDir, args[0]));
+    case "submit-routed-workspace-message":
+      assertArgCount(command, args, 1);
+      return stringify(await submitRoutedWorkspaceMessage(configDir, args[0]));
     case "submit-quick-prompt":
       assertArgCount(command, args, 1);
       return stringify(await submitQuickPrompt(configDir, args[0]));

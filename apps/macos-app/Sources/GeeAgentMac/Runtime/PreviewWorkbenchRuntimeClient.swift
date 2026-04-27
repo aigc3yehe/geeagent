@@ -448,8 +448,10 @@ struct PreviewWorkbenchRuntimeClient: WorkbenchRuntimeClient {
     func sendMessage(
         _ message: String,
         in snapshot: WorkbenchSnapshot,
-        conversationID: ConversationThread.ID
+        conversationID: ConversationThread.ID,
+        allowAutoRouting: Bool
     ) async throws -> WorkbenchSnapshot {
+        _ = allowAutoRouting
         var nextSnapshot = snapshot
         guard let conversationIndex = nextSnapshot.conversations.firstIndex(where: { $0.id == conversationID }) else {
             return snapshot
@@ -560,14 +562,22 @@ struct PreviewWorkbenchRuntimeClient: WorkbenchRuntimeClient {
     ) async throws -> WorkbenchSnapshot {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return snapshot }
-        var next = snapshot
-        let reply = "Preview: captured \"\(trimmed)\" and folded it into the current thread."
-        next.quickReply = reply
-        next.lastOutcome = WorkbenchRequestOutcome(
-            kind: .chatReply,
-            detail: reply,
-            taskID: nil
+        var created = try await createConversation(in: snapshot)
+        guard let conversationID = created.conversations.first(where: \.isActive)?.id ?? created.conversations.first?.id,
+              let conversationIndex = created.conversations.firstIndex(where: { $0.id == conversationID })
+        else {
+            return snapshot
+        }
+        created.conversations[conversationIndex].tags = ["quick-input"]
+        var next = try await sendMessage(
+            trimmed,
+            in: created,
+            conversationID: conversationID,
+            allowAutoRouting: false
         )
+        let reply = "Preview: started a new quick-input conversation for \"\(trimmed)\"."
+        next.quickReply = reply
+        next.lastOutcome = WorkbenchRequestOutcome(kind: .chatReply, detail: reply, taskID: nil)
         return next
     }
 

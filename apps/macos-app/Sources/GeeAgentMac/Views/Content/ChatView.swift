@@ -3,6 +3,12 @@ import SwiftUI
 struct ChatView: View {
     @Bindable var store: WorkbenchStore
     @State private var draftMessage = ""
+    @State private var chatViewportHeight: CGFloat = 0
+    @State private var chatBottomMaxY: CGFloat = 0
+    @State private var isChatScrolledNearBottom = true
+
+    private let chatScrollCoordinateSpaceName = "GeeAgentChatTranscriptScroll"
+    private let chatBottomAutoFollowTolerance: CGFloat = 96
 
     var body: some View {
         GeometryReader { proxy in
@@ -114,22 +120,53 @@ struct ChatView: View {
                             Color.clear
                                 .frame(height: 1)
                                 .id(bottomID)
+                                .background(
+                                    GeometryReader { bottomProxy in
+                                        Color.clear.preference(
+                                            key: ChatBottomMaxYPreferenceKey.self,
+                                            value: bottomProxy.frame(in: .named(chatScrollCoordinateSpaceName)).maxY
+                                        )
+                                    }
+                                )
                         }
                         .padding(.horizontal, 12)
                         .padding(.top, 4)
                         .padding(.bottom, 12)
                     }
+                    .coordinateSpace(name: chatScrollCoordinateSpaceName)
+                    .background(
+                        GeometryReader { viewportProxy in
+                            Color.clear.preference(
+                                key: ChatViewportHeightPreferenceKey.self,
+                                value: viewportProxy.size.height
+                            )
+                        }
+                    )
                     .thinScrollIndicator()
                     .onAppear {
+                        isChatScrolledNearBottom = true
                         scrollToChatBottom(scrollProxy, conversation: conversation, animated: false)
                     }
-                    .onChange(of: conversationMessageIDs(conversation)) { _, _ in
+                    .onChange(of: conversationMessageIDs(conversation)) { oldIDs, newIDs in
+                        guard shouldAutoFollowChat(
+                            conversation: conversation,
+                            oldIDs: oldIDs,
+                            newIDs: newIDs
+                        ) else {
+                            return
+                        }
                         scrollToChatBottom(scrollProxy, conversation: conversation)
                     }
-                    .onChange(of: store.isSendingMessage) { _, _ in
-                        scrollToChatBottom(scrollProxy, conversation: conversation)
+                    .onPreferenceChange(ChatViewportHeightPreferenceKey.self) { height in
+                        chatViewportHeight = height
+                        updateChatScrollPosition()
+                    }
+                    .onPreferenceChange(ChatBottomMaxYPreferenceKey.self) { bottomMaxY in
+                        chatBottomMaxY = bottomMaxY
+                        updateChatScrollPosition()
                     }
                 }
+                .id(conversation.id)
 
                 composer
             }
@@ -239,6 +276,42 @@ struct ChatView: View {
         conversation.visibleMessages.map(\.id)
     }
 
+    private func shouldAutoFollowChat(
+        conversation: ConversationThread,
+        oldIDs: [String],
+        newIDs: [String]
+    ) -> Bool {
+        isChatScrolledNearBottom || didAppendUserMessage(
+            conversation: conversation,
+            oldIDs: oldIDs,
+            newIDs: newIDs
+        )
+    }
+
+    private func didAppendUserMessage(
+        conversation: ConversationThread,
+        oldIDs: [String],
+        newIDs: [String]
+    ) -> Bool {
+        let appendedIDs = Set(newIDs).subtracting(oldIDs)
+        guard !appendedIDs.isEmpty else {
+            return false
+        }
+
+        return conversation.visibleMessages.contains { message in
+            appendedIDs.contains(message.id) && message.role == .user
+        }
+    }
+
+    private func updateChatScrollPosition() {
+        guard chatViewportHeight > 0 else {
+            isChatScrolledNearBottom = true
+            return
+        }
+
+        isChatScrolledNearBottom = chatBottomMaxY <= chatViewportHeight + chatBottomAutoFollowTolerance
+    }
+
     private func chatBottomID(for conversation: ConversationThread) -> String {
         "chat-bottom-\(conversation.id)"
     }
@@ -332,6 +405,8 @@ private struct ConversationRow: View {
                         .font(.geeBodyMedium(14))
                         .lineLimit(1)
 
+                    ConversationTagStrip(tags: conversation.tags)
+
                     Spacer(minLength: 8)
 
                     Text(conversation.lastActivityLabel)
@@ -374,8 +449,13 @@ private struct ConversationHeader: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(conversation.displayTitle)
-                        .font(.geeDisplaySemibold(22))
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(conversation.displayTitle)
+                            .font(.geeDisplaySemibold(22))
+                            .lineLimit(1)
+
+                        ConversationTagStrip(tags: conversation.tags)
+                    }
 
                     Label(conversation.lastActivityLabel, systemImage: "clock")
                         .font(.caption)
@@ -409,6 +489,48 @@ private struct ConversationHeader: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
+    }
+}
+
+private struct ChatViewportHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct ChatBottomMaxYPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct ConversationTagStrip: View {
+    var tags: [String]
+
+    private var visibleTags: [String] {
+        tags
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    var body: some View {
+        if !visibleTags.isEmpty {
+            HStack(spacing: 4) {
+                ForEach(visibleTags, id: \.self) { tag in
+                    Text(tag)
+                        .font(.geeBodyMedium(10))
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.accentColor.opacity(0.12), in: Capsule())
+                }
+            }
+            .lineLimit(1)
+        }
     }
 }
 

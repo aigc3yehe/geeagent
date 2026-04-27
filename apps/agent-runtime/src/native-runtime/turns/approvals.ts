@@ -50,13 +50,14 @@ import {
   toolStepCount,
   isRecord,
 } from "./state.js";
-import type { JsonRecord } from "./types.js";
+import type { JsonRecord, TurnReplayCursor } from "./types.js";
 
 export function installClaudeSdkTerminalApproval(
   store: RuntimeStore,
   route: TurnRoute,
   userContent: string,
   pending: PendingTerminalApproval,
+  options: { cursor?: TurnReplayCursor } = {},
 ): string {
   const taskId = quickTaskId(store);
   const approvalRequestId = nextApprovalRequestIdForTask(store, taskId);
@@ -66,7 +67,7 @@ export function installClaudeSdkTerminalApproval(
   const taskTitle = `Terminal approval: ${summarizePrompt(pending.command, 44)}`;
   const approvalDetail = `Terminal approval required: ${commandSummary}`;
 
-  const cursor = beginTurnReplay(store, route.surface, userContent);
+  const cursor = options.cursor ?? beginTurnReplay(store, route.surface, userContent);
   appendTurnStep(
     cursor,
     store,
@@ -181,10 +182,11 @@ export function applyClaudeSdkTerminalDenial(
   route: TurnRoute,
   userContent: string,
   reason: string,
+  options: { cursor?: TurnReplayCursor } = {},
 ): void {
   const assistantReply =
     `This terminal access request was not executed. GeeAgent's terminal permission file blocked it: ${summarizePrompt(reason, 220)}.`;
-  const cursor = beginTurnReplay(store, route.surface, userContent);
+  const cursor = options.cursor ?? beginTurnReplay(store, route.surface, userContent);
   appendTurnStep(
     cursor,
     store,

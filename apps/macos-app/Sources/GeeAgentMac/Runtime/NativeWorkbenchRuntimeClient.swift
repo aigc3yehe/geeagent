@@ -56,6 +56,7 @@ private struct RuntimeConversationDTO: Decodable {
     let conversationId: String
     let title: String
     let status: String
+    let tags: [String]?
     let messages: [RuntimeConversationMessageDTO]
 }
 
@@ -63,6 +64,7 @@ private struct RuntimeConversationSummaryDTO: Decodable {
     let conversationId: String
     let title: String
     let status: String
+    let tags: [String]?
     let lastMessagePreview: String
     let lastTimestamp: String
     let isActive: Bool
@@ -507,6 +509,10 @@ private final class AgentRuntimeProcess {
         try decodeSnapshot(arguments: ["snapshot"])
     }
 
+    func loadLiveSnapshot() throws -> RuntimeSnapshotDTO {
+        try decodeSnapshotStandalone(arguments: ["snapshot"])
+    }
+
     func createConversation() throws -> RuntimeSnapshotDTO {
         try decodeSnapshot(arguments: ["create-conversation"])
     }
@@ -521,6 +527,10 @@ private final class AgentRuntimeProcess {
 
     func submitWorkspaceMessage(_ message: String) throws -> RuntimeSnapshotDTO {
         try decodeSnapshot(arguments: ["submit-workspace-message", message])
+    }
+
+    func submitRoutedWorkspaceMessage(_ message: String) throws -> RuntimeSnapshotDTO {
+        try decodeSnapshot(arguments: ["submit-routed-workspace-message", message])
     }
 
     func submitQuickPrompt(_ prompt: String) throws -> RuntimeSnapshotDTO {
@@ -698,6 +708,18 @@ private final class AgentRuntimeProcess {
         }
     }
 
+    private func decodeSnapshotStandalone(arguments: [String]) throws -> RuntimeSnapshotDTO {
+        let data = try runStandalone(arguments: arguments, timeout: Self.timeout(for: arguments.first))
+        do {
+            return try decoder.decode(RuntimeSnapshotDTO.self, from: data)
+        } catch {
+            let raw = String(data: data, encoding: .utf8) ?? "<non-utf8 output>"
+            throw RuntimeProcessError.runtimeInvocation(
+                "The agent runtime returned invalid JSON: \(raw)"
+            )
+        }
+    }
+
     private func run(arguments: [String]) throws -> Data {
         if ProcessInfo.processInfo.environment["GEEAGENT_DISABLE_NATIVE_BRIDGE_SERVER"] != "1",
            let command = arguments.first,
@@ -773,7 +795,9 @@ private final class AgentRuntimeProcess {
         switch command ?? "" {
         case "submit-quick-prompt":
             75
-        case "submit-workspace-message", "perform-task-action":
+        case "complete-host-action-turn":
+            150
+        case "submit-workspace-message", "submit-routed-workspace-message", "perform-task-action":
             150
         default:
             60
@@ -783,8 +807,11 @@ private final class AgentRuntimeProcess {
     private static let statefulRuntimeCommands: Set<String> = [
         "snapshot",
         "submit-workspace-message",
+        "submit-routed-workspace-message",
         "submit-quick-prompt",
         "perform-task-action",
+        "complete-host-action-turn",
+        "invoke-tool",
     ]
 
     private func nativeRuntimeLaunch(arguments: [String]) throws -> RuntimeCommandLaunch {
@@ -1009,6 +1036,19 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
         }
     }
 
+    func loadLiveSnapshot() -> WorkbenchSnapshot {
+        do {
+            let snapshot = try runtime.loadLiveSnapshot()
+            storeRawSnapshot(snapshot)
+            return map(snapshot)
+        } catch {
+            if let rawSnapshot = currentRawSnapshot() {
+                return map(rawSnapshot)
+            }
+            return unavailableSnapshot(detail: error.localizedDescription)
+        }
+    }
+
     func createConversation(in snapshot: WorkbenchSnapshot) async throws -> WorkbenchSnapshot {
         _ = snapshot
         let nextSnapshot = try await runOffMainThread {
@@ -1045,7 +1085,8 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
     func sendMessage(
         _ message: String,
         in snapshot: WorkbenchSnapshot,
-        conversationID: ConversationThread.ID
+        conversationID: ConversationThread.ID,
+        allowAutoRouting: Bool
     ) async throws -> WorkbenchSnapshot {
         _ = snapshot
 
@@ -1060,12 +1101,13 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
 
         let routeSnapshot = latestSnapshot
         let nextSnapshot: RuntimeSnapshotDTO = try await runOffMainThread {
-            if self.shouldRouteThroughQuickPrompt(
+            if allowAutoRouting,
+               self.shouldUseWorkspaceAutoRouting(
                 message: message,
                 conversationID: conversationID,
                 rawSnapshot: routeSnapshot
             ) {
-                return try self.runtime.submitQuickPrompt(message)
+                return try self.runtime.submitRoutedWorkspaceMessage(message)
             }
 
             return try self.runtime.submitWorkspaceMessage(message)
@@ -1309,7 +1351,7 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
         }
     }
 
-    private func shouldRouteThroughQuickPrompt(
+    private func shouldUseWorkspaceAutoRouting(
         message: String,
         conversationID: String,
         rawSnapshot: RuntimeSnapshotDTO?
@@ -1402,6 +1444,7 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
                     conversationId: snapshot.activeConversation.conversationId,
                     title: snapshot.activeConversation.title,
                     status: snapshot.activeConversation.status,
+                    tags: snapshot.activeConversation.tags,
                     lastMessagePreview: snapshot.activeConversation.messages.last?.content ?? "Fresh conversation.",
                     lastTimestamp: snapshot.activeConversation.messages.last?.timestamp ?? "Now",
                     isActive: true
@@ -1432,6 +1475,7 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
                 messages: summary.conversationId == activeConversationID
                     ? activeConversationMessages
                     : [],
+                tags: summary.tags ?? [],
                 isActive: summary.isActive
             )
         }

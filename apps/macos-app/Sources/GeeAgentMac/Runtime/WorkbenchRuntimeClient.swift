@@ -1,5 +1,6 @@
 protocol WorkbenchRuntimeClient: Sendable {
     func loadSnapshot() -> WorkbenchSnapshot
+    func loadLiveSnapshot() -> WorkbenchSnapshot
     func createConversation(in snapshot: WorkbenchSnapshot) async throws -> WorkbenchSnapshot
     func activateConversation(
         _ conversationID: ConversationThread.ID,
@@ -12,7 +13,8 @@ protocol WorkbenchRuntimeClient: Sendable {
     func sendMessage(
         _ message: String,
         in snapshot: WorkbenchSnapshot,
-        conversationID: ConversationThread.ID
+        conversationID: ConversationThread.ID,
+        allowAutoRouting: Bool
     ) async throws -> WorkbenchSnapshot
     func performTaskAction(
         _ action: WorkbenchTaskAction,
@@ -91,6 +93,10 @@ protocol WorkbenchRuntimeClient: Sendable {
 }
 
 extension WorkbenchRuntimeClient {
+    func loadLiveSnapshot() -> WorkbenchSnapshot {
+        loadSnapshot()
+    }
+
     func addSystemSkillSource(
         at sourcePath: String,
         in snapshot: WorkbenchSnapshot

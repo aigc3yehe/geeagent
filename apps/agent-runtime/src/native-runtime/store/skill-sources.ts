@@ -224,6 +224,7 @@ export async function skillPromptMetadataForProfile(
   const lines = [
     "[AVAILABLE GEE SKILLS]",
     "Only the following explicitly configured skill metadata is available. GeeAgent does not inject SKILL.md bodies into this prompt. When a request matches a skill, use the metadata to decide whether to inspect that skill's SKILL.md through the normal file/tool path.",
+    "Do not invoke any SDK Skill tool for these GeeAgent skills. If `skill_file_path` is present, read that file directly through the normal file tool instead of guessing a path or skill alias.",
     "",
   ];
   for (const skill of externalSkills) {

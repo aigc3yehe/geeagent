@@ -215,8 +215,14 @@ final class MenuBarController {
             }
             panel.onDismiss = { [weak self, weak panel] in
                 panel?.dismiss()
-                // Clear any transient state so the next open is clean.
-                self?.store.resetQuickInput()
+                // Clear transient input when idle; keep active run state intact
+                // if submit dismissed the panel and moved the user into Chat.
+                if self?.store.isSubmittingQuickInput == true {
+                    self?.store.quickInputDraft = ""
+                    self?.store.quickInputLatestResult = nil
+                } else {
+                    self?.store.resetQuickInput()
+                }
             }
             quickInputPanel = panel
         }

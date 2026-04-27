@@ -219,12 +219,12 @@ enum GeeHostToolRouter {
 
         switch capabilityID {
         case "media.focus_folder":
-            guard store.library != nil else {
-                return .error(
-                    toolID: toolID,
-                    code: "gear.media.library_missing",
-                    message: "Open or create a media library before focusing a media folder."
-                )
+            if let unavailable = await mediaLibraryUnavailableOutcome(
+                toolID: toolID,
+                capabilityID: capabilityID,
+                pendingPaths: []
+            ) {
+                return unavailable
             }
             guard let folderName = stringArg(args, "folder_name"), !folderName.isEmpty else {
                 return .error(toolID: toolID, code: "gear.args.folder_name", message: "`folder_name` is required.")
@@ -242,6 +242,14 @@ enum GeeHostToolRouter {
                 action: "focused_folder"
             )
         case "media.filter":
+            if let unavailable = await mediaLibraryUnavailableOutcome(
+                toolID: toolID,
+                capabilityID: capabilityID,
+                pendingPaths: []
+            ) {
+                return unavailable
+            }
+
             if let folderName = stringArg(args, "folder_name"), !folderName.isEmpty,
                !store.selectFolder(named: folderName)
             {
@@ -313,6 +321,37 @@ enum GeeHostToolRouter {
                         }
                     ]
                 )
+            } catch let error as MediaLibraryAgentImportError {
+                switch error {
+                case .authorizationRequired(let pendingPaths):
+                    return mediaLibraryAuthorizationRequiredPayload(
+                        toolID: toolID,
+                        capabilityID: capabilityID,
+                        requestedPaths: paths,
+                        pendingPaths: pendingPaths,
+                        missingPaths: missingPaths
+                    )
+                case .libraryLoading:
+                    return .error(
+                        toolID: toolID,
+                        code: "gear.media.library_loading",
+                        message: error.localizedDescription
+                    )
+                case .libraryMissing:
+                    return mediaLibraryAuthorizationRequiredPayload(
+                        toolID: toolID,
+                        capabilityID: capabilityID,
+                        requestedPaths: paths,
+                        pendingPaths: expandedPaths.filter { FileManager.default.fileExists(atPath: $0) },
+                        missingPaths: missingPaths
+                    )
+                case .noReadableFiles:
+                    return .error(
+                        toolID: toolID,
+                        code: "gear.media.no_readable_files",
+                        message: error.localizedDescription
+                    )
+                }
             } catch {
                 return .error(
                     toolID: toolID,
@@ -440,6 +479,83 @@ enum GeeHostToolRouter {
                     "starred_only": store.filter.starredOnly,
                     "minimum_duration_seconds": store.filter.minimumDurationSeconds ?? NSNull()
                 ]
+            ]
+        )
+    }
+
+    private static func mediaLibraryUnavailableOutcome(
+        toolID: String,
+        capabilityID: String,
+        pendingPaths: [String]
+    ) async -> WorkbenchToolOutcome? {
+        let store = MediaLibraryModuleStore.shared
+        do {
+            _ = try await store.ensureLibraryForAgent(pendingPaths: pendingPaths)
+            return nil
+        } catch let error as MediaLibraryAgentImportError {
+            switch error {
+            case .libraryLoading:
+                return .error(
+                    toolID: toolID,
+                    code: "gear.media.library_loading",
+                    message: error.localizedDescription
+                )
+            case .authorizationRequired(let paths):
+                return mediaLibraryAuthorizationRequiredPayload(
+                    toolID: toolID,
+                    capabilityID: capabilityID,
+                    requestedPaths: pendingPaths,
+                    pendingPaths: paths,
+                    missingPaths: []
+                )
+            case .libraryMissing:
+                return mediaLibraryAuthorizationRequiredPayload(
+                    toolID: toolID,
+                    capabilityID: capabilityID,
+                    requestedPaths: pendingPaths,
+                    pendingPaths: pendingPaths,
+                    missingPaths: []
+                )
+            case .noReadableFiles:
+                return .error(
+                    toolID: toolID,
+                    code: "gear.media.no_readable_files",
+                    message: error.localizedDescription
+                )
+            }
+        } catch {
+            return mediaLibraryAuthorizationRequiredPayload(
+                toolID: toolID,
+                capabilityID: capabilityID,
+                requestedPaths: pendingPaths,
+                pendingPaths: pendingPaths,
+                missingPaths: []
+            )
+        }
+    }
+
+    private static func mediaLibraryAuthorizationRequiredPayload(
+        toolID: String,
+        capabilityID: String,
+        requestedPaths: [String],
+        pendingPaths: [String],
+        missingPaths: [String]
+    ) -> WorkbenchToolOutcome {
+        .completed(
+            toolID: toolID,
+            payload: [
+                "gear_id": MediaLibraryGearDescriptor.gearID,
+                "capability_id": capabilityID,
+                "action": "authorization_required",
+                "status": "failed",
+                "code": "gear.media.authorization_required",
+                "error": "Media Library needs macOS access to a library before this action can continue.",
+                "recovery": "Open Media Library and choose or create a library. GeeAgent will keep the pending local media paths so the agent can retry after authorization.",
+                "requested_paths": requestedPaths,
+                "pending_paths": pendingPaths,
+                "missing_paths": missingPaths,
+                "intent": "navigate.module",
+                "module_id": MediaLibraryGearDescriptor.gearID
             ]
         )
     }

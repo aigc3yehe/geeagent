@@ -1,4 +1,5 @@
-import type { RuntimeHostActionIntent } from "../store/types.js";
+import { randomUUID } from "node:crypto";
+import type { RuntimeHostActionIntent } from "../../protocol.js";
 
 export type RoutedGearIntent = {
   hostActions: RuntimeHostActionIntent[];
@@ -24,6 +25,10 @@ const MEDIA_EXTENSION_KIND: Record<string, "image" | "video"> = {
 export function routeLocalGearIntent(prompt: string): RoutedGearIntent | null {
   const rawText = prompt.trim();
   const text = rawText.toLowerCase();
+  if (shouldDeferToAgentPlannedGearWorkflow(rawText, text)) {
+    return null;
+  }
+
   const bookmarkIntent = routeBookmarkVaultIntent(rawText, text);
   if (bookmarkIntent) {
     return bookmarkIntent;
@@ -38,6 +43,7 @@ export function routeLocalGearIntent(prompt: string): RoutedGearIntent | null {
     return null;
   }
 
+  const runID = uniqueHostActionRunID();
   const extensions = requestedExtensions(text);
   const mediaKind = requestedMediaKind(text, extensions);
   if (!mediaKind) {
@@ -48,19 +54,19 @@ export function routeLocalGearIntent(prompt: string): RoutedGearIntent | null {
   if (extensions.length > 0) {
     filterArgs.extensions = extensions;
   }
-  if (text.includes("starred") || text.includes("favorite")) {
+  if (mentionsStarredFilter(rawText, text)) {
     filterArgs.starred_only = true;
   }
 
   return {
     hostActions: [
       {
-        host_action_id: hostActionID("open_media_library", text),
+        host_action_id: hostActionID("open_media_library", text, runID),
         tool_id: "gee.app.openSurface",
         arguments: { gear_id: "media.library" },
       },
       {
-        host_action_id: hostActionID(`media_filter_${mediaKind}`, text),
+        host_action_id: hostActionID(`media_filter_${mediaKind}`, text, runID),
         tool_id: "gee.gear.invoke",
         arguments: {
           gear_id: "media.library",
@@ -72,6 +78,47 @@ export function routeLocalGearIntent(prompt: string): RoutedGearIntent | null {
   };
 }
 
+function shouldDeferToAgentPlannedGearWorkflow(rawText: string, text: string): boolean {
+  const url = firstURL(text);
+  if (!isTwitterStatusURL(url)) {
+    return false;
+  }
+
+  return (
+    mentionsInfoCaptureWorkflow(text) ||
+    mentionsCollectionWorkflow(rawText, text) ||
+    mentionsMediaAcquisitionWorkflow(rawText, text)
+  );
+}
+
+function isTwitterStatusURL(url: string | null): boolean {
+  return (
+    url !== null &&
+    /https?:\/\/(?:www\.)?(?:x|twitter)\.com\/(?:i\/)?(?:[a-z0-9_]{1,15}\/)?status(?:es)?\/\d+/i.test(url)
+  );
+}
+
+function mentionsInfoCaptureWorkflow(text: string): boolean {
+  return (
+    text.includes("info capture") ||
+    text.includes("information capture")
+  );
+}
+
+function mentionsCollectionWorkflow(rawText: string, text: string): boolean {
+  return (
+    text.includes("bookmark") ||
+    text.includes("favorite") ||
+    /\b(save|store|remember|archive)\b/.test(text)
+  );
+}
+
+function mentionsMediaAcquisitionWorkflow(rawText: string, text: string): boolean {
+  return (
+    /\b(download|media|video|audio|mp4|mov)\b/.test(text)
+  );
+}
+
 function routeBookmarkVaultIntent(rawText: string, text: string): RoutedGearIntent | null {
   if (!mentionsBookmarkVault(text)) {
     return null;
@@ -81,16 +128,17 @@ function routeBookmarkVaultIntent(rawText: string, text: string): RoutedGearInte
   if (!content) {
     return null;
   }
+  const runID = uniqueHostActionRunID();
 
   return {
     hostActions: [
       {
-        host_action_id: hostActionID("open_bookmark_vault", text),
+        host_action_id: hostActionID("open_bookmark_vault", text, runID),
         tool_id: "gee.app.openSurface",
         arguments: { gear_id: "bookmark.vault" },
       },
       {
-        host_action_id: hostActionID("bookmark_save", text),
+        host_action_id: hostActionID("bookmark_save", text, runID),
         tool_id: "gee.gear.invoke",
         arguments: {
           gear_id: "bookmark.vault",
@@ -146,16 +194,17 @@ function routeTwitterCaptureIntent(text: string): RoutedGearIntent | null {
   if (!capabilityID) {
     return null;
   }
+  const runID = uniqueHostActionRunID();
 
   return {
     hostActions: [
       {
-        host_action_id: hostActionID("open_twitter_capture", text),
+        host_action_id: hostActionID("open_twitter_capture", text, runID),
         tool_id: "gee.app.openSurface",
         arguments: { gear_id: "twitter.capture" },
       },
       {
-        host_action_id: hostActionID(capabilityID.replace(".", "_"), text),
+        host_action_id: hostActionID(capabilityID.replace(".", "_"), text, runID),
         tool_id: "gee.gear.invoke",
         arguments: {
           gear_id: "twitter.capture",
@@ -229,14 +278,13 @@ function requestedMediaKind(
   text: string,
   extensions: string[],
 ): "all" | "image" | "video" | null {
-  if (
-    text.includes("video")
-  ) {
+  if (text.includes("video") || text.includes("movie") || text.includes("film")) {
     return "video";
   }
   if (
     text.includes("image") ||
-    text.includes("photo")
+    text.includes("photo") ||
+    text.includes("picture")
   ) {
     return "image";
   }
@@ -250,8 +298,19 @@ function requestedMediaKind(
   return null;
 }
 
-function hostActionID(prefix: string, text: string): string {
-  return `host_action_${prefix}_${stableHash(text)}`;
+function mentionsStarredFilter(rawText: string, text: string): boolean {
+  return (
+    text.includes("starred") ||
+    text.includes("favorite")
+  );
+}
+
+function hostActionID(prefix: string, text: string, runID: string): string {
+  return `host_action_${prefix}_${stableHash(text)}_${runID}`;
+}
+
+function uniqueHostActionRunID(): string {
+  return randomUUID().replaceAll("-", "").slice(0, 8);
 }
 
 function stableHash(value: string): string {

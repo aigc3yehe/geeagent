@@ -35,11 +35,18 @@ final class WorkbenchStore {
     let runtimeClient: any WorkbenchRuntimeClient
     private var conversationTitleOverrides: [ConversationThread.ID: String] = [:]
     private var pendingChatTurn: PendingChatTurn?
+    private var scheduledHostActionBatches: Set<String> = []
+    private var liveSnapshotPollingTask: Task<Void, Never>?
 
     var snapshot: WorkbenchSnapshot {
         didSet {
             normalizeSelections()
             refreshActiveLive2DState()
+            if snapshot.hostActionIntents.isEmpty {
+                scheduledHostActionBatches.removeAll()
+            } else {
+                applyHostActionIntents(snapshot.hostActionIntents)
+            }
         }
     }
     var lastErrorMessage: String?
@@ -159,9 +166,11 @@ final class WorkbenchStore {
         normalizeSelections()
         migrateLegacyHomeAppearancePreferences(defaults: defaults)
         refreshActiveLive2DState()
+        expireLoadedHostActionIntents(snapshot.hostActionIntents, loadedSnapshot: snapshot)
     }
 
     func shutdownRuntime() {
+        liveSnapshotPollingTask?.cancel()
         (runtimeClient as? NativeWorkbenchRuntimeClient)?.shutdown()
     }
 
@@ -715,6 +724,11 @@ final class WorkbenchStore {
         guard !intents.isEmpty else {
             return
         }
+        let batchID = intents.map(\.id).joined(separator: "|")
+        guard !scheduledHostActionBatches.contains(batchID) else {
+            return
+        }
+        scheduledHostActionBatches.insert(batchID)
 
         let runtimeClient = self.runtimeClient
         let currentSnapshot = snapshot
@@ -760,6 +774,46 @@ final class WorkbenchStore {
                     guard let self else { return }
                     self.snapshot = nextSnapshot
                     self.quickInputLatestResult = nextSnapshot.lastOutcome
+                    self.applyHostActionIntents(nextSnapshot.hostActionIntents)
+                }
+            } catch {
+                await MainActor.run {
+                    self?.lastErrorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func expireLoadedHostActionIntents(
+        _ intents: [WorkbenchHostActionIntent],
+        loadedSnapshot: WorkbenchSnapshot
+    ) {
+        guard !intents.isEmpty else {
+            return
+        }
+        let completions = intents.map { intent in
+            WorkbenchHostActionCompletion(
+                hostActionID: intent.id,
+                toolID: intent.toolID,
+                status: "failed",
+                summary: nil,
+                error: "GeeAgent restarted before this native Gear action could complete. The action was not retried automatically to avoid repeating side effects.",
+                resultJSON: nil
+            )
+        }
+        let runtimeClient = self.runtimeClient
+        Task { [weak self, runtimeClient, completions, loadedSnapshot] in
+            do {
+                let nextSnapshot = try await runtimeClient.completeHostActionTurn(
+                    completions,
+                    in: loadedSnapshot
+                )
+                var sanitizedSnapshot = nextSnapshot
+                sanitizedSnapshot.hostActionIntents = []
+                await MainActor.run {
+                    guard let self else { return }
+                    self.snapshot = sanitizedSnapshot
+                    self.quickInputLatestResult = sanitizedSnapshot.lastOutcome
                 }
             } catch {
                 await MainActor.run {
@@ -980,9 +1034,9 @@ final class WorkbenchStore {
         return .idle
     }
 
-    /// Submits the current `quickInputDraft` (or an explicit override). When
-    /// automatic conversation routing is disabled, this preserves the current
-    /// explicit selected-session behavior.
+    /// Submits the current `quickInputDraft` (or an explicit override) as a
+    /// fresh quick conversation. Quick Input intentionally avoids reusing the
+    /// currently selected chat so lightweight prompts stay easy to separate.
     func submitQuickInput(_ prompt: String? = nil) {
         let raw = prompt ?? quickInputDraft
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -992,48 +1046,27 @@ final class WorkbenchStore {
         else { return }
 
         isSubmittingQuickInput = true
+        isSendingMessage = true
+        selectedSection = .chat
         lastErrorMessage = nil
         let runtimeClient = self.runtimeClient
         let currentSnapshot = snapshot
-        let useAutoConversationRouting = autoConversationRoutingEnabled
-        let conversationID = selectedConversation?.id ?? conversations.first?.id
-        if !useAutoConversationRouting, let conversationID {
-            beginPendingChatTurn(message: trimmed, conversationID: conversationID)
-        }
+        startLiveSnapshotPolling()
 
-        Task { [weak self, runtimeClient, currentSnapshot, trimmed, useAutoConversationRouting, conversationID] in
+        Task { [weak self, runtimeClient, currentSnapshot, trimmed] in
             do {
-                let nextSnapshot: WorkbenchSnapshot
-                if useAutoConversationRouting {
-                    nextSnapshot = try await runtimeClient.submitQuickPrompt(
-                        trimmed,
-                        in: currentSnapshot
-                    )
-                } else {
-                    guard let conversationID else {
-                        await MainActor.run {
-                            guard let self else { return }
-                            self.lastErrorMessage = "No conversation available to carry the quick prompt."
-                            self.isSubmittingQuickInput = false
-                        }
-                        return
-                    }
-                    nextSnapshot = try await runtimeClient.sendMessage(
-                        trimmed,
-                        in: currentSnapshot,
-                        conversationID: conversationID
-                    )
-                }
+                let nextSnapshot = try await runtimeClient.submitQuickPrompt(
+                    trimmed,
+                    in: currentSnapshot
+                )
                 await MainActor.run {
                     guard let self else { return }
-                    if let conversationID {
-                        self.clearPendingChatTurn(conversationID: conversationID)
-                    }
                     self.isSubmittingQuickInput = false
+                    self.isSendingMessage = false
+                    self.stopLiveSnapshotPolling()
                     self.snapshot = nextSnapshot
                     self.applyHostActionIntents(nextSnapshot.hostActionIntents)
-                    if useAutoConversationRouting,
-                       let routedConversationID = nextSnapshot.conversations.first(where: \.isActive)?.id {
+                    if let routedConversationID = nextSnapshot.conversations.first(where: \.isActive)?.id {
                         self.selectedConversationID = routedConversationID
                     }
                     self.quickInputLatestResult = nextSnapshot.lastOutcome
@@ -1043,12 +1076,11 @@ final class WorkbenchStore {
                 let recoverySnapshot = runtimeClient.loadSnapshot()
                 await MainActor.run {
                     guard let self else { return }
-                    if let conversationID {
-                        self.clearPendingChatTurn(conversationID: conversationID)
-                    }
                     self.lastErrorMessage = error.localizedDescription
                     self.snapshot = recoverySnapshot
                     self.isSubmittingQuickInput = false
+                    self.isSendingMessage = false
+                    self.stopLiveSnapshotPolling()
                 }
             }
         }
@@ -1126,8 +1158,10 @@ final class WorkbenchStore {
         lastErrorMessage = nil
         let runtimeClient = self.runtimeClient
         let currentSnapshot = snapshot
+        let allowAutoRouting = autoConversationRoutingEnabled
+        startLiveSnapshotPolling()
 
-        Task { [weak self, runtimeClient, currentSnapshot] in
+        Task { [weak self, runtimeClient, currentSnapshot, allowAutoRouting] in
             do {
                 let createdSnapshot = try await runtimeClient.createConversation(in: currentSnapshot)
                 guard let conversationID = createdSnapshot.conversations.first(where: \.isActive)?.id ?? createdSnapshot.conversations.first?.id else {
@@ -1146,13 +1180,15 @@ final class WorkbenchStore {
                 let nextSnapshot = try await runtimeClient.sendMessage(
                     trimmedMessage,
                     in: createdSnapshot,
-                    conversationID: conversationID
+                    conversationID: conversationID,
+                    allowAutoRouting: allowAutoRouting
                 )
                 await MainActor.run {
                     guard let self else { return }
                     self.clearPendingChatTurn(conversationID: conversationID)
                     self.isCreatingConversation = false
                     self.isSendingMessage = false
+                    self.stopLiveSnapshotPolling()
                     self.snapshot = nextSnapshot
                     self.applyHostActionIntents(nextSnapshot.hostActionIntents)
                     if openSection {
@@ -1168,6 +1204,7 @@ final class WorkbenchStore {
                     self.snapshot = recoverySnapshot
                     self.isCreatingConversation = false
                     self.isSendingMessage = false
+                    self.stopLiveSnapshotPolling()
                 }
             }
         }
@@ -1829,18 +1866,22 @@ final class WorkbenchStore {
             selectedSection = .chat
         }
         let runtimeClient = self.runtimeClient
+        let allowAutoRouting = autoConversationRoutingEnabled
+        startLiveSnapshotPolling()
 
-        Task { [weak self, runtimeClient, snapshot] in
+        Task { [weak self, runtimeClient, snapshot, allowAutoRouting] in
             do {
                 let nextSnapshot = try await runtimeClient.sendMessage(
                     message,
                     in: snapshot,
-                    conversationID: conversationID
+                    conversationID: conversationID,
+                    allowAutoRouting: allowAutoRouting
                 )
                 await MainActor.run {
                     guard let self else { return }
                     self.clearPendingChatTurn(conversationID: conversationID)
                     self.isSendingMessage = false
+                    self.stopLiveSnapshotPolling()
                     self.snapshot = nextSnapshot
                     self.applyHostActionIntents(nextSnapshot.hostActionIntents)
                     if openSection {
@@ -1855,9 +1896,38 @@ final class WorkbenchStore {
                     self.lastErrorMessage = error.localizedDescription
                     self.snapshot = recoverySnapshot
                     self.isSendingMessage = false
+                    self.stopLiveSnapshotPolling()
                 }
             }
         }
+    }
+
+    private func startLiveSnapshotPolling() {
+        liveSnapshotPollingTask?.cancel()
+        let runtimeClient = self.runtimeClient
+        liveSnapshotPollingTask = Task { [weak self, runtimeClient] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                if Task.isCancelled {
+                    return
+                }
+                let latestSnapshot = await Task.detached(priority: .utility) {
+                    runtimeClient.loadLiveSnapshot()
+                }.value
+                await MainActor.run {
+                    guard let self,
+                          self.isSendingMessage || self.isSubmittingQuickInput || self.isCreatingConversation
+                    else { return }
+                    self.snapshot = latestSnapshot
+                    self.applyHostActionIntents(latestSnapshot.hostActionIntents)
+                }
+            }
+        }
+    }
+
+    private func stopLiveSnapshotPolling() {
+        liveSnapshotPollingTask?.cancel()
+        liveSnapshotPollingTask = nil
     }
 
     private func beginPendingChatTurn(message: String, conversationID: ConversationThread.ID) {

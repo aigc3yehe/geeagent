@@ -553,6 +553,7 @@ struct ConversationThread: Identifiable, Hashable {
     var linkedTaskTitle: String?
     var linkedAppName: String?
     var messages: [ConversationMessage]
+    var tags: [String] = []
     var isActive: Bool = false
 }
 

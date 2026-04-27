@@ -85,7 +85,7 @@ The compiled result becomes the persona's runtime `personality_prompt`.
 
 ## Skill Sources
 
-GeeAgent only recognizes skill folders that the user explicitly adds. It does not automatically scan all local Claude, Codex, or agent skill directories.
+GeeAgent only recognizes skill folders that the user explicitly adds. It does not automatically scan all local agent skill directories.
 
 Settings can add system-level skill source folders. These sources apply to every persona and are hot-updated when the runtime builds a new snapshot or prompt.
 
@@ -93,7 +93,7 @@ The Agents detail view can add persona-level skill source folders. These sources
 
 A skill source may be either a single skill folder containing `SKILL.md`, or a collection folder whose direct child folders contain `SKILL.md`.
 
-The runtime exposes only skill metadata to the active agent prompt, such as name, description, scope, and file path. Full `SKILL.md` contents are not injected automatically. If the agent needs the full instructions, it must inspect the skill file through the normal runtime file/tool path and permission model.
+The runtime exposes only skill metadata to the active agent prompt, such as name, description, scope, and file path. Full `SKILL.md` contents are not injected automatically. If the agent needs the full instructions, it must inspect the skill file through the normal runtime file/tool path and permission model. GeeAgent skill metadata is not an SDK `Skill` tool registration; when `skill_file_path` is available, the agent should read that file directly instead of invoking an SDK skill alias.
 
 Skill availability is context, not a security sandbox. Tool execution is still governed by GeeAgent's runtime permissions, approval flow, and persona `allowed_tool_ids`.
 

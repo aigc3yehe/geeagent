@@ -1,3 +1,18 @@
+export type RuntimeHostActionIntent = {
+  host_action_id: string;
+  tool_id: string;
+  arguments?: Record<string, unknown>;
+};
+
+export type RuntimeHostActionCompletion = {
+  host_action_id: string;
+  tool_id: string;
+  status: "succeeded" | "failed";
+  summary?: string;
+  error?: string;
+  result_json?: string;
+};
+
 export type RuntimeContext = {
   localTime?: string;
   timezone?: string;
@@ -111,6 +126,11 @@ export type RuntimeEvent =
       requestId: string;
       toolName: string;
       input: unknown;
+    }
+  | {
+      type: "session.host_action_requested";
+      sessionId: string;
+      hostAction: RuntimeHostActionIntent;
     }
   | {
       type: "session.closed";

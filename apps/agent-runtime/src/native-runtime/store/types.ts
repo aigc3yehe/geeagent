@@ -1,3 +1,9 @@
+import type { RuntimeHostActionIntent } from "../../protocol.js";
+export type {
+  RuntimeHostActionCompletion,
+  RuntimeHostActionIntent,
+} from "../../protocol.js";
+
 export type AgentSkillReference = {
   id: string;
   name?: string;
@@ -54,6 +60,7 @@ export type RuntimeConversation = {
   conversation_id: string;
   title: string;
   status: string;
+  tags?: string[];
   messages: RuntimeConversationMessage[];
 };
 
@@ -61,6 +68,7 @@ export type RuntimeConversationSummary = {
   conversation_id: string;
   title: string;
   status: string;
+  tags?: string[];
   last_message_preview: string;
   last_timestamp: string;
   is_active: boolean;
@@ -88,12 +96,6 @@ export type RuntimeStore = {
   workspace_focus: Record<string, unknown>;
   workspace_runtime: Record<string, unknown>;
   host_action_intents?: RuntimeHostActionIntent[];
-};
-
-export type RuntimeHostActionIntent = {
-  host_action_id: string;
-  tool_id: string;
-  arguments?: Record<string, unknown>;
 };
 
 export type RuntimeSecurityPreferences = {

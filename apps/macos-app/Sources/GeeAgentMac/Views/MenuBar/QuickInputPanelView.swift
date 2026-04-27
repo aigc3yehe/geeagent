@@ -106,7 +106,7 @@ struct QuickInputPanelView: View {
 
     private var routingModeHint: some View {
         HStack(spacing: 6) {
-            Image(systemName: store.autoConversationRoutingEnabled ? "arrow.triangle.branch" : "text.bubble")
+            Image(systemName: "tag")
                 .font(.system(size: 10, weight: .semibold))
             Text(routingModeText)
                 .lineLimit(1)
@@ -119,16 +119,7 @@ struct QuickInputPanelView: View {
     }
 
     private var routingModeText: String {
-        if store.autoConversationRoutingEnabled {
-            return "Auto-route is on. GeeAgent will choose the conversation."
-        }
-
-        if let title = store.selectedConversation?.title.trimmingCharacters(in: .whitespacesAndNewlines),
-           !title.isEmpty {
-            return "Auto-route is off. Sending to \(title)."
-        }
-
-        return "Auto-route is off. Sending to the selected conversation."
+        "Starts a new conversation tagged quick-input."
     }
 
     private var submitEnabled: Bool {
@@ -225,6 +216,7 @@ struct QuickInputPanelView: View {
 
     private func submit() {
         store.submitQuickInput()
+        onOpenChat()
     }
 }
 

@@ -26,6 +26,7 @@ describe("session prompt and tool-result helpers", () => {
     assert.match(prompt, /Workspace cwd: \/tmp\/workspace/);
     assert.match(prompt, /Approval posture: host_review/);
     assert.match(prompt, /Host capabilities: terminal, files/);
+    assert.doesNotMatch(prompt, /Gee Gear controls are available through the host bridge/);
     assert.match(prompt, /\[GeeAgent Session Prompt\]\npersona rules/);
     assert.match(
       prompt,
@@ -49,6 +50,17 @@ describe("session prompt and tool-result helpers", () => {
       prompt,
       /If a task needs scripting, data processing, inspection helpers, or a temporary automation program, you may write and run that code as an implementation detail/,
     );
+  });
+
+  it("mentions Gear host bridge controls only when the bridge is actually enabled", () => {
+    const prompt = __sessionTestHooks.buildSystemPrompt("", {
+      capabilities: ["bash", "gee_host_bridge"],
+    });
+
+    assert.match(prompt, /Host capabilities: bash, gee_host_bridge/);
+    assert.match(prompt, /Gee Gear controls are available through the host bridge/);
+    assert.match(prompt, /If those MCP tools are not visible in this SDK session/);
+    assert.match(prompt, /<gee-host-actions>/);
   });
 
   it("normalizes non-object tool input into an empty object", () => {

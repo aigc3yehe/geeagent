@@ -660,17 +660,24 @@ Current V1 implements the first host bridge surface for native Gee usage:
 - `gee.app.openSurface` opens a Gee surface or Gear window by id, such as `media.library`.
 - `gee.gear.listCapabilities` progressively discloses enabled Gear capabilities.
 - `gee.gear.invoke` invokes one declared Gear capability through the shared host bridge.
-- `host_action_intents` allow a runtime turn to return native actions that GeeAgentMac applies in order. This is the current transition path for simple first-party Gear requests, such as asking the media library to show only video files, before full SDK/MCP tool exposure is available to every model turn.
-- During this transition, direct first-party media-library requests can route video, image, and extension-specific filters such as PNG into `media.filter` instead of entering the coding loop.
+- The phase-2 SDK runtime exposes these controls to the active agent through the `gee` MCP bridge tools `app_open_surface`, `gear_list_capabilities`, and `gear_invoke`.
+- MCP Gear tools pause the same SDK run, emit `host_action_intents`, let GeeAgentMac execute the native Gear action, then resume the same run with structured host results. If the agent needs another Gear step after inspecting the result, the same pause / execute / resume loop repeats.
+- If the SDK session does not expose the `gee` MCP tools, the agent must use the generic `<gee-host-actions>` fallback directive instead of inspecting source code, shelling around the product, or claiming the bridge is unavailable. The directive uses the same three bridge operations and still pauses the run for GeeAgentMac host execution.
+- `host_action_intents` also allow a runtime turn to return native actions that GeeAgentMac applies in order. This shortcut path is only for simple deterministic first-party Gear requests, such as asking the media library to show only video files. Complex capture or multi-Gear requests should use the agent-planned MCP bridge.
+- During this transition, direct first-party media-library requests can route English and Chinese video, image, all-files, starred, and extension-specific filters such as PNG into `media.filter` instead of entering the coding loop.
 - Media-library filters set through `media.filter` are visible as active filters in the native UI. The user can return to the full media view through `All` or the `Clear filters` affordance.
+- `media.filter`, `media.focus_folder`, and `media.import_files` require an authorized media library. The media Gear should first try to restore saved macOS security-scoped access; if access is missing or stale, it must return a structured failure with `code: "gear.media.authorization_required"` and a `navigate.module` intent for `media.library` instead of reporting a misleading success.
+- Runtime turns must persist tool-use and tool-result events incrementally as they arrive. GeeAgentMac should be able to refresh the active Chat transcript while a Gear workflow is still running, so users see each bridge call appear step by step instead of receiving several completed tool cards only after the final reply.
 
 Gear execution results are structured data, not final prose. A Gear capability, native adapter, or transitional router may report state changes, counts, artifacts, warnings, and errors, but it must not hardcode the final user-facing completion sentence. After all Gear actions in a turn finish, GeeAgent must return those structured results to the active agent/LLM, and the agent must compose the final reply in the user's language. If the LLM continuation cannot run, GeeAgent should show a transparent pending or failure state instead of a fake hardcoded success message.
 
 When the native host completes a Gear action, it may pass both a concise summary and a bounded `result_json` payload back to the continuation turn. The summary is for quick display; `result_json` is the source of truth for task ids, paths, counts, artifacts, captured records, and structured errors. Large result payloads should be saved inside the Gear data directory and referenced by path instead of flooding the agent context.
 
+Complex Gear work must be agent-planned, not router-planned. Local Gear capabilities should be decomposed into small tool primitives such as save bookmark, fetch tweet, sniff media, download media, import files, and attach local paths. The active agent should create a plan, invoke one primitive, inspect the structured result, and then choose the next primitive. Local routers and `host_action_intents` must not pre-build a full multi-step workflow such as “capture Tweet, discover media, download video, import to Media Library, and update Bookmark” because that prevents result-driven correction.
+
 Progressive disclosure is required. The agent should first request `detail: "summary"`, then request `detail: "capabilities"` for one `gear_id`, then request `detail: "schema"` for one `capability_id` before invoking. GeeAgent should not dump every Gear capability schema into the model context by default.
 
-Current invocation shape:
+Current host invocation shape:
 
 ```json
 {
@@ -683,6 +690,33 @@ Current invocation shape:
   }
 }
 ```
+
+Current SDK MCP tool shape:
+
+```json
+{
+  "tool": "mcp__gee__gear_invoke",
+  "gear_id": "media.library",
+  "capability_id": "media.filter",
+  "args": {
+    "kind": "video"
+  }
+}
+```
+
+Current SDK fallback directive shape:
+
+```xml
+<gee-host-actions>{"actions":[{"tool_id":"gee.gear.invoke","arguments":{"gear_id":"media.library","capability_id":"media.filter","args":{"kind":"video"}}}]}</gee-host-actions>
+```
+
+Fallback directive rules:
+
+- Allowed `tool_id` values are `gee.app.openSurface`, `gee.gear.listCapabilities`, and `gee.gear.invoke`.
+- The directive is a transport fallback for the shared Gear bridge, not a Gear-specific workaround.
+- The agent should emit one bounded directive, wait for structured host results, then continue planning from those results.
+- The final user-facing reply is still generated by the active agent/LLM after execution, not by the directive parser, Gear adapter, or local router.
+- Pending host actions left over from an app restart must be expired with a structured failure result, not automatically replayed. This avoids repeating side effects such as downloads, captures, imports, or bookmark writes.
 
 Rules:
 
@@ -738,7 +772,7 @@ First-party gears should gradually move into real package boundaries.
 - Package includes manifest, README, assets, setup metadata, storage notes, and future capability declarations.
 - Native Swift implementation may remain host-compiled during migration, but the business boundary must move out of the main app.
 - Folder management, filtering, starring, Quick Look, Finder handoff, video / gif hover playback, and live presentation mode belong to the media gear, not the main workbench.
-- Agent capabilities include `media.filter`, `media.focus_folder`, and `media.import_files`. `media.import_files` imports local media paths into the currently open library, returns imported item paths for multi-Gear workflows, and reports `missing_paths` when requested source files cannot be found.
+- Agent capabilities include `media.filter`, `media.focus_folder`, and `media.import_files`. `media.import_files` imports local media paths into the authorized media library, restores saved access when possible, returns imported item paths for multi-Gear workflows, and reports `missing_paths` when requested source files cannot be found. If authorization is missing, it keeps readable paths as `pending_paths`, opens the Media Library surface, and returns a structured failure for the active agent/LLM to explain.
 
 `hyperframes.studio`:
 
@@ -777,8 +811,10 @@ Information capture workflow:
 
 - Pure text should go straight to `bookmark.save`.
 - URL metadata capture should save through `bookmark.save`; use `twitter.capture` or `smartyt.media` only when the user asks for deeper Twitter/media content or when the URL strongly implies media acquisition.
+- Twitter/X status URLs default to video acquisition unless the user explicitly asks to save metadata only or not to download media. Use `twitter.fetch_tweet` for tweet/media details when needed, then use `smartyt.download_now` for video acquisition.
+- YouTube URLs should use `smartyt.sniff` as the lightweight duration probe before default download decisions. Default download is allowed only when `duration_seconds` is below 300 seconds; longer or unknown-duration videos should be saved as metadata unless the user explicitly asks to download.
 - Strong media acquisition should use `smartyt.download_now`, then `media.import_files`, then `bookmark.save` with `local_media_paths`.
-- If no media library is open, keep downloaded paths in Bookmark Vault and ask the user to open or create a media library before claiming import succeeded.
+- If no media library is authorized, `media.import_files` should preserve downloaded paths as `pending_paths`, open the Media Library surface, and ask the user to choose or create a library before claiming import succeeded. Bookmark Vault may still keep the downloaded paths so the workflow can resume after authorization.
 
 `btc.price`:
 
@@ -960,15 +996,17 @@ Goal: expose ready gear capabilities through one bridge.
 Deliverables:
 
 - GearHost provides ready and policy-allowed capability list.
-- `gear.invoke` adapter surface.
+- `gear.invoke` adapter surface plus the SDK `gee` MCP bridge tools.
+- Generic `<gee-host-actions>` SDK fallback directive for sessions where the MCP tools are not exposed.
 - Initial `media.library` capability execution.
-- Phase-2 runtime council review before connecting to the agent runtime.
+- Same-run pause / execute / resume continuation between the SDK runtime and GeeAgentMac host actions.
 
 Acceptance:
 
 - Agent sees only ready and policy-allowed capabilities.
 - Policy-blocked, failed, installing, or invalid gears are invisible to the agent.
 - No gear-specific pseudo-tools are added.
+- Fallback directives support every ready Gear through `gear_id` and `capability_id`; they must not special-case Twitter, media, bookmarks, or any other single Gear.
 
 ## Quality Gates
 

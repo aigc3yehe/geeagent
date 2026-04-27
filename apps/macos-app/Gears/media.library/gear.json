@@ -39,7 +39,7 @@
       {
         "id": "media.import_files",
         "title": "Import local media files",
-        "description": "Import local image or video file paths into the currently open Eagle-compatible media library and return imported item paths.",
+        "description": "Import local image or video file paths into the authorized Eagle-compatible media library, restoring saved access when possible and returning imported item paths.",
         "examples": [
           "Import these downloaded videos into the media library",
           "Add these local media files to Media Library"

@@ -6,7 +6,12 @@ import {
   startAnthropicGateway,
   type AnthropicGatewayHandle,
 } from "../gateway.js";
-import type { RuntimeEvent, RuntimeContext } from "../protocol.js";
+import type {
+  RuntimeEvent,
+  RuntimeContext,
+  RuntimeHostActionCompletion,
+  RuntimeHostActionIntent,
+} from "../protocol.js";
 import {
   DEFAULT_SDK_AUTO_APPROVE_TOOLS,
   DEFAULT_SDK_DISALLOWED_TOOLS,
@@ -59,6 +64,8 @@ export type SdkTurnResult = {
   auto_approved_tools: number;
   failed_reason?: string;
   pending_terminal_approval?: PendingTerminalApproval;
+  pending_host_actions?: RuntimeHostActionIntent[];
+  pending_host_action_mode?: "mcp" | "directive";
   terminal_access_denied_reason?: string;
 };
 
@@ -66,12 +73,15 @@ type ManagedSession = {
   session: ClaudeRuntimeSession;
   events: RuntimeEvent[];
   waiters: Array<(event: RuntimeEvent) => void>;
+  pendingHostActionMode?: "mcp" | "directive";
 };
 
 type RuntimeTurnOptions = {
   availableTools?: string[];
   autoApproveTools?: string[];
   disallowedTools?: string[];
+  enableGeeHostTools?: boolean;
+  onToolEvent?: (event: SdkToolEvent) => void | Promise<void>;
 };
 
 const ITERATIVE_TURN_MAX_STEPS = 8;
@@ -100,8 +110,10 @@ export async function runSdkRuntimeTurn(
       runtimeSessionId,
       transientAllowedTerminalScopes,
       turn,
+      options.onToolEvent,
     );
     closeUnfinishedToolEventsOnFailure(turn);
+    rememberPendingHostActionMode(managed, turn);
   } finally {
     closeCompletedManagedSession(runtimeSessionId, managed, turn);
     await recycleGatewayAfterFailedTurn(turn);
@@ -135,8 +147,45 @@ export async function resumeSdkRuntimeApproval(
       runtimeSessionId,
       [],
       turn,
+      undefined,
     );
     closeUnfinishedToolEventsOnFailure(turn);
+    rememberPendingHostActionMode(managed, turn);
+  } finally {
+    closeCompletedManagedSession(runtimeSessionId, managed, turn);
+    await recycleGatewayAfterFailedTurn(turn);
+  }
+  return turn;
+}
+
+export async function resumeSdkRuntimeHostActions(
+  configDir: string,
+  runtimeSessionId: string,
+  completions: RuntimeHostActionCompletion[],
+): Promise<SdkTurnResult | null> {
+  const managed = sessions.get(runtimeSessionId);
+  if (!managed) {
+    return null;
+  }
+  const turn = emptyTurnResult();
+  if (managed.pendingHostActionMode === "mcp") {
+    for (const completion of completions) {
+      managed.session.resolveHostAction(completion.host_action_id, completion);
+    }
+  } else {
+    managed.session.send(composeHostActionContinuationPrompt(completions));
+  }
+  try {
+    await collectEventsUntilPauseOrResult(
+      configDir,
+      managed,
+      runtimeSessionId,
+      [],
+      turn,
+      undefined,
+    );
+    closeUnfinishedToolEventsOnFailure(turn);
+    rememberPendingHostActionMode(managed, turn);
   } finally {
     closeCompletedManagedSession(runtimeSessionId, managed, turn);
     await recycleGatewayAfterFailedTurn(turn);
@@ -181,6 +230,18 @@ async function ensureSession(
   const activeGateway = await ensureGateway(backend);
   const runtimeFacts = captureRuntimeFacts(route.surface);
   const security = await loadSecurityPreferences(configDir);
+  const hostCapabilities = [
+    "bash",
+    "read",
+    "write",
+    "edit",
+    "grep",
+    "glob",
+    "ls",
+  ];
+  if (options.enableGeeHostTools ?? true) {
+    hostCapabilities.push("gee_host_bridge");
+  }
 
   let managed: ManagedSession;
   const session = new ClaudeRuntimeSession(
@@ -198,19 +259,12 @@ async function ensureSession(
         approvalPosture: security.highest_authorization_enabled
           ? "highest_authorization"
           : "gee_terminal_permissions",
-        capabilities: [
-          "bash",
-          "read",
-          "write",
-          "edit",
-          "grep",
-          "glob",
-          "ls",
-        ],
+        capabilities: hostCapabilities,
       } satisfies RuntimeContext,
       ...(options.availableTools ? { availableTools: options.availableTools } : {}),
       autoApproveTools: options.autoApproveTools ?? DEFAULT_SDK_AUTO_APPROVE_TOOLS,
       disallowedTools: options.disallowedTools ?? DEFAULT_SDK_DISALLOWED_TOOLS,
+      enableGeeHostTools: options.enableGeeHostTools ?? true,
       gatewayBaseUrl: activeGateway.baseUrl,
       gatewayApiKey: activeGateway.apiKey,
     },
@@ -327,7 +381,33 @@ function closeCompletedManagedSession(
   if (turn.pending_terminal_approval) {
     return;
   }
+  if (turn.pending_host_actions && turn.pending_host_actions.length > 0) {
+    return;
+  }
   closeManagedSession(sessionId, managed);
+}
+
+function rememberPendingHostActionMode(
+  managed: ManagedSession,
+  turn: SdkTurnResult,
+): void {
+  if (turn.pending_host_actions && turn.pending_host_actions.length > 0) {
+    managed.pendingHostActionMode = turn.pending_host_action_mode ?? "directive";
+  } else {
+    managed.pendingHostActionMode = undefined;
+  }
+}
+
+function composeHostActionContinuationPrompt(
+  completions: RuntimeHostActionCompletion[],
+): string {
+  return [
+    "[GeeAgent Host Action Results]",
+    "Native Gee host actions completed. Inspect these structured results, then continue the same user task.",
+    "If another Gear step is needed, emit a new `<gee-host-actions>` directive. Otherwise, write the final user-facing reply in the user's language.",
+    "",
+    JSON.stringify({ completions }, null, 2),
+  ].join("\n");
 }
 
 function sdkEventIdleTimeoutMs(): number {
@@ -351,6 +431,7 @@ async function collectEventsUntilPauseOrResult(
   sessionId: string,
   transientAllowedTerminalScopes: TerminalAccessScope[],
   turn: SdkTurnResult,
+  onToolEvent?: (event: SdkToolEvent) => void | Promise<void>,
 ): Promise<void> {
   const toolInputsById = new Map<string, SeenSdkToolInvocation>();
   const idleTimeoutMs = sdkEventIdleTimeoutMs();
@@ -424,30 +505,41 @@ async function collectEventsUntilPauseOrResult(
         });
         continue;
       }
+      case "session.host_action_requested":
+        turn.pending_host_actions = [
+          ...(turn.pending_host_actions ?? []),
+          event.hostAction,
+        ];
+        turn.pending_host_action_mode = "mcp";
+        return;
       case "session.tool_use":
         toolInputsById.set(event.toolUseId, {
           tool_name: event.toolName,
           input: normalizeRecord(event.input),
         });
-        turn.tool_events.push({
+        const toolEvent: SdkToolEvent = {
           kind: "invocation",
           invocation_id: event.toolUseId,
           tool_name: event.toolName,
           input_summary: summarizePrompt(JSON.stringify(event.input), 180),
-        });
+        };
+        turn.tool_events.push(toolEvent);
+        await onToolEvent?.(toolEvent);
         continue;
       case "session.tool_result": {
         const normalized = normalizeSdkToolResult(
           event,
           toolInputsById.get(event.toolUseId),
         );
-        turn.tool_events.push({
+        const toolEvent: SdkToolEvent = {
           kind: "result",
           invocation_id: event.toolUseId,
           status: normalized.status,
           ...(normalized.summary ? { summary: summarizePrompt(normalized.summary, 220) } : {}),
           ...(normalized.error ? { error: summarizePrompt(normalized.error, 220) } : {}),
-        });
+        };
+        turn.tool_events.push(toolEvent);
+        await onToolEvent?.(toolEvent);
         continue;
       }
       case "session.assistant_text": {
@@ -463,6 +555,13 @@ async function collectEventsUntilPauseOrResult(
         }
         if (isRecord(event.raw) && event.raw.is_error === true) {
           turn.failed_reason = turn.final_result ?? "The SDK returned an error result.";
+        }
+        if (!turn.failed_reason) {
+          const hostActions = extractHostActionDirective(turn.assistant_chunks);
+          if (hostActions.length > 0) {
+            turn.pending_host_actions = hostActions;
+            turn.pending_host_action_mode = "directive";
+          }
         }
         return;
       case "session.error":
@@ -559,7 +658,7 @@ function unsupportedToolDenialMessage(toolName: string): string {
   if (isSdkWebLookupTool(toolName)) {
     return (
       `GeeAgent does not approve \`${toolName}\` through the SDK web tool path. ` +
-      "Use Bash with an inspectable command such as curl or python urllib so the host can show and approve the exact operation."
+      "Use Bash with an inspectable command such as curl or python3 urllib so the host can show and approve the exact operation."
     );
   }
   return (
@@ -622,6 +721,73 @@ function normalizeRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
+function extractHostActionDirective(chunks: string[]): RuntimeHostActionIntent[] {
+  const raw = chunks.join("\n");
+  const match =
+    raw.match(/<gee-host-actions>\s*([\s\S]*?)\s*<\/gee-host-actions>/i) ??
+    raw.match(/```gee-host-actions\s*([\s\S]*?)```/i);
+  const jsonText = match?.[1]?.trim();
+  if (!jsonText) {
+    return [];
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch {
+    return [];
+  }
+
+  const actionsValue = isRecord(parsed) && Array.isArray(parsed.actions)
+    ? parsed.actions
+    : Array.isArray(parsed)
+      ? parsed
+      : isRecord(parsed)
+        ? [parsed]
+        : [];
+
+  return actionsValue
+    .slice(0, 8)
+    .map((value, index) => hostActionFromDirective(value, index))
+    .filter((value): value is RuntimeHostActionIntent => value !== null);
+}
+
+const ALLOWED_HOST_ACTION_TOOLS = new Set([
+  "gee.app.openSurface",
+  "gee.gear.listCapabilities",
+  "gee.gear.invoke",
+]);
+
+function hostActionFromDirective(value: unknown, index: number): RuntimeHostActionIntent | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const toolID = stringField(value, "tool_id") ?? stringField(value, "tool");
+  if (!toolID || !ALLOWED_HOST_ACTION_TOOLS.has(toolID)) {
+    return null;
+  }
+  const args = recordField(value, "arguments") ?? recordField(value, "args") ?? {};
+  const fingerprint = `${toolID}:${JSON.stringify(args)}:${index}`;
+  return {
+    host_action_id: `host_action_directive_${stableHash(fingerprint)}`,
+    tool_id: toolID,
+    arguments: args,
+  };
+}
+
+function recordField(value: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
+  const field = value[key];
+  return isRecord(field) ? field : undefined;
+}
+
+function stableHash(value: string): string {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
 function stringField(record: Record<string, unknown>, key: string): string | undefined {
   const value = record[key];
   return typeof value === "string" ? value : undefined;
@@ -647,6 +813,7 @@ export const __sdkTurnRunnerTestHooks = {
   sdkEventIdleTimeoutReason,
   shouldRecycleGatewayAfterTurn,
   unsupportedToolDenialMessage,
+  extractHostActionDirective,
   normalizeSdkToolResult,
   runtimeProjectPath,
   summarizePrompt,

@@ -10,11 +10,19 @@ final class MediaLibraryModuleStore {
 
     private enum PreferenceKey {
         static let lastLibraryPath = "geeagent.mediaLibrary.lastLibraryPath"
+        static let lastLibraryBookmark = "geeagent.mediaLibrary.lastLibraryBookmark"
         static let libraryHistory = "geeagent.mediaLibrary.libraryHistory"
     }
 
     private let service = MediaLibraryService()
     private let defaults: UserDefaults
+    private var activeLibraryAccess: MediaLibrarySecurityScope?
+
+    private struct LoadedLibrarySnapshot: Sendable {
+        var info: MediaLibraryInfo
+        var items: [MediaLibraryItem]
+        var folders: [MediaLibraryFolder]
+    }
 
     var library: MediaLibraryInfo?
     var items: [MediaLibraryItem] = []
@@ -26,6 +34,7 @@ final class MediaLibraryModuleStore {
     var thumbnailSize: Double = 190
     var isLoading = false
     var errorMessage: String?
+    var pendingAgentImportPaths: [String] = []
     var libraryHistory: [MediaLibraryHistoryEntry] = []
 
     init(defaults: UserDefaults = .standard) {
@@ -102,14 +111,12 @@ final class MediaLibraryModuleStore {
     }
 
     func restoreLastLibraryIfNeeded() async {
-        guard library == nil, let path = defaults.string(forKey: PreferenceKey.lastLibraryPath) else {
+        guard library == nil else {
             return
         }
-        let url = URL(fileURLWithPath: path)
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            return
+        await runLoading {
+            _ = try await restoreLastLibraryFromPreferences()
         }
-        await openLibrary(at: url)
     }
 
     func chooseLibrary() async {
@@ -154,6 +161,7 @@ final class MediaLibraryModuleStore {
 
         await runLoading {
             let info = try service.createLibrary(parentURL: parentURL, name: name)
+            activeLibraryAccess = MediaLibrarySecurityScope(url: info.url)
             applyOpenedLibrary(info)
             try reloadLibraryContents()
         }
@@ -180,7 +188,8 @@ final class MediaLibraryModuleStore {
         }
 
         await runLoading {
-            let imported = try await service.importFiles(urls, into: library.url)
+            let importService = MediaLibraryService()
+            let imported = try await importService.importFiles(urls, into: library.url)
             try reloadLibraryContents()
             if imported.isEmpty {
                 errorMessage = "No new supported media files were imported."
@@ -189,10 +198,6 @@ final class MediaLibraryModuleStore {
     }
 
     func importMediaForAgent(paths: [String]) async throws -> [MediaLibraryItem] {
-        guard let library else {
-            throw MediaLibraryAgentImportError.libraryMissing
-        }
-
         let urls = paths
             .map { NSString(string: $0).expandingTildeInPath }
             .map { URL(fileURLWithPath: $0) }
@@ -201,12 +206,15 @@ final class MediaLibraryModuleStore {
             throw MediaLibraryAgentImportError.noReadableFiles
         }
 
+        let library = try await ensureLibraryForAgent(pendingPaths: urls.map(\.path))
+
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
 
         do {
-            let imported = try await service.importFiles(urls, into: library.url)
+            let importService = MediaLibraryService()
+            let imported = try await importService.importFiles(urls, into: library.url)
             try reloadLibraryContents()
             if let firstImported = imported.first {
                 focusedItemID = firstImported.id
@@ -215,11 +223,33 @@ final class MediaLibraryModuleStore {
             if imported.isEmpty {
                 errorMessage = "No new supported media files were imported."
             }
+            pendingAgentImportPaths = []
             return imported
         } catch {
             errorMessage = error.localizedDescription
             throw error
         }
+    }
+
+    func ensureLibraryForAgent(pendingPaths: [String] = []) async throws -> MediaLibraryInfo {
+        if let library {
+            return library
+        }
+        if isLoading {
+            throw MediaLibraryAgentImportError.libraryLoading
+        }
+
+        do {
+            if try await restoreLastLibraryFromPreferences(), let library {
+                return library
+            }
+        } catch {
+            pendingAgentImportPaths = pendingPaths
+            throw MediaLibraryAgentImportError.authorizationRequired(pendingPaths: pendingPaths)
+        }
+
+        pendingAgentImportPaths = pendingPaths
+        throw MediaLibraryAgentImportError.authorizationRequired(pendingPaths: pendingPaths)
     }
 
     func refresh() async {
@@ -368,19 +398,27 @@ final class MediaLibraryModuleStore {
 
     private func openLibrary(at url: URL) async {
         await runLoading {
-            let info = try service.openLibrary(at: url)
-            applyOpenedLibrary(info)
-            try reloadLibraryContents()
+            try await openLibraryThrowing(at: url, shouldPersistBookmark: true)
         }
     }
 
-    private func applyOpenedLibrary(_ info: MediaLibraryInfo) {
+    private func openLibraryThrowing(at url: URL, shouldPersistBookmark: Bool) async throws {
+        let access = MediaLibrarySecurityScope(url: url)
+        let loaded = try await loadLibrarySnapshot(at: url)
+        activeLibraryAccess = access
+        applyLoadedLibrary(loaded, shouldPersistBookmark: shouldPersistBookmark)
+    }
+
+    private func applyOpenedLibrary(_ info: MediaLibraryInfo, shouldPersistBookmark: Bool = true) {
         library = info
         folders = info.folders
         selectedFolderID = nil
         selectedItemIDs.removeAll()
         focusedItemID = nil
         defaults.set(info.url.path, forKey: PreferenceKey.lastLibraryPath)
+        if shouldPersistBookmark {
+            persistBookmark(for: info.url)
+        }
         updateHistory(with: info)
     }
 
@@ -393,6 +431,87 @@ final class MediaLibraryModuleStore {
         if let focusedItemID, !items.contains(where: { $0.id == focusedItemID }) {
             self.focusedItemID = nil
         }
+    }
+
+    private func loadLibrarySnapshot(at url: URL) async throws -> LoadedLibrarySnapshot {
+        try await Task.detached(priority: .userInitiated) {
+            let service = MediaLibraryService()
+            let info = try service.openLibrary(at: url)
+            let items = try service.loadItems(from: info.url)
+            let folders = try service.loadFolders(from: info.url, kind: info.kind)
+            let refreshedInfo = MediaLibraryInfo(
+                name: info.name,
+                url: info.url,
+                kind: info.kind,
+                folders: folders
+            )
+            return LoadedLibrarySnapshot(info: refreshedInfo, items: items, folders: folders)
+        }.value
+    }
+
+    private func applyLoadedLibrary(_ loaded: LoadedLibrarySnapshot, shouldPersistBookmark: Bool = true) {
+        applyOpenedLibrary(loaded.info, shouldPersistBookmark: shouldPersistBookmark)
+        items = loaded.items
+        folders = loaded.folders
+        library = loaded.info
+        pendingAgentImportPaths = []
+        selectedItemIDs = selectedItemIDs.intersection(Set(items.map(\.id)))
+        if let focusedItemID, !items.contains(where: { $0.id == focusedItemID }) {
+            self.focusedItemID = nil
+        }
+    }
+
+    private func restoreLastLibraryFromPreferences() async throws -> Bool {
+        guard let url = try restoredLibraryURLFromPreferences() else {
+            return false
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            clearStoredLibraryAccess()
+            return false
+        }
+        try await openLibraryThrowing(at: url, shouldPersistBookmark: true)
+        return true
+    }
+
+    private func restoredLibraryURLFromPreferences() throws -> URL? {
+        if let bookmarkData = defaults.data(forKey: PreferenceKey.lastLibraryBookmark) {
+            var isStale = false
+            let url = try URL(
+                resolvingBookmarkData: bookmarkData,
+                options: [.withSecurityScope, .withoutUI],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
+            if isStale {
+                persistBookmark(for: url)
+            }
+            return url
+        }
+
+        guard let path = defaults.string(forKey: PreferenceKey.lastLibraryPath), !path.isEmpty else {
+            return nil
+        }
+        return URL(fileURLWithPath: path)
+    }
+
+    private func persistBookmark(for url: URL) {
+        do {
+            let data = try url.bookmarkData(
+                options: [.withSecurityScope],
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+            defaults.set(data, forKey: PreferenceKey.lastLibraryBookmark)
+        } catch {
+            defaults.removeObject(forKey: PreferenceKey.lastLibraryBookmark)
+        }
+    }
+
+    private func clearStoredLibraryAccess() {
+        defaults.removeObject(forKey: PreferenceKey.lastLibraryPath)
+        defaults.removeObject(forKey: PreferenceKey.lastLibraryBookmark)
+        libraryHistory.removeAll()
+        persistHistory()
     }
 
     private func runLoading(_ work: () throws -> Void) async {
@@ -442,15 +561,37 @@ final class MediaLibraryModuleStore {
 }
 
 enum MediaLibraryAgentImportError: LocalizedError {
+    case libraryLoading
     case libraryMissing
+    case authorizationRequired(pendingPaths: [String])
     case noReadableFiles
 
     var errorDescription: String? {
         switch self {
+        case .libraryLoading:
+            return "The media library is still loading. Retry after the library finishes loading."
         case .libraryMissing:
             return "Open or create a media library before importing downloaded media."
+        case .authorizationRequired:
+            return "Media Library needs access to a library before importing downloaded media."
         case .noReadableFiles:
             return "No readable local media files were provided."
+        }
+    }
+}
+
+private final class MediaLibrarySecurityScope {
+    private let url: URL
+    private let didStartAccessing: Bool
+
+    init(url: URL) {
+        self.url = url
+        didStartAccessing = url.startAccessingSecurityScopedResource()
+    }
+
+    deinit {
+        if didStartAccessing {
+            url.stopAccessingSecurityScopedResource()
         }
     }
 }
