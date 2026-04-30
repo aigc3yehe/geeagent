@@ -1,0 +1,47 @@
+{
+  "schema": "gee.gear.v1",
+  "id": "media.generator",
+  "name": "Media Generator",
+  "description": "Native media generation workspace for image, video, and audio tasks through Gee's global Xenodia channel.",
+  "developer": "Gee",
+  "version": "0.1.0",
+  "category": "Creative",
+  "kind": "atmosphere",
+  "display_mode": "full_canvas",
+  "entry": {
+    "type": "native",
+    "native_id": "media.generator"
+  },
+  "agent": {
+    "enabled": true,
+    "capabilities": [
+      {
+        "id": "media_generator.list_models",
+        "title": "List media generation models",
+        "description": "List the media generation models exposed through Gee's global Xenodia channel.",
+        "examples": [
+          "What image generation models can I use?",
+          "List available media generator models"
+        ]
+      },
+      {
+        "id": "media_generator.create_task",
+        "title": "Create media generation task",
+        "description": "Create a media generation task from a prompt, model, optional parameters, and optional reference image paths or URLs.",
+        "examples": [
+          "Generate an image of a neon rainy study room",
+          "Use this reference image and make a cinematic poster"
+        ]
+      },
+      {
+        "id": "media_generator.get_task",
+        "title": "Get generation task",
+        "description": "Return the latest saved status, prompt, parameters, artifacts, and provider task id for a media generation task.",
+        "examples": [
+          "Check the last image generation task",
+          "Get task media-generator-..."
+        ]
+      }
+    ]
+  }
+}

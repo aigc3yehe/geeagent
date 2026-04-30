@@ -69,12 +69,19 @@ struct ContextBudgetIndicator: View {
                 metricRow("Used", budget.tokenLabel)
                 metricRow("Reserved output", "\(budget.reservedOutputTokens / 1_000)k")
                 metricRow("State", budget.summaryState.title)
+                metricRow("Projection", projectionModeLabel)
+                if budget.rawHistoryTokens > 0 {
+                    metricRow("History", "\(tokenValue(budget.projectedHistoryTokens)) / \(tokenValue(budget.rawHistoryTokens))")
+                }
+                if budget.recentTokens > 0 || budget.summaryTokens > 0 || budget.latestRequestTokens > 0 {
+                    metricRow("Recent / summary / latest", "\(tokenValue(budget.recentTokens)) · \(tokenValue(budget.summaryTokens)) · \(tokenValue(budget.latestRequestTokens))")
+                }
                 if budget.compactedMessagesCount > 0 {
                     metricRow("Compacted", "\(budget.compactedMessagesCount) older messages")
                 }
             }
 
-            Text("GeeAgent keeps the full transcript locally. When the 256k window nears capacity, older turns are summarized while recent task context stays verbatim.")
+            Text("GeeAgent keeps the full transcript locally. The model sees a bounded projection: recent task context, compact reference capsules, and the latest request verbatim.")
                 .font(.geeBody(11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -100,5 +107,19 @@ struct ContextBudgetIndicator: View {
 
     private var labelTint: Color {
         budget.usageRatio >= 0.95 ? Color.white.opacity(0.86) : Color.secondary
+    }
+
+    private var projectionModeLabel: String {
+        budget.projectionMode
+            .split(separator: "_")
+            .map { $0.prefix(1).uppercased() + String($0.dropFirst()) }
+            .joined(separator: " ")
+    }
+
+    private func tokenValue(_ value: Int) -> String {
+        if value >= 1_000 {
+            return "\(value / 1_000)k"
+        }
+        return "\(value)"
     }
 }

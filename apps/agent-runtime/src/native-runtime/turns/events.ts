@@ -2,7 +2,7 @@ import { activeConversation } from "../store/conversations.js";
 import { currentTimestamp } from "../store/defaults.js";
 import type { RuntimeConversation, RuntimeStore } from "../store/types.js";
 import { runtimeProjectPath } from "../paths.js";
-import type { SdkToolEvent, TurnRoute } from "../sdk-turn-runner.js";
+import type { SdkToolArtifactRef, SdkToolEvent, TurnRoute } from "../sdk-turn-runner.js";
 import { isRecord, summarizePrompt } from "./state.js";
 import type { JsonRecord, TurnReplayCursor } from "./types.js";
 
@@ -18,8 +18,9 @@ export function beginTurnReplay(
     surface,
     userContent,
   );
+  const assistantMessageId = nextAssistantMessageIdForActiveConversation(store);
   appendSessionStateForSession(store, sessionId, turnSetupSummary(surface));
-  return { sessionId, userMessageId, stepCount: 0 };
+  return { sessionId, userMessageId, assistantMessageId, stepCount: 0 };
 }
 
 function appendUserMessageForActiveConversation(
@@ -49,12 +50,13 @@ export function appendAssistantMessageForActiveConversation(
   store: RuntimeStore,
   sessionId: string,
   content: string,
+  messageId?: string,
 ): string {
   const conversation = activeConversation(store);
-  const messageId = assistantMessageId(conversation);
+  const resolvedMessageId = messageId ?? assistantMessageId(conversation);
   const trimmed = content.trim();
   conversation.messages.push({
-    message_id: messageId,
+    message_id: resolvedMessageId,
     role: "assistant",
     content: trimmed,
     timestamp: currentTimestamp(),
@@ -62,10 +64,33 @@ export function appendAssistantMessageForActiveConversation(
   conversation.status = "active";
   appendTranscriptEvent(store, sessionId, {
     kind: "assistant_message",
-    message_id: messageId,
+    message_id: resolvedMessageId,
     content: trimmed,
   });
-  return messageId;
+  return resolvedMessageId;
+}
+
+export function appendAssistantDeltaForActiveConversation(
+  store: RuntimeStore,
+  sessionId: string,
+  delta: string,
+  messageId?: string,
+): string | null {
+  if (!delta) {
+    return null;
+  }
+  const conversation = activeConversation(store);
+  const resolvedMessageId = messageId ?? assistantMessageId(conversation);
+  appendTranscriptEvent(store, sessionId, {
+    kind: "assistant_message_delta",
+    message_id: resolvedMessageId,
+    delta,
+  });
+  return resolvedMessageId;
+}
+
+function nextAssistantMessageIdForActiveConversation(store: RuntimeStore): string {
+  return assistantMessageId(activeConversation(store));
 }
 
 export function appendSessionStateForSession(
@@ -96,12 +121,16 @@ export function finalizeTurnReplay(
   store: RuntimeStore,
   cursor: TurnReplayCursor,
   reason: string,
+  stageCapsule?: string,
 ): void {
-  appendSessionStateForSession(
-    store,
-    cursor.sessionId,
-    turnFinalizeSummary(Math.max(cursor.stepCount, 1), reason),
-  );
+  const payload: JsonRecord = {
+    kind: "session_state_changed",
+    summary: turnFinalizeSummary(Math.max(cursor.stepCount, 1), reason),
+  };
+  if (stageCapsule?.trim()) {
+    payload.stage_capsule = stageCapsule;
+  }
+  appendTranscriptEvent(store, cursor.sessionId, payload);
 }
 
 export function appendToolEvents(
@@ -133,7 +162,7 @@ export function appendToolEvents(
         status: event.status,
         summary: event.summary ?? null,
         error: event.error ?? null,
-        artifacts: [],
+        artifacts: transcriptArtifacts(event.artifacts),
       });
     }
   }
@@ -146,6 +175,7 @@ export function appendToolResultForExistingInvocation(
   status: "succeeded" | "failed",
   summary?: string,
   error?: string,
+  artifacts: SdkToolArtifactRef[] = [],
 ): void {
   const hasInvocation = store.transcript_events.some(
     (event) =>
@@ -173,8 +203,79 @@ export function appendToolResultForExistingInvocation(
     status,
     summary: summary ?? null,
     error: error ?? null,
-    artifacts: [],
+    artifacts: transcriptArtifacts(artifacts),
   });
+}
+
+export function appendToolResultForHostBridgeCompletion(
+  store: RuntimeStore,
+  sessionId: string,
+  toolID: string,
+  status: "succeeded" | "failed",
+  summary?: string,
+  error?: string,
+): void {
+  const toolName = hostBridgeToolName(toolID);
+  if (!toolName) {
+    return;
+  }
+
+  const completed = new Set<string>();
+  for (const event of store.transcript_events) {
+    if (!isRecord(event) || event.session_id !== sessionId) {
+      continue;
+    }
+    const payload = event.payload;
+    if (
+      isRecord(payload) &&
+      payload.kind === "tool_result" &&
+      typeof payload.invocation_id === "string"
+    ) {
+      completed.add(payload.invocation_id);
+    }
+  }
+
+  for (let index = 0; index < store.transcript_events.length; index += 1) {
+    const event = store.transcript_events[index];
+    if (
+      !isRecord(event) ||
+      event.session_id !== sessionId ||
+      !isRecord(event.payload) ||
+      event.payload.kind !== "tool_invocation" ||
+      !isRecord(event.payload.invocation)
+    ) {
+      continue;
+    }
+    const invocation = event.payload.invocation;
+    if (
+      invocation.tool_name === toolName &&
+      typeof invocation.invocation_id === "string" &&
+      !completed.has(invocation.invocation_id)
+    ) {
+      appendTranscriptEvent(store, sessionId, {
+        kind: "tool_result",
+        invocation_id: invocation.invocation_id,
+        status,
+        summary: summary ?? null,
+        error: error ?? null,
+        artifacts: [],
+      });
+      return;
+    }
+  }
+}
+
+function hostBridgeToolName(toolID: string): string | null {
+  switch (toolID) {
+    case "gee.app.openSurface":
+      return "app_open_surface";
+    case "gee.gear.listCapabilities":
+      return "gear_list_capabilities";
+    case "gee.gear.invoke":
+      return "gear_invoke";
+    default:
+      return null;
+  }
 }
 
 export function appendTranscriptEvent(
@@ -297,4 +398,14 @@ function turnStepSummary(stepIndex: number, detail: string): string {
 
 function turnFinalizeSummary(stepCount: number, reason: string): string {
   return `Turn finalized after ${stepCount} grounded step${stepCount === 1 ? "" : "s"}: ${summarizePrompt(reason, 120)}`;
+}
+
+function transcriptArtifacts(artifacts: SdkToolArtifactRef[] | undefined): JsonRecord[] {
+  return (artifacts ?? []).map((artifact) => ({
+    artifactId: artifact.artifactId,
+    type: artifact.type,
+    title: artifact.title,
+    payloadRef: artifact.payloadRef,
+    inlinePreviewSummary: artifact.inlinePreviewSummary ?? null,
+  }));
 }

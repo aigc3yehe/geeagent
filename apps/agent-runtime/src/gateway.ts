@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { appendFileSync } from "node:fs";
 import http, {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
 import type { AddressInfo } from "node:net";
+
+import { normalizeToolBoundaryInput } from "./tool-boundary-gateway.js";
 
 const DEFAULT_XENODIA_CHAT_COMPLETIONS_URL =
   "https://api.xenodia.xyz/v1/chat/completions";
@@ -18,6 +21,8 @@ type AnthropicGatewayOptions = {
   backendUrl?: string;
   modelOverride?: string;
   requestTimeoutSeconds?: number;
+  maxCompletionTokens?: number;
+  temperature?: number;
 };
 
 export type AnthropicGatewayHandle = {
@@ -131,6 +136,20 @@ type XenodiaChatCompletionResponse = {
   choices?: unknown;
   usage?: XenodiaUsage;
 };
+
+class XenodiaGatewayError extends Error {
+  readonly retryable: boolean;
+  readonly statusCode?: number;
+
+  constructor(message: string, options: { retryable: boolean; statusCode?: number }) {
+    super(message);
+    this.name = "XenodiaGatewayError";
+    this.retryable = options.retryable;
+    if (options.statusCode !== undefined) {
+      this.statusCode = options.statusCode;
+    }
+  }
+}
 
 type AnthropicTextBlock = {
   type: "text";
@@ -537,6 +556,48 @@ function resolveRequestTimeoutMs(options: AnthropicGatewayOptions): number {
   return DEFAULT_REQUEST_TIMEOUT_SECONDS * 1000;
 }
 
+function resolveConfiguredMaxCompletionTokens(
+  options: AnthropicGatewayOptions,
+): number {
+  const configured = options.maxCompletionTokens;
+  if (
+    typeof configured === "number" &&
+    Number.isFinite(configured) &&
+    configured > 0
+  ) {
+    return configured;
+  }
+  return DEFAULT_COMPLETION_TOKENS;
+}
+
+function resolveMaxCompletionTokens(
+  request: AnthropicMessagesRequest,
+  options: AnthropicGatewayOptions,
+): number {
+  const requested = asNumber(request.max_tokens);
+  const limit = requested ?? resolveConfiguredMaxCompletionTokens(options);
+  return Math.min(Math.max(1, Math.ceil(limit)), DEFAULT_MAX_OUTPUT_TOKENS);
+}
+
+function resolveTemperature(
+  request: AnthropicMessagesRequest,
+  options: AnthropicGatewayOptions,
+): number | undefined {
+  const requested = asNumber(request.temperature);
+  if (requested !== null) {
+    return requested;
+  }
+  const configured = options.temperature;
+  if (
+    typeof configured === "number" &&
+    Number.isFinite(configured) &&
+    configured >= 0
+  ) {
+    return configured;
+  }
+  return undefined;
+}
+
 function approximateTokens(text: string): number {
   if (!text.trim()) {
     return 0;
@@ -587,6 +648,12 @@ function approximateRequestTokens(request: AnthropicMessagesRequest): number {
   }
 
   return approximateTokens(parts.join("\n"));
+}
+
+function requestToolNames(request: AnthropicMessagesRequest): string[] {
+  return asArray<AnthropicToolDefinition>(request.tools)
+    .map((tool) => asString(tool.name))
+    .filter((name): name is string => Boolean(name));
 }
 
 function buildModelInfo(id: string): Record<string, unknown> {
@@ -676,7 +743,10 @@ function buildAnthropicMessageFromXenodia(
       type: "tool_use",
       id: toolCall.id,
       name: toolCall.function.name,
-      input: safeJsonParseRecord(toolCall.function.arguments),
+      input: normalizeToolBoundaryInput(
+        toolCall.function.name,
+        safeJsonParseRecord(toolCall.function.arguments),
+      ),
       caller: "direct",
     });
   }
@@ -715,6 +785,7 @@ function buildAnthropicMessageFromXenodia(
 function toOpenAIChatCompletionRequest(
   request: AnthropicMessagesRequest,
   options: AnthropicGatewayOptions,
+  modelOverride = options.modelOverride,
 ): OpenAIChatCompletionRequest {
   const anthropicModel = asString(request.model) ?? "sonnet";
   const messages = anthropicMessagesToOpenAI(request.messages);
@@ -727,13 +798,10 @@ function toOpenAIChatCompletionRequest(
   }
 
   const body: OpenAIChatCompletionRequest = {
-    model: resolveBackendModel(anthropicModel, options.modelOverride),
+    model: resolveBackendModel(anthropicModel, modelOverride),
     messages,
     stream: false,
-    max_completion_tokens: Math.min(
-      asNumber(request.max_tokens) ?? DEFAULT_COMPLETION_TOKENS,
-      DEFAULT_MAX_OUTPUT_TOKENS,
-    ),
+    max_completion_tokens: resolveMaxCompletionTokens(request, options),
   };
 
   const tools = anthropicToolsToOpenAI(request.tools);
@@ -746,8 +814,8 @@ function toOpenAIChatCompletionRequest(
     body.tool_choice = toolChoice;
   }
 
-  const temperature = asNumber(request.temperature);
-  if (temperature !== null) {
+  const temperature = resolveTemperature(request, options);
+  if (temperature !== undefined) {
     body.temperature = temperature;
   }
 
@@ -759,10 +827,58 @@ async function callXenodia(
   options: AnthropicGatewayOptions,
 ): Promise<XenodiaChatCompletionResponse> {
   const timeoutMs = resolveRequestTimeoutMs(options);
+  return callXenodiaModel(request, options, {
+    modelOverride: options.modelOverride,
+    timeoutMs,
+    label: "primary",
+  });
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function traceGatewayEvent(
+  event: string,
+  fields: Record<string, unknown> = {},
+): void {
+  const tracePath = process.env.GEEAGENT_GATEWAY_TRACE_PATH?.trim();
+  if (!tracePath) {
+    return;
+  }
+  try {
+    appendFileSync(
+      tracePath,
+      `${JSON.stringify({ ts: new Date().toISOString(), event, ...fields })}\n`,
+      "utf8",
+    );
+  } catch {
+    // Trace logging is best-effort and must not affect runtime behavior.
+  }
+}
+
+async function callXenodiaModel(
+  request: AnthropicMessagesRequest,
+  options: AnthropicGatewayOptions,
+  attempt: {
+    modelOverride?: string;
+    timeoutMs: number;
+    label: "primary";
+  },
+): Promise<XenodiaChatCompletionResponse> {
+  const timeoutMs = attempt.timeoutMs;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   let response: Response;
 
+  traceGatewayEvent("upstream.start", {
+    label: attempt.label,
+    model: attempt.modelOverride ?? resolveBackendModel(
+      asString(request.model) ?? "sonnet",
+      options.modelOverride,
+    ),
+    timeout_ms: timeoutMs,
+  });
   try {
     response = await fetch(options.backendUrl ?? DEFAULT_XENODIA_CHAT_COMPLETIONS_URL, {
       method: "POST",
@@ -770,16 +886,26 @@ async function callXenodia(
         Authorization: `Bearer ${options.xenodiaApiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(toOpenAIChatCompletionRequest(request, options)),
+      body: JSON.stringify(
+        toOpenAIChatCompletionRequest(request, options, attempt.modelOverride),
+      ),
       signal: controller.signal,
     });
   } catch (error) {
+    traceGatewayEvent("upstream.error", {
+      label: attempt.label,
+      aborted: controller.signal.aborted,
+      message: errorMessage(error).slice(0, 180),
+    });
     if (controller.signal.aborted) {
-      throw new Error(
-        `xenodia request timed out after ${Math.ceil(timeoutMs / 1000)} seconds`,
+      throw new XenodiaGatewayError(
+        `xenodia ${attempt.label} request timed out after ${Math.ceil(
+          timeoutMs / 1000,
+        )} seconds`,
+        { retryable: true },
       );
     }
-    throw error;
+    throw new XenodiaGatewayError(errorMessage(error), { retryable: true });
   } finally {
     clearTimeout(timeout);
   }
@@ -801,9 +927,20 @@ async function callXenodia(
       asString(asRecord(envelope?.error)?.message) ??
       (typeof parsed === "string" ? parsed : null) ??
       `xenodia request failed with status ${response.status}`;
-    throw new Error(errorMessage);
+    traceGatewayEvent("upstream.status_error", {
+      label: attempt.label,
+      status: response.status,
+    });
+    throw new XenodiaGatewayError(errorMessage, {
+      retryable: response.status !== 401 && response.status !== 403,
+      statusCode: response.status,
+    });
   }
 
+  traceGatewayEvent("upstream.ok", {
+    label: attempt.label,
+    status: response.status,
+  });
   return asRecord(parsed) as XenodiaChatCompletionResponse;
 }
 
@@ -913,6 +1050,14 @@ async function handleMessagesRequest(
   options: AnthropicGatewayOptions,
 ): Promise<void> {
   const payload = (await readJsonBody(request)) as AnthropicMessagesRequest;
+  traceGatewayEvent("messages.request", {
+    stream: payload.stream === true,
+    model: asString(payload.model) ?? "sonnet",
+    approximate_tokens: approximateRequestTokens(payload),
+    tool_count: requestToolNames(payload).length,
+    tool_names: requestToolNames(payload).slice(0, 40),
+    tool_choice: payload.tool_choice ?? null,
+  });
   const upstream = await callXenodia(payload, options);
   const anthropicMessage = buildAnthropicMessageFromXenodia(payload, upstream);
 
@@ -938,6 +1083,7 @@ async function handleRequest(
   const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
   const pathname = requestUrl.pathname;
   const method = request.method?.toUpperCase();
+  traceGatewayEvent("http.request", { method, pathname });
 
   if (method === "POST" && pathname === "/v1/messages") {
     await handleMessagesRequest(request, response, options);
@@ -1008,6 +1154,7 @@ export async function startAnthropicGateway(
   if (!address) {
     throw new Error("local SDK gateway did not expose a listening address");
   }
+  traceGatewayEvent("gateway.listen", { port: address.port });
 
   return {
     apiKey: gatewayApiKey,
@@ -1032,6 +1179,7 @@ export const __gatewayTestHooks = {
   anthropicToolsToOpenAI,
   approximateRequestTokens,
   buildAnthropicMessageFromXenodia,
+  resolveMaxCompletionTokens,
   resolveRequestTimeoutMs,
   resolveBackendModel,
   toOpenAIChatCompletionRequest,

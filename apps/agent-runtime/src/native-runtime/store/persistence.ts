@@ -99,6 +99,12 @@ function normalizeRuntimeStore(value: unknown): RuntimeStore {
       typeof value.active_conversation_id === "string"
         ? value.active_conversation_id
         : fallback.active_conversation_id,
+    host_action_intents: Array.isArray(value.host_action_intents)
+      ? (value.host_action_intents as RuntimeStore["host_action_intents"])
+      : fallback.host_action_intents,
+    host_action_runs: Array.isArray(value.host_action_runs)
+      ? (value.host_action_runs as RuntimeStore["host_action_runs"])
+      : fallback.host_action_runs,
   };
 
   if (!store.agent_profiles.some((profile) => profile.id === store.active_agent_profile_id)) {
@@ -141,4 +147,28 @@ function pruneOrphanConversationRuntimeHistory(store: RuntimeStore): void {
     const sessionId = event.session_id;
     return typeof sessionId !== "string" || sessionIds.has(sessionId);
   });
+
+  const hadHostActionRuns = (store.host_action_runs ?? []).length > 0;
+  store.host_action_runs = (store.host_action_runs ?? []).filter((record) => {
+    if (!isRecord(record)) {
+      return true;
+    }
+    const conversationId = record.conversation_id;
+    const sessionId = record.session_id;
+    return (
+      (typeof conversationId !== "string" || conversationIds.has(conversationId)) &&
+      (typeof sessionId !== "string" || sessionIds.has(sessionId))
+    );
+  });
+
+  const trackedHostActionIds = new Set(
+    (store.host_action_runs ?? [])
+      .map((record) => record.host_action_id)
+      .filter((hostActionId): hostActionId is string => typeof hostActionId === "string"),
+  );
+  if (hadHostActionRuns || trackedHostActionIds.size > 0) {
+    store.host_action_intents = (store.host_action_intents ?? []).filter((intent) =>
+      trackedHostActionIds.has(intent.host_action_id),
+    );
+  }
 }

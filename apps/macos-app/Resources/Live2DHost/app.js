@@ -179,6 +179,8 @@
     runtimeCanvas.style.inset = "0";
     runtimeCanvas.style.width = "100%";
     runtimeCanvas.style.height = "100%";
+    runtimeCanvas.style.pointerEvents = "auto";
+    runtimeCanvas.style.touchAction = "none";
     stage.appendChild(runtimeCanvas);
     return runtimeCanvas;
   }

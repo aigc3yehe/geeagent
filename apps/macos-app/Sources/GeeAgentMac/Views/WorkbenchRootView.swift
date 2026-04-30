@@ -12,6 +12,7 @@ struct WorkbenchRootView: View {
     @State private var presentedSection: WorkbenchSection = .home
     @State private var transitionCoverOpacity = 0.0
     @State private var transitionTask: Task<Void, Never>?
+    @AppStorage("geeagent.home.widget.positions") private var storedHomeWidgetPositions = "{}"
 
     init(store: WorkbenchStore? = nil) {
         _store = State(
@@ -60,23 +61,26 @@ struct WorkbenchRootView: View {
             .ignoresSafeArea()
 
             if shouldShowLive2DInteractionSurface {
-                Live2DInteractionSurface(
-                    viewportState: store.live2DViewportState,
-                    catalog: store.live2DActionCatalog,
-                    activePosePath: store.activeLive2DPosePath,
-                    activeExpressionPath: store.selectedLive2DExpression?.relativePath,
-                    onPrimaryClick: { store.triggerRandomLive2DReaction() },
-                    onSelectPose: { store.setLive2DPose($0) },
-                    onSelectExpression: { store.setLive2DExpression($0) },
-                    onPlayAction: { store.triggerLive2DAction($0) },
-                    onResetExpression: { store.resetLive2DExpression() },
-                    onDrag: { store.translateLive2D(by: $0) },
-                    onScale: { store.adjustLive2DScale(by: $0) },
-                    onResetViewport: { store.resetLive2DViewport() }
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .ignoresSafeArea()
-                .zIndex(0.5)
+                GeometryReader { proxy in
+                    Live2DInteractionSurface(
+                        viewportState: store.live2DViewportState,
+                        catalog: store.live2DActionCatalog,
+                        activePosePath: store.activeLive2DPosePath,
+                        activeExpressionPath: store.selectedLive2DExpression?.relativePath,
+                        excludedRects: live2DInteractionExcludedRects(in: proxy.size),
+                        onPrimaryClick: { store.triggerRandomLive2DReaction() },
+                        onSelectPose: { store.setLive2DPose($0) },
+                        onSelectExpression: { store.setLive2DExpression($0) },
+                        onPlayAction: { store.triggerLive2DAction($0) },
+                        onResetExpression: { store.resetLive2DExpression() },
+                        onDrag: { store.translateLive2D(by: $0) },
+                        onScale: { store.adjustLive2DScale(by: $0) },
+                        onResetViewport: { store.resetLive2DViewport() }
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                    .ignoresSafeArea()
+                    .zIndex(1.4)
             }
 
             if store.presentedStandaloneModuleID != nil {
@@ -198,6 +202,52 @@ struct WorkbenchRootView: View {
             insertion: .opacity.combined(with: .move(edge: .bottom)).combined(with: .scale(scale: 0.985)),
             removal: .opacity.combined(with: .move(edge: .top)).combined(with: .scale(scale: 1.01))
         )
+    }
+
+    private var activeHomeWidgets: [InstalledAppRecord] {
+        store.installedApps.filter {
+            $0.isGearPackage
+                && $0.gearKind == .widget
+                && $0.installState == .installed
+                && GearHost.isEnabled(gearID: $0.id)
+        }
+    }
+
+    private func live2DInteractionExcludedRects(in size: CGSize) -> [CGRect] {
+        guard presentedSection == .home, !isHomeFocused else { return [] }
+
+        let contentInset = homeContentInset
+        let contentSize = CGSize(
+            width: max(size.width - contentInset.leading - contentInset.trailing, 0),
+            height: max(size.height - contentInset.top - contentInset.bottom, 0)
+        )
+
+        return activeHomeWidgets.map { widget in
+            let centerInContent = HomeWidgetPlacement.storedPosition(
+                for: widget.id,
+                canvasSize: contentSize,
+                storedPositions: storedHomeWidgetPositions
+            )
+            let centerInRootTopOrigin = CGPoint(
+                x: contentInset.leading + centerInContent.x,
+                y: contentInset.top + centerInContent.y
+            )
+            let centerInRootBottomOrigin = CGPoint(
+                x: centerInRootTopOrigin.x,
+                y: size.height - centerInRootTopOrigin.y
+            )
+
+            return CGRect(
+                x: centerInRootBottomOrigin.x - HomeWidgetPlacement.size.width / 2,
+                y: centerInRootBottomOrigin.y - HomeWidgetPlacement.size.height / 2,
+                width: HomeWidgetPlacement.size.width,
+                height: HomeWidgetPlacement.size.height
+            )
+        }
+    }
+
+    private var homeContentInset: EdgeInsets {
+        EdgeInsets(top: 10, leading: 12, bottom: 18, trailing: 12)
     }
 
     private func coordinateTransition(from oldValue: WorkbenchSection, to newValue: WorkbenchSection) {
@@ -627,7 +677,6 @@ private struct WorkbenchSceneBackground: View {
                 idlePosePath: live2DIdlePosePath,
                 expressionPath: live2DExpressionPath
             )
-                .allowsHitTesting(false)
         } else if case .live2D = activeAppearance {
             // Baseline persona declares Live2D but the bundle path isn't populated yet (e.g. the
             // asset hasn't been imported). Keep the abstract hero so the frame never goes black.

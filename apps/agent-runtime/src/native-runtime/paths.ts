@@ -16,7 +16,7 @@ export function resolveConfigDir(configDir?: string): string {
     return resolve(envConfigDir);
   }
 
-  return join(homedir(), "Library", "Application Support", "io.geeagent.desktop");
+  return join(homedir(), "Library", "Application Support", "GeeAgent");
 }
 
 export function runtimeProjectPath(fallback?: string): string {

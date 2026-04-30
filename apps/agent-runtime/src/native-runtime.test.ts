@@ -8,15 +8,32 @@ import readline from "node:readline";
 import { describe, it } from "node:test";
 
 import { handleNativeRuntimeCommand } from "./native-runtime/commands.js";
-import { __sdkTurnRunnerTestHooks } from "./native-runtime/sdk-turn-runner.js";
+import { buildContextProjection } from "./native-runtime/context/projector.js";
+import { prepareHostActionCompletionsForModel } from "./native-runtime/context/host-action-results.js";
+import { estimateTextTokens } from "./native-runtime/context/token-estimator.js";
+import {
+  __sdkTurnRunnerTestHooks,
+  type SdkTurnResult,
+} from "./native-runtime/sdk-turn-runner.js";
 import { QUICK_CONVERSATION_TAG } from "./native-runtime/store/conversations.js";
 import { defaultRuntimeStore } from "./native-runtime/store/defaults.js";
+import {
+  appendAssistantDeltaForActiveConversation,
+  appendAssistantMessageForActiveConversation,
+  appendToolEvents,
+  appendToolResultForHostBridgeCompletion,
+  beginTurnReplay,
+  executionSessionIdForConversation,
+} from "./native-runtime/turns/events.js";
 import {
   sdkRuntimeBashScope,
   terminalAccessDecisionForScope,
 } from "./native-runtime/store/terminal-permissions.js";
 import { __turnTestHooks } from "./native-runtime/turns.js";
-import { routeLocalGearIntent } from "./native-runtime/turns/gear-intents.js";
+import {
+  requiresGeeGearBridgeFirst,
+  routeLocalGearIntent,
+} from "./native-runtime/turns/gear-intents.js";
 
 type ServerEnvelope = {
   id: string;
@@ -84,6 +101,180 @@ function send(
 }
 
 describe("native runtime command modules", () => {
+  it("estimates compact text with a conservative token budget", () => {
+    assert.equal(estimateTextTokens("continue context compression"), 7);
+    assert.ok(estimateTextTokens("plain ascii words") >= 4);
+  });
+
+  it("projects long conversation history into a compact model-facing context", () => {
+    const history = [
+      {
+        role: "user",
+        content: `oldest-marker ${"old background ".repeat(2500)}`,
+      },
+      ...Array.from({ length: 40 }, (_, index) => ({
+        role: index % 2 === 0 ? "assistant" : "user",
+        content: `middle turn ${index} ${"tool output ".repeat(700)}`,
+      })),
+      {
+        role: "assistant",
+        content: "recent-keep-marker final observed result",
+      },
+    ];
+
+    const projection = buildContextProjection(history, {
+      latestUserRequest: "Please continue the next phase and keep this complete question",
+      compactTriggerTokens: 1_000,
+      recentTokenBudget: 2_500,
+    });
+
+    const projectedText = projection.messages.map((message) => message.content).join("\n");
+    assert.equal(projection.mode, "compacted");
+    assert.ok(projection.compactedMessagesCount > 0);
+    assert.ok(projection.rawHistoryTokens > projection.projectedHistoryTokens);
+    assert.doesNotMatch(projectedText, /oldest-marker/);
+    assert.match(projectedText, /recent-keep-marker/);
+    assert.equal(projection.latestRequestTokens, estimateTextTokens("Please continue the next phase and keep this complete question"));
+  });
+
+  it("does not increase model-facing tokens when compacting an oversized tail", () => {
+    const history = [
+      {
+        role: "user",
+        content: "short old context",
+      },
+      {
+        role: "assistant",
+        content: "oversized-tail ".repeat(10_000),
+      },
+    ];
+
+    const projection = buildContextProjection(history, {
+      latestUserRequest: "continue",
+      compactTriggerTokens: 100,
+      recentTokenBudget: 10,
+    });
+
+    assert.equal(projection.mode, "compacted");
+    assert.ok(projection.projectedHistoryTokens <= projection.rawHistoryTokens);
+    assert.equal(projection.summaryTokens, 0);
+    assert.doesNotMatch(
+      projection.messages.map((message) => message.content).join("\n"),
+      /short old context/,
+    );
+  });
+
+  it("keeps a single oversized history message honest instead of claiming compaction", () => {
+    const history = [
+      {
+        role: "assistant",
+        content: "single huge message ".repeat(10_000),
+      },
+    ];
+
+    const projection = buildContextProjection(history, {
+      latestUserRequest: "continue",
+      compactTriggerTokens: 100,
+      recentTokenBudget: 10,
+    });
+
+    assert.equal(projection.mode, "full_recent");
+    assert.equal(projection.projectedHistoryTokens, projection.rawHistoryTokens);
+    assert.equal(projection.compactedMessagesCount, 0);
+  });
+
+  it("renders workspace prompts from the projected context and updates budget telemetry", () => {
+    const now = "2026-04-27T12:00:00.000Z";
+    const store = defaultRuntimeStore(now);
+    store.conversations[0].messages = [
+      {
+        message_id: "msg_user_01",
+        role: "user",
+        content: `oldest-secret ${"very old terminal output ".repeat(4000)}`,
+        timestamp: now,
+      },
+      ...Array.from({ length: 40 }, (_, index) => ({
+        message_id: `msg_${String(index + 2).padStart(2, "0")}`,
+        role: index % 2 === 0 ? "assistant" : "user",
+        content: `middle ${index} ${"large result ".repeat(900)}`,
+        timestamp: now,
+      })),
+      {
+        message_id: "msg_assistant_recent",
+        role: "assistant",
+        content: "recent-stage-result should stay visible",
+        timestamp: now,
+      },
+    ];
+    store.transcript_events.push({
+      event_id: "event_stage_capsule",
+      session_id: `session_${store.active_conversation_id}`,
+      parent_event_id: null,
+      created_at: now,
+      payload: {
+        kind: "session_state_changed",
+        summary: "Context capsule updated.",
+        stage_capsule: "[GEEAGENT STAGE SUMMARY CAPSULE]\nRecent deterministic stage capsule.\n[/GEEAGENT STAGE SUMMARY CAPSULE]",
+      },
+    });
+
+    const route = {
+      mode: "workspace_message" as const,
+      source: "workspace_chat" as const,
+      surface: "cli_workspace_chat" as const,
+    };
+    const latest = "Please continue the next phase and preserve this sentence fully";
+    const prepared = __turnTestHooks.prepareTurnContext(store, route, latest);
+    const prompt = __turnTestHooks.composeClaudeSdkTurnPrompt(route, prepared, latest);
+
+    assert.equal(prepared.contextProjection.mode, "compacted");
+    assert.equal(prepared.stageCapsuleMessages.length, 1);
+    assert.match(prompt, /Context projection mode: compacted/);
+    assert.doesNotMatch(prompt, /oldest-secret/);
+    assert.match(prompt, /recent-stage-result should stay visible/);
+    assert.match(prompt, /Recent deterministic stage capsule/);
+    assert.match(prompt, /Latest user request:\nPlease continue the next phase and preserve this sentence fully/);
+    assert.equal(store.context_budget.projection_mode, "compacted");
+    assert.ok(Number(store.context_budget.raw_history_tokens) > Number(store.context_budget.projected_history_tokens));
+    assert.ok(Number(store.context_budget.compacted_messages_count) > 0);
+  });
+
+  it("does not inject stage capsules into small unprojected histories", () => {
+    const now = "2026-04-27T12:00:00.000Z";
+    const store = defaultRuntimeStore(now);
+    store.conversations[0].messages = [
+      {
+        message_id: "msg_user_01",
+        role: "user",
+        content: "small context",
+        timestamp: now,
+      },
+    ];
+    store.transcript_events.push({
+      event_id: "event_stage_capsule",
+      session_id: `session_${store.active_conversation_id}`,
+      parent_event_id: null,
+      created_at: now,
+      payload: {
+        kind: "session_state_changed",
+        summary: "Context capsule updated.",
+        stage_capsule: "[GEEAGENT STAGE SUMMARY CAPSULE]\nDo not include me yet.\n[/GEEAGENT STAGE SUMMARY CAPSULE]",
+      },
+    });
+
+    const route = {
+      mode: "workspace_message" as const,
+      source: "workspace_chat" as const,
+      surface: "cli_workspace_chat" as const,
+    };
+    const prepared = __turnTestHooks.prepareTurnContext(store, route, "next");
+    const prompt = __turnTestHooks.composeClaudeSdkTurnPrompt(route, prepared, "next");
+
+    assert.equal(prepared.contextProjection.mode, "full_recent");
+    assert.equal(prepared.stageCapsuleMessages.length, 1);
+    assert.doesNotMatch(prompt, /Do not include me yet/);
+  });
+
   it("excludes quick-tagged conversations from automatic routing candidates", () => {
     const now = "2026-04-27T12:00:00.000Z";
     const store = defaultRuntimeStore(now);
@@ -290,6 +481,45 @@ describe("native runtime command modules", () => {
       ),
       false,
     );
+  });
+
+  it("drops orphaned host-action lineage when persisted conversations are pruned", async () => {
+    const configDir = await tempConfigDir();
+    await handleNativeRuntimeCommand("create-conversation", [], { configDir });
+
+    const storePath = join(configDir, "runtime-store.json");
+    const store = JSON.parse(await readFile(storePath, "utf8"));
+    store.host_action_intents = [
+      {
+        host_action_id: "host_action_orphaned",
+        tool_id: "gee.gear.invoke",
+        arguments: {
+          gear_id: "wespy.reader",
+          capability_id: "wespy.fetch_article",
+          args: { url: "https://mp.weixin.qq.com/s/orphaned" },
+        },
+      },
+    ];
+    store.host_action_runs = [
+      {
+        host_action_id: "host_action_orphaned",
+        tool_id: "gee.gear.invoke",
+        session_id: "session_conv_deleted",
+        conversation_id: "conv_deleted",
+        user_message_id: "msg_user_deleted",
+        source: "sdk_same_run",
+        status: "pending",
+        created_at: "now",
+        updated_at: "now",
+      },
+    ];
+    await writeFile(storePath, `${JSON.stringify(store, null, 2)}\n`, "utf8");
+
+    await handleNativeRuntimeCommand("create-conversation", [], { configDir });
+    const normalized = JSON.parse(await readFile(storePath, "utf8"));
+
+    assert.deepEqual(normalized.host_action_runs, []);
+    assert.deepEqual(normalized.host_action_intents, []);
   });
 
   it("persists highest authorization in the same shape Swift already reads", async () => {
@@ -975,9 +1205,29 @@ describe("native runtime command modules", () => {
         },
       },
     });
+
+    const missingArgsRaw = await handleNativeRuntimeCommand(
+      "invoke-tool",
+      [
+        JSON.stringify({
+          tool_id: "gee.gear.invoke",
+          arguments: {
+            gear_id: "wespy.reader",
+            capability_id: "wespy.fetch_article",
+            args: {},
+          },
+        }),
+      ],
+      { configDir },
+    );
+    const missingArgs = JSON.parse(missingArgsRaw);
+    assert.equal(missingArgs.kind, "error");
+    assert.equal(missingArgs.tool_id, "gee.gear.invoke");
+    assert.equal(missingArgs.code, "gear.args.url");
+    assert.match(missingArgs.message, /required string `url` is missing/);
   });
 
-  it("routes simple media-library natural language requests into host actions without waiting on SDK tools", async () => {
+  it("does not run native Gear fallback when the SDK runtime is not live", async () => {
     const configDir = await tempConfigDir();
     const previousKey = process.env.XENODIA_API_KEY;
     delete process.env.XENODIA_API_KEY;
@@ -988,62 +1238,244 @@ describe("native runtime command modules", () => {
         { configDir },
       );
       const snapshot = JSON.parse(raw);
-      assert.equal(snapshot.last_request_outcome.kind, "host_action_pending");
-      assert.equal(snapshot.host_action_intents.length, 2);
+      assert.equal(snapshot.last_request_outcome.kind, "chat_reply");
+      assert.equal(snapshot.host_action_intents.length, 0);
+      assert.equal(snapshot.chat_runtime.status, "needs_setup");
+      assert.equal(snapshot.last_run_state.stop_reason, "sdk_runtime_not_live");
+      assert.match(snapshot.last_run_state.detail, /stopped before executing tools or Gear actions/);
+      assert.equal(
+        snapshot.transcript_events.some(
+          (event: { payload?: { kind?: string } }) =>
+            event.payload?.kind === "tool_invocation",
+        ),
+        false,
+      );
+      const latest = snapshot.active_conversation.messages.at(-1);
+      assert.equal(latest.role, "assistant");
+      assert.match(latest.content, /SDK runtime is not live/);
+    } finally {
+      if (previousKey === undefined) {
+        delete process.env.XENODIA_API_KEY;
+      } else {
+        process.env.XENODIA_API_KEY = previousKey;
+      }
+    }
+  });
+
+  it("marks legacy static fallback completions failed instead of presenting them as complete", async () => {
+    const configDir = await tempConfigDir();
+    const store = defaultRuntimeStore("2026-04-27T00:00:00.000Z");
+    const cursor = beginTurnReplay(store, "cli_workspace_chat", "show video files in media library");
+    store.host_action_runs = [
+      {
+        host_action_id: "legacy_static_action",
+        tool_id: "gee.gear.invoke",
+        source: "static_fallback",
+        session_id: cursor.sessionId,
+        conversation_id: store.active_conversation_id,
+        user_message_id: cursor.userMessageId,
+        status: "pending",
+        created_at: "2026-04-27T00:00:00.000Z",
+        updated_at: "2026-04-27T00:00:00.000Z",
+      },
+    ];
+    store.host_action_intents = [
+      {
+        host_action_id: "legacy_static_action",
+        tool_id: "gee.gear.invoke",
+        arguments: {
+          gear_id: "media.library",
+          capability_id: "media.filter",
+          args: { kind: "video" },
+        },
+      },
+    ];
+    await mkdir(configDir, { recursive: true });
+    await writeFile(join(configDir, "runtime-store.json"), JSON.stringify(store, null, 2), "utf8");
+
+    const completedRaw = await handleNativeRuntimeCommand(
+      "complete-host-action-turn",
+      [
+        JSON.stringify([
+          {
+            host_action_id: "legacy_static_action",
+            tool_id: "gee.gear.invoke",
+            status: "succeeded",
+            summary: "gee.gear.invoke completed",
+          },
+        ]),
+      ],
+      { configDir },
+    );
+    const completed = JSON.parse(completedRaw);
+
+    assert.equal(completed.last_run_state.status, "failed");
+    assert.equal(
+      completed.last_run_state.stop_reason,
+      "legacy_static_gear_fallback_prohibited",
+    );
+    assert.match(
+      completed.active_conversation.messages.at(-1).content,
+      /fallback execution is now prohibited/i,
+    );
+  });
+
+  it("marks live SDK host-action completions failed when the same run is gone", async () => {
+    const configDir = await tempConfigDir();
+    const previousKey = process.env.XENODIA_API_KEY;
+    process.env.XENODIA_API_KEY = "test-live-key";
+    const store = defaultRuntimeStore("2026-04-27T00:00:00.000Z");
+    const cursor = beginTurnReplay(store, "cli_workspace_chat", "show video files");
+    appendToolEvents(store, cursor.sessionId, cursor.userMessageId, [
+      {
+        kind: "invocation",
+        invocation_id: "host_action_lost_session",
+        tool_name: "gear_invoke",
+        input_summary: "{\"gear_id\":\"media.library\"}",
+      },
+    ]);
+    store.chat_runtime = {
+      status: "live",
+      active_provider: "sdk/xenodia",
+      detail: "The SDK is driving the agent loop through the local Xenodia model gateway.",
+    };
+    store.last_run_state = {
+      conversation_id: store.active_conversation_id,
+      status: "running",
+      stop_reason: "gear_host_action_running",
+      detail: "Waiting on host action.",
+      resumable: false,
+      task_id: null,
+      module_run_id: null,
+    };
+    store.host_action_intents = [
+      {
+        host_action_id: "host_action_lost_session",
+        tool_id: "gee.gear.invoke",
+        arguments: {
+          gear_id: "media.library",
+          capability_id: "media.filter",
+          args: { kind: "video" },
+        },
+      },
+    ];
+    await writeFile(join(configDir, "runtime-store.json"), JSON.stringify(store, null, 2), "utf8");
+
+    try {
+      const completedRaw = await handleNativeRuntimeCommand(
+        "complete-host-action-turn",
+        [
+          JSON.stringify([
+            {
+              host_action_id: "host_action_lost_session",
+              tool_id: "gee.gear.invoke",
+              status: "succeeded",
+              summary: "Applied video filter",
+            },
+          ]),
+        ],
+        { configDir },
+      );
+      const completed = JSON.parse(completedRaw);
+      const persisted = JSON.parse(await readFile(join(configDir, "runtime-store.json"), "utf8"));
+
+      assert.equal(completed.last_run_state.status, "failed");
+      assert.equal(completed.last_run_state.stop_reason, "sdk_host_action_session_lost");
+      assert.equal(persisted.chat_runtime.status, "degraded");
       assert.match(
-        snapshot.host_action_intents[0].host_action_id,
-        /^host_action_open_media_library_cdb8d666_[a-f0-9]{8}$/,
+        completed.active_conversation.messages.at(-1).content,
+        /same SDK run could not be resumed/i,
       );
+      assert.doesNotMatch(
+        completed.active_conversation.messages.at(-1).content,
+        /gear-completion|Xenodia did not complete/i,
+      );
+    } finally {
+      if (previousKey === undefined) {
+        delete process.env.XENODIA_API_KEY;
+      } else {
+        process.env.XENODIA_API_KEY = previousKey;
+      }
+    }
+  });
+
+  it("uses SDK host-action lineage when last run state looks like static fallback", async () => {
+    const configDir = await tempConfigDir();
+    const previousKey = process.env.XENODIA_API_KEY;
+    process.env.XENODIA_API_KEY = "test-live-key";
+    const store = defaultRuntimeStore("2026-04-27T00:00:00.000Z");
+    const cursor = beginTurnReplay(store, "cli_workspace_chat", "show video files");
+    appendToolEvents(store, cursor.sessionId, cursor.userMessageId, [
+      {
+        kind: "invocation",
+        invocation_id: "host_action_sdk_lineage",
+        tool_name: "gear_invoke",
+        input_summary: "{\"gear_id\":\"media.library\"}",
+      },
+    ]);
+    store.chat_runtime = {
+      status: "live",
+      active_provider: "sdk/xenodia",
+      detail: "The SDK is driving the agent loop through the local Xenodia model gateway.",
+    };
+    store.last_run_state = {
+      conversation_id: store.active_conversation_id,
+      status: "running",
+      stop_reason: "static_gear_fallback_running",
+      detail: "A stale fallback state should not override the host-action run source.",
+      resumable: false,
+      task_id: null,
+      module_run_id: null,
+    };
+    store.host_action_intents = [
+      {
+        host_action_id: "host_action_sdk_lineage",
+        tool_id: "gee.gear.invoke",
+        arguments: {
+          gear_id: "media.library",
+          capability_id: "media.filter",
+          args: { kind: "video" },
+        },
+      },
+    ];
+    store.host_action_runs = [
+      {
+        host_action_id: "host_action_sdk_lineage",
+        tool_id: "gee.gear.invoke",
+        session_id: cursor.sessionId,
+        conversation_id: store.active_conversation_id,
+        user_message_id: cursor.userMessageId,
+        source: "sdk_same_run",
+        status: "pending",
+        created_at: "2026-04-27T00:00:00.000Z",
+        updated_at: "2026-04-27T00:00:00.000Z",
+      },
+    ];
+    await writeFile(join(configDir, "runtime-store.json"), JSON.stringify(store, null, 2), "utf8");
+
+    try {
+      const completedRaw = await handleNativeRuntimeCommand(
+        "complete-host-action-turn",
+        [
+          JSON.stringify([
+            {
+              host_action_id: "host_action_sdk_lineage",
+              tool_id: "gee.gear.invoke",
+              status: "succeeded",
+              summary: "Applied video filter",
+            },
+          ]),
+        ],
+        { configDir },
+      );
+      const completed = JSON.parse(completedRaw);
+      const persisted = JSON.parse(await readFile(join(configDir, "runtime-store.json"), "utf8"));
+
+      assert.equal(completed.last_run_state.stop_reason, "sdk_host_action_session_lost");
+      assert.equal(persisted.chat_runtime.status, "degraded");
       assert.match(
-        snapshot.host_action_intents[1].host_action_id,
-        /^host_action_media_filter_video_cdb8d666_[a-f0-9]{8}$/,
-      );
-      assert.equal(snapshot.host_action_intents[0].tool_id, "gee.app.openSurface");
-      assert.deepEqual(snapshot.host_action_intents[0].arguments, { gear_id: "media.library" });
-      assert.equal(snapshot.host_action_intents[1].tool_id, "gee.gear.invoke");
-      assert.deepEqual(snapshot.host_action_intents[1].arguments, {
-        gear_id: "media.library",
-        capability_id: "media.filter",
-        args: { kind: "video" },
-      });
-      const latest = snapshot.active_conversation.messages.at(-1);
-      assert.equal(latest.role, "user");
-      assert.equal(latest.content, "show video files in the media library");
-    } finally {
-      if (previousKey === undefined) {
-        delete process.env.XENODIA_API_KEY;
-      } else {
-        process.env.XENODIA_API_KEY = previousKey;
-      }
-    }
-  });
-
-  it("uses unique host action ids when the same routed Gear prompt repeats", async () => {
-    const configDir = await tempConfigDir();
-    const previousKey = process.env.XENODIA_API_KEY;
-    delete process.env.XENODIA_API_KEY;
-    try {
-      const firstRaw = await handleNativeRuntimeCommand(
-        "submit-workspace-message",
-        ["show video files in the media library"],
-        { configDir },
-      );
-      const secondRaw = await handleNativeRuntimeCommand(
-        "submit-workspace-message",
-        ["show video files in the media library"],
-        { configDir },
-      );
-      const first = JSON.parse(firstRaw);
-      const second = JSON.parse(secondRaw);
-      assert.equal(first.host_action_intents.length, 2);
-      assert.equal(second.host_action_intents.length, 2);
-      assert.notEqual(
-        first.host_action_intents[0].host_action_id,
-        second.host_action_intents[0].host_action_id,
-      );
-      assert.notEqual(
-        first.host_action_intents[1].host_action_id,
-        second.host_action_intents[1].host_action_id,
+        completed.active_conversation.messages.at(-1).content,
+        /same SDK run could not be resumed/i,
       );
     } finally {
       if (previousKey === undefined) {
@@ -1054,129 +1486,116 @@ describe("native runtime command modules", () => {
     }
   });
 
-  it("routes media-library kind filters without falling into the SDK coding loop", async () => {
-    const configDir = await tempConfigDir();
-    const previousKey = process.env.XENODIA_API_KEY;
-    delete process.env.XENODIA_API_KEY;
-    try {
-      const raw = await handleNativeRuntimeCommand(
-        "submit-workspace-message",
-        ["media library only show video files"],
-        { configDir },
-      );
-      const snapshot = JSON.parse(raw);
-      assert.equal(snapshot.last_request_outcome.kind, "host_action_pending");
-      assert.equal(snapshot.host_action_intents.length, 2);
-      assert.deepEqual(snapshot.host_action_intents[0].arguments, { gear_id: "media.library" });
-      assert.deepEqual(snapshot.host_action_intents[1].arguments, {
-        gear_id: "media.library",
-        capability_id: "media.filter",
-        args: { kind: "video" },
-      });
-      const latest = snapshot.active_conversation.messages.at(-1);
-      assert.equal(latest.role, "user");
-      assert.equal(latest.content, "media library only show video files");
-    } finally {
-      if (previousKey === undefined) {
-        delete process.env.XENODIA_API_KEY;
-      } else {
-        process.env.XENODIA_API_KEY = previousKey;
-      }
-    }
+  it("parses media-library kind filters into candidate host actions", () => {
+    const routed = routeLocalGearIntent("media library only show video files");
+    assert.ok(routed);
+    assert.equal(routed.hostActions.length, 2);
+    assert.deepEqual(routed.hostActions[0].arguments, { gear_id: "media.library" });
+    assert.deepEqual(routed.hostActions[1].arguments, {
+      gear_id: "media.library",
+      capability_id: "media.filter",
+      args: { kind: "video" },
+    });
   });
 
-  it("routes media-browser extension filters to the media library instead of the SDK coding loop", async () => {
-    const configDir = await tempConfigDir();
-    const previousKey = process.env.XENODIA_API_KEY;
-    delete process.env.XENODIA_API_KEY;
-    try {
-      const raw = await handleNativeRuntimeCommand(
-        "submit-workspace-message",
-        ["show png image files in the media browser"],
-        { configDir },
-      );
-      const snapshot = JSON.parse(raw);
-      assert.equal(snapshot.last_request_outcome.kind, "host_action_pending");
-      assert.equal(snapshot.host_action_intents.length, 2);
-      assert.deepEqual(snapshot.host_action_intents[0].arguments, { gear_id: "media.library" });
-      assert.equal(snapshot.host_action_intents[1].tool_id, "gee.gear.invoke");
-      assert.deepEqual(snapshot.host_action_intents[1].arguments, {
-        gear_id: "media.library",
-        capability_id: "media.filter",
-        args: { kind: "image", extensions: ["png"] },
-      });
-      const latest = snapshot.active_conversation.messages.at(-1);
-      assert.equal(latest.role, "user");
-      assert.equal(latest.content, "show png image files in the media browser");
-    } finally {
-      if (previousKey === undefined) {
-        delete process.env.XENODIA_API_KEY;
-      } else {
-        process.env.XENODIA_API_KEY = previousKey;
-      }
-    }
+  it("parses media-browser extension filters to the media library candidate action", () => {
+    const routed = routeLocalGearIntent("show png image files in the media browser");
+    assert.ok(routed);
+    assert.equal(routed.hostActions.length, 2);
+    assert.deepEqual(routed.hostActions[0].arguments, { gear_id: "media.library" });
+    assert.equal(routed.hostActions[1].tool_id, "gee.gear.invoke");
+    assert.deepEqual(routed.hostActions[1].arguments, {
+      gear_id: "media.library",
+      capability_id: "media.filter",
+      args: { kind: "image", extensions: ["png"] },
+    });
   });
 
-  it("routes simple Twitter capture requests into Gear host actions", async () => {
-    const configDir = await tempConfigDir();
-    const previousKey = process.env.XENODIA_API_KEY;
-    delete process.env.XENODIA_API_KEY;
-    try {
-      const raw = await handleNativeRuntimeCommand(
-        "submit-workspace-message",
-        ["fetch the first 12 tweets from @openai on twitter"],
-        { configDir },
-      );
-      const snapshot = JSON.parse(raw);
-      assert.equal(snapshot.last_request_outcome.kind, "host_action_pending");
-      assert.equal(snapshot.host_action_intents.length, 2);
-      assert.deepEqual(snapshot.host_action_intents[0].arguments, { gear_id: "twitter.capture" });
-      assert.deepEqual(snapshot.host_action_intents[1].arguments, {
-        gear_id: "twitter.capture",
-        capability_id: "twitter.fetch_user",
-        args: { username: "openai", limit: 12 },
-      });
-      const latest = snapshot.active_conversation.messages.at(-1);
-      assert.equal(latest.role, "user");
-      assert.equal(latest.content, "fetch the first 12 tweets from @openai on twitter");
-    } finally {
-      if (previousKey === undefined) {
-        delete process.env.XENODIA_API_KEY;
-      } else {
-        process.env.XENODIA_API_KEY = previousKey;
-      }
-    }
+  it("parses simple Twitter capture requests into candidate Gear host actions", () => {
+    const routed = routeLocalGearIntent("fetch the first 12 tweets from @openai on twitter");
+    assert.ok(routed);
+    assert.equal(routed.hostActions.length, 2);
+    assert.deepEqual(routed.hostActions[0].arguments, { gear_id: "twitter.capture" });
+    assert.deepEqual(routed.hostActions[1].arguments, {
+      gear_id: "twitter.capture",
+      capability_id: "twitter.fetch_user",
+      args: { username: "openai", limit: 12 },
+    });
   });
 
-  it("routes bookmark save requests into the Bookmark Vault Gear", async () => {
-    const configDir = await tempConfigDir();
-    const previousKey = process.env.XENODIA_API_KEY;
-    delete process.env.XENODIA_API_KEY;
-    try {
-      const raw = await handleNativeRuntimeCommand(
-        "submit-workspace-message",
-        ["bookmark this video https://example.com/watch?v=demo"],
-        { configDir },
-      );
-      const snapshot = JSON.parse(raw);
-      assert.equal(snapshot.last_request_outcome.kind, "host_action_pending");
-      assert.equal(snapshot.host_action_intents.length, 2);
-      assert.deepEqual(snapshot.host_action_intents[0].arguments, { gear_id: "bookmark.vault" });
-      assert.deepEqual(snapshot.host_action_intents[1].arguments, {
-        gear_id: "bookmark.vault",
-        capability_id: "bookmark.save",
-        args: { content: "video https://example.com/watch?v=demo" },
-      });
-      const latest = snapshot.active_conversation.messages.at(-1);
-      assert.equal(latest.role, "user");
-      assert.equal(latest.content, "bookmark this video https://example.com/watch?v=demo");
-    } finally {
-      if (previousKey === undefined) {
-        delete process.env.XENODIA_API_KEY;
-      } else {
-        process.env.XENODIA_API_KEY = previousKey;
-      }
-    }
+  it("parses WeChat album capture requests into WeSpy candidate actions", () => {
+    const url = "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=MzU4MTQ4ODgyNg==&action=getalbum&album_id=2851824524055543812&scene=126#wechat_redirect";
+    const routed = routeLocalGearIntent(`${url} fetch the first 3 articles and save them as desktop markdown`);
+    assert.ok(routed);
+    assert.equal(routed.hostActions.length, 2);
+    assert.deepEqual(routed.hostActions[0].arguments, { gear_id: "wespy.reader" });
+    const invokeArgs = routed.hostActions[1].arguments as {
+      gear_id: string;
+      capability_id: string;
+      args: Record<string, unknown>;
+    };
+    assert.equal(invokeArgs.gear_id, "wespy.reader");
+    assert.equal(invokeArgs.capability_id, "wespy.fetch_album");
+    assert.equal(invokeArgs.args.url, url);
+    assert.equal(invokeArgs.args.max_articles, 3);
+    assert.equal(invokeArgs.args.export_markdown, true);
+    assert.equal(invokeArgs.args.export_markdown_path, undefined);
+  });
+
+  it("routes WeChat album list requests into the WeSpy list capability", () => {
+    const url = "https://mp.weixin.qq.com/mp/appmsgalbum?album_id=123";
+    const routed = routeLocalGearIntent(`list this album links ${url}`);
+    assert.ok(routed);
+    assert.deepEqual(routed.hostActions[1].arguments, {
+      gear_id: "wespy.reader",
+      capability_id: "wespy.list_album",
+      args: { url, max_articles: 10 },
+    });
+  });
+
+  it("routes WeChat article requests into the WeSpy article capability", () => {
+    const url = "https://mp.weixin.qq.com/s/Yf6yrOEILghuYGgioulNVA";
+    const routed = routeLocalGearIntent(`fetch the full article and summarize the main points ${url}`);
+    assert.ok(routed);
+    assert.deepEqual(routed.hostActions[1].arguments, {
+      gear_id: "wespy.reader",
+      capability_id: "wespy.fetch_article",
+      args: { url },
+    });
+  });
+
+  it("routes query-style WeChat article URLs into the WeSpy article capability", () => {
+    const url = "https://mp.weixin.qq.com/s?__biz=MzU4MTQ4ODgyNg==&mid=2247493744&idx=1";
+    const routed = routeLocalGearIntent(`read this WeChat article ${url}`);
+    assert.ok(routed);
+    assert.deepEqual(routed.hostActions[1].arguments, {
+      gear_id: "wespy.reader",
+      capability_id: "wespy.fetch_article",
+      args: { url },
+    });
+  });
+
+  it("routes WeChat save/capture prompts to WeSpy instead of Bookmark Vault", () => {
+    const url = "https://mp.weixin.qq.com/mp/appmsgalbum?album_id=123";
+    const routed = routeLocalGearIntent(`save this WeChat album to desktop markdown ${url}`);
+    assert.ok(routed);
+    assert.deepEqual(routed.hostActions[1].arguments, {
+      gear_id: "wespy.reader",
+      capability_id: "wespy.fetch_album",
+      args: { url, max_articles: 10, export_markdown: true },
+    });
+  });
+
+  it("parses bookmark save requests into Bookmark Vault candidate actions", () => {
+    const routed = routeLocalGearIntent("bookmark this video https://example.com/watch?v=demo");
+    assert.ok(routed);
+    assert.equal(routed.hostActions.length, 2);
+    assert.deepEqual(routed.hostActions[0].arguments, { gear_id: "bookmark.vault" });
+    assert.deepEqual(routed.hostActions[1].arguments, {
+      gear_id: "bookmark.vault",
+      capability_id: "bookmark.save",
+      args: { content: "video https://example.com/watch?v=demo" },
+    });
   });
 
   it("does not statically route composable info-capture requests for Twitter status URLs", () => {
@@ -1189,6 +1608,127 @@ describe("native runtime command modules", () => {
     for (const prompt of prompts) {
       assert.equal(routeLocalGearIntent(prompt), null);
     }
+  });
+
+  it("does not parse composable Twitter bookmark requests into partial local actions", () => {
+    const routed = routeLocalGearIntent(
+      "save this tweet as a bookmark https://x.com/ai_artworkgen/status/2048471354773549393?s=20",
+    );
+
+    assert.equal(routed, null);
+  });
+
+  it("marks composable Twitter bookmark media requests as Gear-bridge-first", () => {
+    assert.equal(
+      requiresGeeGearBridgeFirst(
+        "save this tweet to bookmarks and import its media into the media browser https://x.com/0xbisc/status/2049100073481716076?s=20",
+      ),
+      true,
+    );
+    assert.equal(requiresGeeGearBridgeFirst("check whether local port 8080 is listening"), false);
+  });
+
+  it("prepends a strict first Gear MCP call boundary for Gear-first turns", () => {
+    const prompt = __sdkTurnRunnerTestHooks.gearFirstTurnPrompt(
+      "Previous transcript said the bridge was missing.\n\n[GeeAgent Turn]\nsave this tweet as a bookmark https://x.com/demo/status/123",
+    );
+
+    assert.match(prompt, /Your first assistant action.*mcp__gee__gear_list_capabilities/s);
+    assert.match(prompt, /Do not write prose before that first Gee MCP tool call/);
+    assert.match(prompt, /Do not infer Gee bridge availability from previous transcript/);
+    assert.match(prompt, /\[Original Turn Prompt\]/);
+  });
+
+  it("rejects non-Gee tool events inside Gear-bridge-first turns", async () => {
+    const turn: SdkTurnResult = {
+      assistant_chunks: [],
+      tool_events: [],
+      auto_approved_tools: 0,
+    };
+    let closed = false;
+    const managed = {
+      events: [
+        {
+          type: "session.tool_use",
+          sessionId: "session_test",
+          toolUseId: "toolu_bash",
+          toolName: "Bash",
+          input: { command: "pwd && ls" },
+          raw: {},
+        },
+      ],
+      waiters: [],
+      session: {
+        close() {
+          closed = true;
+        },
+      },
+      toolBoundaryMode: "gear_first",
+    };
+
+    await __sdkTurnRunnerTestHooks.collectEventsUntilPauseOrResult(
+      undefined,
+      managed as never,
+      "session_test",
+      [],
+      turn,
+      undefined,
+      undefined,
+      5_000,
+      "gear_first",
+    );
+
+    assert.equal(closed, true);
+    assert.match(turn.failed_reason ?? "", /Gear-first runtime boundary rejected `Bash`/);
+    assert.equal(turn.tool_events.length, 0);
+  });
+
+  it("marks Gear-bridge-first text-only turns failed instead of complete", async () => {
+    const turn: SdkTurnResult = {
+      assistant_chunks: [],
+      tool_events: [],
+      auto_approved_tools: 0,
+    };
+    let closed = false;
+    const managed = {
+      events: [
+        {
+          type: "session.assistant_text",
+          sessionId: "session_test",
+          text: "I cannot see the Gee Gear bridge.",
+          raw: {},
+        },
+        {
+          type: "session.result",
+          sessionId: "session_test",
+          subtype: "success",
+          result: "I cannot see the Gee Gear bridge.",
+          raw: { is_error: false },
+        },
+      ],
+      waiters: [],
+      session: {
+        close() {
+          closed = true;
+        },
+      },
+      toolBoundaryMode: "gear_first",
+    };
+
+    await __sdkTurnRunnerTestHooks.collectEventsUntilPauseOrResult(
+      undefined,
+      managed as never,
+      "session_test",
+      [],
+      turn,
+      undefined,
+      undefined,
+      5_000,
+      "gear_first",
+    );
+
+    assert.equal(closed, false);
+    assert.match(turn.failed_reason ?? "", /ended without requesting any Gee MCP Gear bridge action/);
   });
 
   it("extracts generic Gee host-action directives for any enabled Gear", () => {
@@ -1209,36 +1749,124 @@ describe("native runtime command modules", () => {
       capability_id: "bookmark.save",
       args: { content: "hello" },
     });
-    assert.match(actions[0].host_action_id, /^host_action_directive_[a-f0-9]{8}$/);
+    assert.match(actions[0].host_action_id, /^host_action_directive_[a-f0-9]{8}_[a-f0-9]{8}$/);
   });
 
-  it("routes English media-library extension filters without hardcoded assistant text", async () => {
-    const configDir = await tempConfigDir();
-    const previousKey = process.env.XENODIA_API_KEY;
-    delete process.env.XENODIA_API_KEY;
-    try {
-      const raw = await handleNativeRuntimeCommand(
-        "submit-workspace-message",
-        ["show all PNG files in the media library"],
-        { configDir },
-      );
-      const snapshot = JSON.parse(raw);
-      assert.equal(snapshot.last_request_outcome.kind, "host_action_pending");
-      assert.deepEqual(snapshot.host_action_intents[1].arguments, {
-        gear_id: "media.library",
-        capability_id: "media.filter",
-        args: { kind: "all", extensions: ["png"] },
-      });
-      const latest = snapshot.active_conversation.messages.at(-1);
-      assert.equal(latest.role, "user");
-      assert.equal(latest.content, "show all PNG files in the media library");
-    } finally {
-      if (previousKey === undefined) {
-        delete process.env.XENODIA_API_KEY;
-      } else {
-        process.env.XENODIA_API_KEY = previousKey;
-      }
-    }
+  it("keeps Gee host-action directives out of visible assistant text", () => {
+    const partition = __sdkTurnRunnerTestHooks.partitionAssistantControlText(
+      [
+        "I will use the native Gear bridge.",
+        '<gee-host-actions>{"actions":[{"tool_id":"gee.gear.listCapabilities","arguments":{"detail":"summary"}}]}</gee-host-actions>',
+      ].join("\n"),
+    );
+
+    assert.equal(partition.sawHostActionDirective, true);
+    assert.equal(partition.visibleText.trim(), "I will use the native Gear bridge.");
+    assert.match(partition.controlText, /<gee-host-actions>/);
+    assert.doesNotMatch(partition.visibleText, /gee-host-actions/);
+  });
+
+  it("keeps split Gee host-action directives out of streamed assistant text", () => {
+    const filter = __sdkTurnRunnerTestHooks.createAssistantControlTextFilter();
+    const first = filter.push("Planning <gee-host");
+    const second = filter.push('-actions>{"actions":[]}</gee-host-actions> done');
+    const flushed = filter.flush();
+
+    assert.equal(first.visibleText, "Planning ");
+    assert.equal(second.visibleText, " done");
+    assert.equal(flushed.visibleText, "");
+    assert.match(second.controlText, /gee-host-actions/);
+  });
+
+  it("extracts multiple Gee host-action directive blocks from one assistant result", () => {
+    const actions = __sdkTurnRunnerTestHooks.extractHostActionDirective([
+      '<gee-host-actions>{"actions":[{"tool_id":"gee.gear.listCapabilities","arguments":{"detail":"summary"}}]}</gee-host-actions>',
+      '<gee-host-actions>{"actions":[{"tool_id":"gee.gear.listCapabilities","arguments":{"detail":"capabilities","gear_id":"bookmark.vault"}}]}</gee-host-actions>',
+    ]);
+
+    assert.equal(actions.length, 2);
+    assert.deepEqual(actions[0].arguments, { detail: "summary" });
+    assert.deepEqual(actions[1].arguments, {
+      detail: "capabilities",
+      gear_id: "bookmark.vault",
+    });
+  });
+
+  it("normalizes raw Gee host-action directives into the canonical gear args envelope", () => {
+    const actions = __sdkTurnRunnerTestHooks.extractHostActionDirective([
+      "<gee-host-actions>{\"actions\":[",
+      "{\"tool_id\":\"gee.gear.invoke\",\"arguments\":{\"gear_id\":\"wespy.reader\",\"capability_id\":\"wespy.fetch_article\",\"payload\":{\"url\":\"https://mp.weixin.qq.com/s/demo\",\"save_html\":true}}},",
+      "{\"tool_id\":\"gee.gear.invoke\",\"arguments\":{\"gear_id\":\"wespy.reader\",\"capability_id\":\"wespy.fetch_article\",\"url\":\"https://mp.weixin.qq.com/s/demo2\",\"save_json\":true}}",
+      "]}</gee-host-actions>",
+    ]);
+
+    assert.deepEqual(actions.map((action) => action.arguments), [
+      {
+        gear_id: "wespy.reader",
+        capability_id: "wespy.fetch_article",
+        args: {
+          url: "https://mp.weixin.qq.com/s/demo",
+          save_html: true,
+        },
+      },
+      {
+        gear_id: "wespy.reader",
+        capability_id: "wespy.fetch_article",
+        args: {
+          url: "https://mp.weixin.qq.com/s/demo2",
+          save_json: true,
+        },
+      },
+    ]);
+  });
+
+  it("validates Gear host-action directives before creating host actions", () => {
+    const extraction = __sdkTurnRunnerTestHooks.extractHostActionDirectiveResult([
+      "<gee-host-actions>{\"actions\":[",
+      "{\"tool_id\":\"gee.gear.invoke\",\"arguments\":{\"gear_id\":\"wespy.reader\",\"capability_id\":\"wespy.fetch_article\",\"args\":{\"save_html\":true}}}",
+      "]}</gee-host-actions>",
+    ]);
+
+    assert.equal(extraction.sawDirective, true);
+    assert.deepEqual(extraction.actions, []);
+    assert.equal(extraction.errors.length, 1);
+    assert.equal(extraction.errors[0]?.tool_id, "gee.gear.invoke");
+    assert.equal(extraction.errors[0]?.code, "gear.args.url");
+    assert.match(
+      extraction.errors[0]?.message ?? "",
+      /required string `url` is missing/,
+    );
+    assert.deepEqual(
+      __sdkTurnRunnerTestHooks.extractHostActionDirective([
+        "<gee-host-actions>{\"actions\":[",
+        "{\"tool_id\":\"gee.gear.invoke\",\"arguments\":{\"gear_id\":\"wespy.reader\",\"capability_id\":\"wespy.fetch_article\",\"args\":{}}}",
+        "]}</gee-host-actions>",
+      ]),
+      [],
+    );
+  });
+
+  it("rejects unsupported Gee host-action directive tools instead of silently no-oping", () => {
+    const extraction = __sdkTurnRunnerTestHooks.extractHostActionDirectiveResult([
+      "<gee-host-actions>{\"actions\":[",
+      "{\"tool_id\":\"shell.run\",\"arguments\":{\"command\":\"echo nope\"}}",
+      "]}</gee-host-actions>",
+    ]);
+
+    assert.equal(extraction.sawDirective, true);
+    assert.deepEqual(extraction.actions, []);
+    assert.equal(extraction.errors[0]?.code, "gee.host_actions.unsupported_tool");
+    assert.match(extraction.errors[0]?.message ?? "", /shell\.run/);
+  });
+
+  it("parses English media-library extension filters without hardcoded assistant text", () => {
+    const routed = routeLocalGearIntent("show all PNG files in the media library");
+    assert.ok(routed);
+    assert.deepEqual(routed.hostActions[1].arguments, {
+      gear_id: "media.library",
+      capability_id: "media.filter",
+      args: { kind: "all", extensions: ["png"] },
+    });
   });
 
   it("enforces active persona tool allow-lists in the TS native runtime", async () => {
@@ -1399,9 +2027,9 @@ describe("native runtime command modules", () => {
     assert.equal(messages.at(-2).role, "user");
     assert.equal(messages.at(-2).content, "hello from a missing provider");
     assert.equal(messages.at(-1).role, "assistant");
-    assert.match(messages.at(-1).content, /did not complete/i);
+    assert.match(messages.at(-1).content, /SDK runtime is not live/i);
     assert.equal(snapshot.last_run_state.status, "failed");
-    assert.equal(snapshot.last_run_state.stop_reason, "claude_sdk_failed");
+    assert.equal(snapshot.last_run_state.stop_reason, "sdk_runtime_not_live");
     assert.equal(snapshot.last_request_outcome.kind, "chat_reply");
   });
 
@@ -1450,8 +2078,9 @@ api_key = "saved-xenodia-key"
     assert.equal(snapshot.chat_runtime.active_provider, "xenodia");
   });
 
-  it("treats lsof listening-port no-match as a successful inspection result", () => {
-    const normalized = __sdkTurnRunnerTestHooks.normalizeSdkToolResult(
+  it("treats lsof listening-port no-match as a successful inspection result", async () => {
+    const normalized = await __sdkTurnRunnerTestHooks.normalizeSdkToolResult(
+      undefined,
       {
         type: "session.tool_result",
         sessionId: "session_test",
@@ -1474,8 +2103,9 @@ api_key = "saved-xenodia-key"
     assert.equal(normalized.error, undefined);
   });
 
-  it("keeps unrelated non-zero Bash results marked as failed", () => {
-    const normalized = __sdkTurnRunnerTestHooks.normalizeSdkToolResult(
+  it("keeps unrelated non-zero Bash results marked as failed", async () => {
+    const normalized = await __sdkTurnRunnerTestHooks.normalizeSdkToolResult(
+      undefined,
       {
         type: "session.tool_result",
         sessionId: "session_test",
@@ -1494,7 +2124,362 @@ api_key = "saved-xenodia-key"
     );
 
     assert.equal(normalized.status, "failed");
-    assert.equal(normalized.error, "Exit code 1");
+    assert.match(normalized.error ?? "", /Exit code 1/);
+  });
+
+  it("materializes large SDK tool results as transcript artifact references", async () => {
+    const configDir = await mkdtemp(join(tmpdir(), "geeagent-artifacts-"));
+    const largeOutput = Array.from({ length: 5000 }, (_, index) => `line ${index}`).join("\n");
+
+    const normalized = await __sdkTurnRunnerTestHooks.normalizeSdkToolResult(
+      configDir,
+      {
+        type: "session.tool_result",
+        sessionId: "session_test",
+        toolUseId: "toolu_large",
+        status: "succeeded",
+        summary: largeOutput,
+        raw: {},
+      },
+      {
+        tool_name: "Bash",
+        input: {
+          command: "printf lots",
+        },
+      },
+    );
+
+    assert.equal(normalized.status, "succeeded");
+    assert.equal(normalized.artifacts.length, 1);
+    const artifact = normalized.artifacts[0];
+    assert.equal(artifact.type, "tool_result_artifact");
+    assert.match(artifact.title, /Bash output/);
+    assert.match(artifact.inlinePreviewSummary ?? "", /5000 lines/);
+    assert.ok(artifact.payloadRef.startsWith(join(configDir, "Artifacts")));
+    const payload = await readFile(artifact.payloadRef, "utf8");
+    assert.equal(payload, largeOutput);
+    assert.ok((normalized.summary ?? "").length < largeOutput.length / 4);
+  });
+
+  it("materializes large host-action completions before model continuation", async () => {
+    const configDir = await mkdtemp(join(tmpdir(), "geeagent-host-action-artifacts-"));
+    const artifactRoot = join(configDir, "Artifacts");
+    const largeBody = "article paragraph ".repeat(4_000);
+    const resultJSON = JSON.stringify({
+      gear_id: "wespy.reader",
+      capability_id: "wespy.fetch_article",
+      article_count: 1,
+      articles: [
+        {
+          title: "Large article",
+          url: "https://mp.weixin.qq.com/s/demo",
+          body: largeBody,
+        },
+      ],
+    });
+
+    const prepared = await prepareHostActionCompletionsForModel(
+      [
+        {
+          host_action_id: "host_action_large_wespy",
+          tool_id: "gee.gear.invoke",
+          status: "succeeded",
+          summary: "wespy.reader fetched one article",
+          result_json: resultJSON,
+        },
+      ],
+      artifactRoot,
+    );
+
+    assert.equal(prepared.completions.length, 1);
+    assert.equal(prepared.artifacts.length, 1);
+    assert.equal(prepared.completions[0]?.result, undefined);
+    assert.match(prepared.completions[0]?.result_artifact?.path ?? "", /host_action_large_wespy/);
+    assert.ok(
+      prepared.completions[0]?.result_artifact?.token_estimate &&
+        prepared.completions[0].result_artifact.token_estimate > 1_500,
+    );
+    const payload = await readFile(prepared.completions[0]?.result_artifact?.path ?? "", "utf8");
+    assert.deepEqual(JSON.parse(payload), JSON.parse(resultJSON));
+
+    const continuationPrompt =
+      await __sdkTurnRunnerTestHooks.composeHostActionContinuationPrompt(
+        [
+          {
+            host_action_id: "host_action_large_wespy",
+            tool_id: "gee.gear.invoke",
+            status: "succeeded",
+            summary: "wespy.reader fetched one article",
+            result_json: resultJSON,
+          },
+        ],
+        artifactRoot,
+      );
+    assert.match(continuationPrompt, /Known Gee Gear required args/);
+    assert.match(continuationPrompt, /media\.library\/media\.import_files: args\.paths/);
+    assert.match(continuationPrompt, /Never call `gee\.gear\.invoke` with guessed or empty required arguments/);
+    assert.match(continuationPrompt, /result_artifact/);
+    assert.doesNotMatch(continuationPrompt, /article paragraph article paragraph/);
+  });
+
+  it("persists SDK tool artifact refs into transcript tool results", () => {
+    const store = defaultRuntimeStore("2026-04-27T00:00:00.000Z");
+    const sessionId = executionSessionIdForConversation(store.active_conversation_id);
+    appendToolEvents(store, sessionId, "msg_user_artifact", [
+      {
+        kind: "result",
+        invocation_id: "toolu_artifact",
+        status: "succeeded",
+        summary: "Large output stored as an artifact.",
+        artifacts: [
+          {
+            artifactId: "artifact_toolu_artifact",
+            type: "tool_result_artifact",
+            title: "Bash output",
+            payloadRef: "/tmp/geeagent-artifact.txt",
+            inlinePreviewSummary: "Large output preview.",
+          },
+        ],
+      },
+    ]);
+
+    const payload = (store.transcript_events.at(-1) as { payload: Record<string, unknown> } | undefined)
+      ?.payload;
+    assert.equal(payload?.kind, "tool_result");
+    assert.deepEqual(payload?.artifacts, [
+      {
+        artifactId: "artifact_toolu_artifact",
+        type: "tool_result_artifact",
+        title: "Bash output",
+        payloadRef: "/tmp/geeagent-artifact.txt",
+        inlinePreviewSummary: "Large output preview.",
+      },
+    ]);
+  });
+
+  it("persists assistant deltas with the same message id as the final assistant message", () => {
+    const store = defaultRuntimeStore("2026-04-27T00:00:00.000Z");
+    store.conversations[0].messages.push({
+      message_id: "msg_user_01",
+      role: "user",
+      content: "stream a response",
+      timestamp: "2026-04-27T00:00:00.000Z",
+    });
+    const sessionId = executionSessionIdForConversation(store.active_conversation_id);
+
+    const deltaMessageId = appendAssistantDeltaForActiveConversation(
+      store,
+      sessionId,
+      "partial response",
+    );
+    const finalMessageId = appendAssistantMessageForActiveConversation(
+      store,
+      sessionId,
+      "partial response complete",
+    );
+
+    assert.equal(deltaMessageId, finalMessageId);
+    assert.deepEqual(
+      store.transcript_events
+        .filter((event) => event.session_id === sessionId)
+        .map((event) => event.payload.kind),
+      ["assistant_message_delta", "assistant_message"],
+    );
+  });
+
+  it("keeps assistant stream ids stable for the whole turn cursor", () => {
+    const store = defaultRuntimeStore("2026-04-27T00:00:00.000Z");
+    const cursor = beginTurnReplay(store, "chat", "stream this turn");
+
+    const firstDeltaId = appendAssistantDeltaForActiveConversation(
+      store,
+      cursor.sessionId,
+      "first ",
+      cursor.assistantMessageId,
+    );
+    store.conversations[0].messages.push({
+      message_id: "msg_system_interleaved",
+      role: "assistant",
+      content: "interleaved non-stream message",
+      timestamp: "2026-04-27T00:00:00.000Z",
+    });
+    const secondDeltaId = appendAssistantDeltaForActiveConversation(
+      store,
+      cursor.sessionId,
+      "second",
+      cursor.assistantMessageId,
+    );
+    const finalMessageId = appendAssistantMessageForActiveConversation(
+      store,
+      cursor.sessionId,
+      "first second",
+      cursor.assistantMessageId,
+    );
+
+    assert.equal(firstDeltaId, cursor.assistantMessageId);
+    assert.equal(secondDeltaId, cursor.assistantMessageId);
+    assert.equal(finalMessageId, cursor.assistantMessageId);
+  });
+
+  it("builds stage capsules from the active conversation instead of reused message ids", () => {
+    const now = "2026-04-27T00:00:00.000Z";
+    const store = defaultRuntimeStore(now);
+    store.conversations = [
+      {
+        conversation_id: "conv_old",
+        title: "Old",
+        status: "idle",
+        messages: [
+          {
+            message_id: "msg_user_01",
+            role: "user",
+            content: "old conversation request",
+            timestamp: now,
+          },
+        ],
+      },
+      {
+        conversation_id: "conv_new",
+        title: "New",
+        status: "active",
+        messages: [
+          {
+            message_id: "msg_user_01",
+            role: "user",
+            content: "new active request",
+            timestamp: now,
+          },
+        ],
+      },
+    ];
+    store.active_conversation_id = "conv_new";
+    store.execution_sessions.push({
+      session_id: "session_conv_new",
+      conversation_id: "conv_new",
+      surface: "cli_workspace_chat",
+      mode: "interactive",
+      project_path: "/tmp",
+      parent_session_id: null,
+      persistence_policy: "persisted",
+      created_at: now,
+      updated_at: now,
+    });
+
+    const capsule = __turnTestHooks.stageSummaryCapsuleForTurn(
+      store,
+      {
+        sessionId: "session_conv_new",
+        userMessageId: "msg_user_01",
+        stepCount: 1,
+      },
+      {
+        assistant_chunks: ["done"],
+        final_result: "done",
+        tool_events: [],
+        auto_approved_tools: 0,
+      },
+      "done",
+    );
+
+    assert.match(capsule, /new active request/);
+    assert.doesNotMatch(capsule, /old conversation request/);
+  });
+
+  it("keeps successful stage capsules successful when an exploratory tool failed", () => {
+    const now = "2026-04-27T00:00:00.000Z";
+    const store = defaultRuntimeStore(now);
+    store.conversations[0].messages = [
+      {
+        message_id: "msg_user_01",
+        role: "user",
+        content: "check whether a port is listening",
+        timestamp: now,
+      },
+    ];
+
+    const capsule = __turnTestHooks.stageSummaryCapsuleForTurn(
+      store,
+      {
+        sessionId: `session_${store.active_conversation_id}`,
+        userMessageId: "msg_user_01",
+        stepCount: 1,
+      },
+      {
+        assistant_chunks: ["No process is listening."],
+        final_result: "No process is listening.",
+        auto_approved_tools: 0,
+        tool_events: [
+          {
+            kind: "invocation",
+            invocation_id: "toolu_probe",
+            tool_name: "Bash",
+            input_summary: "lsof -nP -iTCP:8088 -sTCP:LISTEN",
+          },
+          {
+            kind: "result",
+            invocation_id: "toolu_probe",
+            status: "failed",
+            summary: "Exit code 1",
+            error: "Exit code 1",
+          },
+        ],
+      },
+      "No process is listening.",
+    );
+
+    assert.match(capsule, /Status: succeeded/);
+    assert.match(capsule, /Bash \[failed\]/);
+  });
+
+  it("keeps completed local follow-up results visible when Gear final reply times out", () => {
+    const reply = __turnTestHooks.gearCompletionFailureReply(
+      "save the WeChat article content to a desktop markdown file",
+      [
+        {
+          host_action_id: "host_action_wespy",
+          tool_id: "gee.gear.invoke",
+          status: "succeeded",
+          summary:
+            "wespy.reader wespy.fetch_article completed; files: 1; output: /tmp/wespy/output",
+        },
+      ],
+      "The SDK runtime produced no new event for 10 seconds.",
+      {
+        assistant_chunks: [],
+        auto_approved_tools: 0,
+        failed_reason: "The SDK runtime produced no new event for 10 seconds.",
+        tool_events: [
+          {
+            kind: "invocation",
+            invocation_id: "call_read",
+            tool_name: "Read",
+            input_summary: "{\"file_path\":\"/tmp/wespy/output/article.md\"}",
+          },
+          {
+            kind: "result",
+            invocation_id: "call_read",
+            status: "succeeded",
+            summary: "article markdown preview",
+          },
+          {
+            kind: "invocation",
+            invocation_id: "call_cp",
+            tool_name: "Bash",
+            input_summary: "{\"command\":\"cp article.md ~/Desktop/article.md\"}",
+          },
+          {
+            kind: "result",
+            invocation_id: "call_cp",
+            status: "succeeded",
+            summary: "-rw-r--r-- /Users/davidzhang/Desktop/article.md",
+          },
+        ],
+      },
+    );
+
+    assert.match(reply, /user objective is not confirmed complete/);
+    assert.match(reply, /wespy\.reader wespy\.fetch_article completed/);
+    assert.match(reply, /Bash: -rw-r--r-- \/Users\/davidzhang\/Desktop\/article\.md/);
   });
 
   it("keeps SDK event waits below the native client timeout", () => {
@@ -1502,6 +2487,7 @@ api_key = "saved-xenodia-key"
     process.env.GEEAGENT_SDK_EVENT_IDLE_TIMEOUT_MS = "6000";
     try {
       assert.equal(__sdkTurnRunnerTestHooks.sdkEventIdleTimeoutMs(), 6_000);
+      assert.equal(__sdkTurnRunnerTestHooks.sdkEventIdleTimeoutMs(10_000), 10_000);
       assert.match(
         __sdkTurnRunnerTestHooks.sdkEventIdleTimeoutReason(6_000),
         /stopped this run instead of leaving the conversation loading forever/,
@@ -1539,6 +2525,91 @@ api_key = "saved-xenodia-key"
       summary: "The tool did not return before the SDK run ended.",
       error: "The SDK runtime produced no new event for 75 seconds.",
     });
+  });
+
+  it("closes pending Gee host bridge MCP tool invocations from host completions", () => {
+    const store = defaultRuntimeStore("2026-04-27T00:00:00.000Z");
+    const sessionId = executionSessionIdForConversation(store.active_conversation_id);
+    appendToolEvents(store, sessionId, "msg_user_host_action", [
+      {
+        kind: "invocation",
+        invocation_id: "toolu_list_capabilities",
+        tool_name: "gear_list_capabilities",
+        input_summary: "{\"detail\":\"summary\"}",
+      },
+    ]);
+
+    appendToolResultForHostBridgeCompletion(
+      store,
+      sessionId,
+      "gee.gear.listCapabilities",
+      "failed",
+      undefined,
+      "No enabled Gear capabilities are available for `wespy.reader`.",
+    );
+
+    const result = store.transcript_events.find(
+      (event) =>
+        event.session_id === sessionId &&
+        event.payload.kind === "tool_result" &&
+        event.payload.invocation_id === "toolu_list_capabilities",
+    );
+    assert.ok(result);
+    assert.equal(result.payload.status, "failed");
+    assert.equal(
+      result.payload.error,
+      "No enabled Gear capabilities are available for `wespy.reader`.",
+    );
+  });
+
+  it("matches repeated Gee host bridge completions to invocations in request order", () => {
+    const store = defaultRuntimeStore("2026-04-27T00:00:00.000Z");
+    const sessionId = executionSessionIdForConversation(store.active_conversation_id);
+    appendToolEvents(store, sessionId, "msg_user_host_action", [
+      {
+        kind: "invocation",
+        invocation_id: "toolu_first_invoke",
+        tool_name: "gear_invoke",
+        input_summary: "{\"gear_id\":\"wespy.reader\"}",
+      },
+      {
+        kind: "invocation",
+        invocation_id: "toolu_second_invoke",
+        tool_name: "gear_invoke",
+        input_summary: "{\"gear_id\":\"bookmark.vault\"}",
+      },
+    ]);
+
+    appendToolResultForHostBridgeCompletion(
+      store,
+      sessionId,
+      "gee.gear.invoke",
+      "succeeded",
+      "first result",
+    );
+    appendToolResultForHostBridgeCompletion(
+      store,
+      sessionId,
+      "gee.gear.invoke",
+      "succeeded",
+      "second result",
+    );
+
+    const results = store.transcript_events.filter(
+      (event) =>
+        event.session_id === sessionId &&
+        event.payload.kind === "tool_result" &&
+        ["toolu_first_invoke", "toolu_second_invoke"].includes(
+          String(event.payload.invocation_id),
+        ),
+    );
+    assert.deepEqual(
+      results.map((event) => [event.payload.invocation_id, event.payload.summary]),
+      [
+        ["toolu_first_invoke", "first result"],
+        ["toolu_second_invoke", "second result"],
+      ],
+    );
   });
 
   it("recycles the long-lived SDK gateway after failed non-approval turns", () => {

@@ -2,6 +2,8 @@ import {
   loadXenodiaGatewayBackend,
   type XenodiaGatewayBackend,
 } from "../chat-runtime.js";
+import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import {
   startAnthropicGateway,
   type AnthropicGatewayHandle,
@@ -13,8 +15,10 @@ import type {
   RuntimeHostActionIntent,
 } from "../protocol.js";
 import {
+  DEFAULT_SDK_AVAILABLE_TOOLS,
   DEFAULT_SDK_AUTO_APPROVE_TOOLS,
   DEFAULT_SDK_DISALLOWED_TOOLS,
+  isGeeHostSdkTool,
 } from "../sdk-tool-policy.js";
 import { ClaudeRuntimeSession } from "../session.js";
 import {
@@ -25,7 +29,17 @@ import {
 import type { AgentProfile } from "./store/types.js";
 import { loadSecurityPreferences } from "./store/persistence.js";
 import { skillPromptMetadataForProfile } from "./store/skill-sources.js";
-import { runtimeProjectPath } from "./paths.js";
+import { resolveConfigDir, runtimeProjectPath } from "./paths.js";
+import {
+  materializeToolResult,
+  type ToolArtifactRef,
+} from "./context/tool-artifacts.js";
+import { prepareHostActionCompletionsForModel } from "./context/host-action-results.js";
+import {
+  gearCapabilityContracts,
+  validateGearCapabilityArgs,
+  type GearCapabilityValidationResult,
+} from "./capabilities/gear-validation.js";
 
 export type TurnRoute = {
   mode: "quick_prompt" | "workspace_message";
@@ -46,7 +60,16 @@ export type SdkToolEvent =
       status: "succeeded" | "failed";
       summary?: string;
       error?: string;
+      artifacts?: SdkToolArtifactRef[];
     };
+
+export type SdkToolArtifactRef = {
+  artifactId: string;
+  type: string;
+  title: string;
+  payloadRef: string;
+  inlinePreviewSummary?: string;
+};
 
 export type PendingTerminalApproval = {
   runtime_session_id: string;
@@ -59,6 +82,7 @@ export type PendingTerminalApproval = {
 
 export type SdkTurnResult = {
   assistant_chunks: string[];
+  host_action_control_chunks?: string[];
   final_result?: string;
   tool_events: SdkToolEvent[];
   auto_approved_tools: number;
@@ -73,6 +97,7 @@ type ManagedSession = {
   session: ClaudeRuntimeSession;
   events: RuntimeEvent[];
   waiters: Array<(event: RuntimeEvent) => void>;
+  toolBoundaryMode: "default" | "gear_first";
   pendingHostActionMode?: "mcp" | "directive";
 };
 
@@ -81,6 +106,9 @@ type RuntimeTurnOptions = {
   autoApproveTools?: string[];
   disallowedTools?: string[];
   enableGeeHostTools?: boolean;
+  eventIdleTimeoutMs?: number;
+  toolBoundaryMode?: "default" | "gear_first";
+  onAssistantText?: (delta: string) => void | Promise<void>;
   onToolEvent?: (event: SdkToolEvent) => void | Promise<void>;
 };
 
@@ -102,7 +130,11 @@ export async function runSdkRuntimeTurn(
 ): Promise<SdkTurnResult> {
   const managed = await ensureSession(configDir, runtimeSessionId, route, activeProfile, options);
   const turn = emptyTurnResult();
-  managed.session.send(prompt);
+  managed.session.send(
+    options.toolBoundaryMode === "gear_first"
+      ? gearFirstTurnPrompt(prompt)
+      : prompt,
+  );
   try {
     await collectEventsUntilPauseOrResult(
       configDir,
@@ -111,6 +143,9 @@ export async function runSdkRuntimeTurn(
       transientAllowedTerminalScopes,
       turn,
       options.onToolEvent,
+      options.onAssistantText,
+      options.eventIdleTimeoutMs,
+      options.toolBoundaryMode ?? "default",
     );
     closeUnfinishedToolEventsOnFailure(turn);
     rememberPendingHostActionMode(managed, turn);
@@ -148,6 +183,9 @@ export async function resumeSdkRuntimeApproval(
       [],
       turn,
       undefined,
+      undefined,
+      undefined,
+      managed.toolBoundaryMode,
     );
     closeUnfinishedToolEventsOnFailure(turn);
     rememberPendingHostActionMode(managed, turn);
@@ -162,6 +200,8 @@ export async function resumeSdkRuntimeHostActions(
   configDir: string,
   runtimeSessionId: string,
   completions: RuntimeHostActionCompletion[],
+  eventIdleTimeoutMs?: number,
+  onAssistantText?: (delta: string) => void | Promise<void>,
 ): Promise<SdkTurnResult | null> {
   const managed = sessions.get(runtimeSessionId);
   if (!managed) {
@@ -173,7 +213,12 @@ export async function resumeSdkRuntimeHostActions(
       managed.session.resolveHostAction(completion.host_action_id, completion);
     }
   } else {
-    managed.session.send(composeHostActionContinuationPrompt(completions));
+    managed.session.send(
+      await composeHostActionContinuationPrompt(
+        completions,
+        toolArtifactRoot(configDir),
+      ),
+    );
   }
   try {
     await collectEventsUntilPauseOrResult(
@@ -183,6 +228,9 @@ export async function resumeSdkRuntimeHostActions(
       [],
       turn,
       undefined,
+      onAssistantText,
+      eventIdleTimeoutMs,
+      "default",
     );
     closeUnfinishedToolEventsOnFailure(turn);
     rememberPendingHostActionMode(managed, turn);
@@ -214,6 +262,21 @@ function emptyTurnResult(): SdkTurnResult {
   };
 }
 
+function gearFirstTurnPrompt(prompt: string): string {
+  return [
+    "[GeeAgent Gear-First Execution Boundary]",
+    "This turn has been classified as a Gee Gear or built-in app task.",
+    "Your first assistant action in this turn must be a direct tool call to `mcp__gee__gear_list_capabilities` with arguments `{ \"detail\": \"summary\" }`.",
+    "Do not write prose before that first Gee MCP tool call.",
+    "Do not infer Gee bridge availability from previous transcript messages, previous failures, or local files. The current SDK session must test the current bridge by calling the Gee MCP tool.",
+    "After the summary returns, continue with the smallest necessary Gee MCP Gear calls to complete the user's full objective.",
+    "If the Gee MCP tool is unavailable or fails, report that structured runtime failure. Do not use shell, file, source-inspection, web, skill, directive, or other fallback paths before the Gee MCP call.",
+    "",
+    "[Original Turn Prompt]",
+    prompt,
+  ].join("\n");
+}
+
 async function ensureSession(
   configDir: string,
   sessionId: string,
@@ -223,13 +286,21 @@ async function ensureSession(
 ): Promise<ManagedSession> {
   const existing = sessions.get(sessionId);
   if (existing) {
-    return existing;
+    const nextToolBoundaryMode = options.toolBoundaryMode ?? "default";
+    if (existing.toolBoundaryMode === nextToolBoundaryMode) {
+      return existing;
+    }
+    closeManagedSession(sessionId, existing);
   }
 
   const backend = await loadXenodiaGatewayBackend(configDir);
   const activeGateway = await ensureGateway(backend);
   const runtimeFacts = captureRuntimeFacts(route.surface);
   const security = await loadSecurityPreferences(configDir);
+  const autoApproveTools =
+    options.toolBoundaryMode === "gear_first"
+      ? (options.autoApproveTools ?? DEFAULT_SDK_AUTO_APPROVE_TOOLS).filter(isGeeHostSdkTool)
+      : (options.autoApproveTools ?? DEFAULT_SDK_AUTO_APPROVE_TOOLS);
   const hostCapabilities = [
     "bash",
     "read",
@@ -261,17 +332,24 @@ async function ensureSession(
           : "gee_terminal_permissions",
         capabilities: hostCapabilities,
       } satisfies RuntimeContext,
-      ...(options.availableTools ? { availableTools: options.availableTools } : {}),
-      autoApproveTools: options.autoApproveTools ?? DEFAULT_SDK_AUTO_APPROVE_TOOLS,
+      availableTools: options.availableTools ?? DEFAULT_SDK_AVAILABLE_TOOLS,
+      autoApproveTools,
       disallowedTools: options.disallowedTools ?? DEFAULT_SDK_DISALLOWED_TOOLS,
       enableGeeHostTools: options.enableGeeHostTools ?? true,
+      toolBoundaryMode: options.toolBoundaryMode ?? "default",
+      artifactRoot: toolArtifactRoot(configDir),
       gatewayBaseUrl: activeGateway.baseUrl,
       gatewayApiKey: activeGateway.apiKey,
     },
     (event) => emitToManagedSession(managed, event),
   );
 
-  managed = { session, events: [], waiters: [] };
+  managed = {
+    session,
+    events: [],
+    waiters: [],
+    toolBoundaryMode: options.toolBoundaryMode ?? "default",
+  };
   sessions.set(sessionId, managed);
   managed.events.push({
     type: "session.created",
@@ -290,6 +368,8 @@ async function ensureGateway(
     url: backend.chat_completions_url,
     model: backend.model,
     timeout: backend.request_timeout_seconds,
+    maxCompletionTokens: backend.max_completion_tokens,
+    temperature: backend.temperature,
   });
   if (gateway && gatewayKey === nextKey) {
     return gateway;
@@ -302,6 +382,8 @@ async function ensureGateway(
     backendUrl: backend.chat_completions_url,
     modelOverride: backend.model,
     requestTimeoutSeconds: backend.request_timeout_seconds,
+    maxCompletionTokens: backend.max_completion_tokens,
+    temperature: backend.temperature,
   });
   gatewayKey = nextKey;
   return gateway;
@@ -398,19 +480,50 @@ function rememberPendingHostActionMode(
   }
 }
 
-function composeHostActionContinuationPrompt(
+async function composeHostActionContinuationPrompt(
   completions: RuntimeHostActionCompletion[],
-): string {
+  artifactRoot: string,
+): Promise<string> {
+  const prepared = await prepareHostActionCompletionsForModel(
+    completions,
+    artifactRoot,
+  );
   return [
     "[GeeAgent Host Action Results]",
     "Native Gee host actions completed. Inspect these structured results, then continue the same user task.",
-    "If another Gear step is needed, emit a new `<gee-host-actions>` directive. Otherwise, write the final user-facing reply in the user's language.",
+    "Large native results may be represented as `result_artifact`; read the compact fields first and only use the artifact path if the full payload is needed.",
+    "A successful atomic Gear result is not necessarily the completed user objective. If another Gear step is needed, use the Gee MCP Gear bridge tools in this same SDK run. If those tools are unavailable, report the missing bridge as a runtime failure instead of emitting text control directives or claiming completion.",
+    "Never call `gee.gear.invoke` with guessed or empty required arguments. Use the local paths, URLs, IDs, or other concrete values returned by the prior structured result; when a required argument is still unknown, inspect the capability schema or report the missing argument as a real blockage.",
+    renderGearCapabilityContractHints(),
+    "For X/Twitter bookmark requests that include media preservation, continue from tweet capture to `smartyt.media/smartyt.download_now`, then `media.library/media.import_files`, then `bookmark.vault/bookmark.save` with `local_media_paths`; remote media URLs are media candidates, not saved local files.",
     "",
-    JSON.stringify({ completions }, null, 2),
+    JSON.stringify(prepared, null, 2),
   ].join("\n");
 }
 
-function sdkEventIdleTimeoutMs(): number {
+function renderGearCapabilityContractHints(): string {
+  const lines = gearCapabilityContracts().map((contract) => {
+    const required = contract.required_args
+      .map((requirement) => {
+        const details: string[] = [requirement.kind];
+        if (requirement.aliases.length > 1) {
+          details.push(`aliases: ${requirement.aliases.join(", ")}`);
+        }
+        return `args.${requirement.field} (${details.join("; ")})`;
+      })
+      .join(", ");
+    return `  - ${contract.gear_id}/${contract.capability_id}: ${required}`;
+  });
+  return [
+    "Known Gee Gear required args:",
+    ...lines,
+  ].join("\n");
+}
+
+function sdkEventIdleTimeoutMs(overrideMs?: number): number {
+  if (overrideMs !== undefined && Number.isFinite(overrideMs) && overrideMs >= 5_000) {
+    return overrideMs;
+  }
   const raw = Number.parseInt(process.env.GEEAGENT_SDK_EVENT_IDLE_TIMEOUT_MS ?? "", 10);
   if (Number.isFinite(raw) && raw >= 5_000) {
     return raw;
@@ -432,9 +545,13 @@ async function collectEventsUntilPauseOrResult(
   transientAllowedTerminalScopes: TerminalAccessScope[],
   turn: SdkTurnResult,
   onToolEvent?: (event: SdkToolEvent) => void | Promise<void>,
+  onAssistantText?: (delta: string) => void | Promise<void>,
+  eventIdleTimeoutMs?: number,
+  toolBoundaryMode: "default" | "gear_first" = "default",
 ): Promise<void> {
   const toolInputsById = new Map<string, SeenSdkToolInvocation>();
-  const idleTimeoutMs = sdkEventIdleTimeoutMs();
+  const assistantControlFilter = createAssistantControlTextFilter();
+  const idleTimeoutMs = sdkEventIdleTimeoutMs(eventIdleTimeoutMs);
   while (true) {
     const event = await nextEventWithTimeout(managed, idleTimeoutMs);
     if (!event) {
@@ -446,6 +563,19 @@ async function collectEventsUntilPauseOrResult(
       case "session.approval_requested": {
         const toolName = event.toolName;
         const input = normalizeRecord(event.input);
+        const boundaryViolation = gearFirstBoundaryViolationReason(
+          toolBoundaryMode,
+          toolName,
+        );
+        if (boundaryViolation) {
+          turn.failed_reason = boundaryViolation;
+          managed.session.resolveApproval(event.requestId, {
+            decision: "deny",
+            message: boundaryViolation,
+          });
+          closeManagedSession(sessionId, managed);
+          return;
+        }
         if (configDir && (await loadSecurityPreferences(configDir)).highest_authorization_enabled) {
           turn.auto_approved_tools += 1;
           managed.session.resolveApproval(event.requestId, { decision: "allow" });
@@ -513,6 +643,17 @@ async function collectEventsUntilPauseOrResult(
         turn.pending_host_action_mode = "mcp";
         return;
       case "session.tool_use":
+        {
+          const boundaryViolation = gearFirstBoundaryViolationReason(
+            toolBoundaryMode,
+            event.toolName,
+          );
+          if (boundaryViolation) {
+            turn.failed_reason = boundaryViolation;
+            closeManagedSession(sessionId, managed);
+            return;
+          }
+        }
         toolInputsById.set(event.toolUseId, {
           tool_name: event.toolName,
           input: normalizeRecord(event.input),
@@ -527,7 +668,8 @@ async function collectEventsUntilPauseOrResult(
         await onToolEvent?.(toolEvent);
         continue;
       case "session.tool_result": {
-        const normalized = normalizeSdkToolResult(
+        const normalized = await normalizeSdkToolResult(
+          configDir,
           event,
           toolInputsById.get(event.toolUseId),
         );
@@ -537,19 +679,41 @@ async function collectEventsUntilPauseOrResult(
           status: normalized.status,
           ...(normalized.summary ? { summary: summarizePrompt(normalized.summary, 220) } : {}),
           ...(normalized.error ? { error: summarizePrompt(normalized.error, 220) } : {}),
+          ...(normalized.artifacts.length > 0 ? { artifacts: normalized.artifacts } : {}),
         };
         turn.tool_events.push(toolEvent);
         await onToolEvent?.(toolEvent);
         continue;
       }
       case "session.assistant_text": {
-        const trimmed = event.text.trim();
+        const partition = assistantControlFilter.push(event.text);
+        if (partition.controlText.trim()) {
+          turn.host_action_control_chunks = [
+            ...(turn.host_action_control_chunks ?? []),
+            partition.controlText.trim(),
+          ];
+        }
+        const trimmed = partition.visibleText.trim();
         if (trimmed) {
           turn.assistant_chunks.push(trimmed);
+          await onAssistantText?.(partition.visibleText);
         }
         continue;
       }
       case "session.result":
+        {
+          const flushed = assistantControlFilter.flush();
+          if (flushed.controlText.trim()) {
+            turn.host_action_control_chunks = [
+              ...(turn.host_action_control_chunks ?? []),
+              flushed.controlText.trim(),
+            ];
+          }
+          if (flushed.visibleText.trim()) {
+            turn.assistant_chunks.push(flushed.visibleText.trim());
+            await onAssistantText?.(flushed.visibleText);
+          }
+        }
         if (event.result?.trim()) {
           turn.final_result = event.result.trim();
         }
@@ -557,11 +721,33 @@ async function collectEventsUntilPauseOrResult(
           turn.failed_reason = turn.final_result ?? "The SDK returned an error result.";
         }
         if (!turn.failed_reason) {
-          const hostActions = extractHostActionDirective(turn.assistant_chunks);
-          if (hostActions.length > 0) {
-            turn.pending_host_actions = hostActions;
+          const hostActionDirective = extractHostActionDirectiveResult(
+            hostActionDirectiveChunksForTurn(turn),
+          );
+          if (hostActionDirective.errors.length > 0) {
+            turn.failed_reason = hostActionDirectiveFailureReason(
+              hostActionDirective.errors,
+            );
+            turn.pending_host_actions = undefined;
+          } else if (
+            toolBoundaryMode === "gear_first" &&
+            hostActionDirective.actions.length > 0
+          ) {
+            turn.failed_reason =
+              "Gear-first turns must use the Gee MCP Gear bridge. Text host-action directives are disabled because they are a legacy fallback route.";
+            turn.pending_host_actions = undefined;
+          } else if (hostActionDirective.actions.length > 0) {
+            turn.pending_host_actions = hostActionDirective.actions;
             turn.pending_host_action_mode = "directive";
           }
+        }
+        if (
+          !turn.failed_reason &&
+          toolBoundaryMode === "gear_first" &&
+          !turnUsedGeeHostBridge(turn)
+        ) {
+          turn.failed_reason =
+            "Gear-first turn ended without requesting any Gee MCP Gear bridge action. GeeAgent marked the run failed instead of treating a text-only response as completion.";
         }
         return;
       case "session.error":
@@ -580,20 +766,60 @@ type SeenSdkToolInvocation = {
 
 type SdkToolResultEvent = Extract<RuntimeEvent, { type: "session.tool_result" }>;
 
-function normalizeSdkToolResult(
+async function normalizeSdkToolResult(
+  configDir: string | undefined,
   event: SdkToolResultEvent,
   invocation: SeenSdkToolInvocation | undefined,
-): { status: "succeeded" | "failed"; summary?: string; error?: string } {
+): Promise<{
+  status: "succeeded" | "failed";
+  summary?: string;
+  error?: string;
+  artifacts: SdkToolArtifactRef[];
+}> {
   if (isExpectedNoMatchLsofResult(event, invocation)) {
     return {
       status: "succeeded",
       summary: "No matching listening process was found.",
+      artifacts: [],
     };
   }
-  return {
+  const materialized = await materializeToolResult({
+    artifactRoot: toolArtifactRoot(configDir),
+    invocationId: event.toolUseId,
+    toolName: invocation?.tool_name,
     status: event.status,
-    ...(event.summary ? { summary: event.summary } : {}),
-    ...(event.error ? { error: event.error } : {}),
+    result: event.summary,
+    error: event.error,
+    summary: event.status === "failed" ? event.error : event.summary,
+  });
+  const displaySummary = materialized.materialized
+    ? materialized.summary
+    : event.summary;
+  const displayError = event.error
+    ? materialized.materialized
+      ? materialized.summary
+      : event.error
+    : undefined;
+  return {
+    status: materialized.status,
+    ...(displaySummary ? { summary: displaySummary } : {}),
+    ...(displayError ? { error: displayError } : {}),
+    artifacts: materialized.artifact ? [sdkArtifactRefFromToolArtifact(materialized.artifact)] : [],
+  };
+}
+
+function toolArtifactRoot(configDir: string | undefined): string {
+  return join(resolveConfigDir(configDir), "Artifacts");
+}
+
+function sdkArtifactRefFromToolArtifact(artifact: ToolArtifactRef): SdkToolArtifactRef {
+  const titleTool = artifact.tool_name?.trim() || "Tool";
+  return {
+    artifactId: artifact.artifact_id,
+    type: artifact.kind,
+    title: `${titleTool} ${artifact.status === "failed" ? "error output" : "output"}`,
+    payloadRef: artifact.path,
+    inlinePreviewSummary: artifact.summary,
   };
 }
 
@@ -667,6 +893,28 @@ function unsupportedToolDenialMessage(toolName: string): string {
   );
 }
 
+function gearFirstBoundaryViolationReason(
+  toolBoundaryMode: "default" | "gear_first",
+  toolName: string,
+): string | null {
+  if (toolBoundaryMode !== "gear_first" || isGeeHostSdkTool(toolName)) {
+    return null;
+  }
+  return (
+    `Gear-first runtime boundary rejected \`${toolName}\` before any Gee MCP Gear bridge action. ` +
+    "This request must expose the missing or unavailable Gear bridge instead of probing with shell, file, source-inspection, skill, web, or other fallback tools."
+  );
+}
+
+function turnUsedGeeHostBridge(turn: SdkTurnResult): boolean {
+  if (turn.pending_host_actions && turn.pending_host_actions.length > 0) {
+    return true;
+  }
+  return turn.tool_events.some(
+    (event) => event.kind === "invocation" && isGeeHostSdkTool(event.tool_name),
+  );
+}
+
 function closeUnfinishedToolEventsOnFailure(turn: SdkTurnResult): void {
   const reason = turn.failed_reason?.trim();
   if (!reason) {
@@ -721,35 +969,202 @@ function normalizeRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
+type HostActionDirectiveValidationError = {
+  action_index?: number;
+  tool_id?: string;
+  code: string;
+  message: string;
+};
+
+type HostActionDirectiveExtraction = {
+  sawDirective: boolean;
+  actions: RuntimeHostActionIntent[];
+  errors: HostActionDirectiveValidationError[];
+};
+
 function extractHostActionDirective(chunks: string[]): RuntimeHostActionIntent[] {
+  return extractHostActionDirectiveResult(chunks).actions;
+}
+
+function extractHostActionDirectiveResult(chunks: string[]): HostActionDirectiveExtraction {
   const raw = chunks.join("\n");
-  const match =
-    raw.match(/<gee-host-actions>\s*([\s\S]*?)\s*<\/gee-host-actions>/i) ??
-    raw.match(/```gee-host-actions\s*([\s\S]*?)```/i);
-  const jsonText = match?.[1]?.trim();
-  if (!jsonText) {
-    return [];
+  const jsonTexts = hostActionDirectiveJsonTexts(raw);
+  if (jsonTexts.length === 0) {
+    return { sawDirective: false, actions: [], errors: [] };
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(jsonText);
-  } catch {
-    return [];
+  const actions: RuntimeHostActionIntent[] = [];
+  const errors: HostActionDirectiveValidationError[] = [];
+
+  for (const jsonText of jsonTexts) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch {
+      errors.push({
+        code: "gee.host_actions.invalid_json",
+        message: "Gee host-action directive JSON could not be parsed.",
+      });
+      continue;
+    }
+
+    const actionsValue = isRecord(parsed) && Array.isArray(parsed.actions)
+      ? parsed.actions
+      : Array.isArray(parsed)
+        ? parsed
+        : isRecord(parsed)
+          ? [parsed]
+          : [];
+
+    if (actionsValue.length === 0) {
+      errors.push({
+        code: "gee.host_actions.empty",
+        message: "Gee host-action directive did not include any supported actions.",
+      });
+      continue;
+    }
+
+    for (const value of actionsValue) {
+      if (actions.length >= 8) {
+        break;
+      }
+      const result = hostActionFromDirective(value, actions.length);
+      if (result.action) {
+        actions.push(result.action);
+      }
+      if (result.error) {
+        errors.push(result.error);
+      }
+    }
   }
 
-  const actionsValue = isRecord(parsed) && Array.isArray(parsed.actions)
-    ? parsed.actions
-    : Array.isArray(parsed)
-      ? parsed
-      : isRecord(parsed)
-        ? [parsed]
-        : [];
+  return { sawDirective: true, actions, errors };
+}
 
-  return actionsValue
-    .slice(0, 8)
-    .map((value, index) => hostActionFromDirective(value, index))
-    .filter((value): value is RuntimeHostActionIntent => value !== null);
+function hostActionDirectiveChunksForTurn(turn: SdkTurnResult): string[] {
+  return [
+    ...(turn.host_action_control_chunks ?? []),
+    ...turn.assistant_chunks,
+  ];
+}
+
+function partitionAssistantControlText(text: string): {
+  visibleText: string;
+  controlText: string;
+  sawHostActionDirective: boolean;
+} {
+  const controlBlocks: string[] = [];
+  let visibleText = text.replace(
+    /<gee-host-actions>\s*[\s\S]*?\s*<\/gee-host-actions>/gi,
+    (match) => {
+      controlBlocks.push(match);
+      return "";
+    },
+  );
+  visibleText = visibleText.replace(
+    /```gee-host-actions\s*[\s\S]*?```/gi,
+    (match) => {
+      controlBlocks.push(match);
+      return "";
+    },
+  );
+
+  return {
+    visibleText,
+    controlText: controlBlocks.join("\n"),
+    sawHostActionDirective: controlBlocks.length > 0,
+  };
+}
+
+function createAssistantControlTextFilter(): {
+  push(text: string): ReturnType<typeof partitionAssistantControlText>;
+  flush(): ReturnType<typeof partitionAssistantControlText>;
+} {
+  let buffer = "";
+  const openers = [
+    { open: "<gee-host-actions>", close: "</gee-host-actions>" },
+    { open: "```gee-host-actions", close: "```" },
+  ];
+
+  const partitionBuffered = (allowFlush: boolean): ReturnType<typeof partitionAssistantControlText> => {
+    let visibleText = "";
+    let controlText = "";
+    let sawHostActionDirective = false;
+
+    while (buffer.length > 0) {
+      const lower = buffer.toLowerCase();
+      const next = openers
+        .map((pattern) => ({ ...pattern, index: lower.indexOf(pattern.open) }))
+        .filter((candidate) => candidate.index >= 0)
+        .sort((a, b) => a.index - b.index)[0];
+
+      if (!next) {
+        const keepLength = allowFlush ? 0 : trailingControlPrefixLength(buffer, openers.map((item) => item.open));
+        visibleText += buffer.slice(0, buffer.length - keepLength);
+        buffer = buffer.slice(buffer.length - keepLength);
+        break;
+      }
+
+      visibleText += buffer.slice(0, next.index);
+      const closeStart = lower.indexOf(next.close, next.index + next.open.length);
+      if (closeStart < 0) {
+        if (allowFlush) {
+          controlText += buffer.slice(next.index);
+          sawHostActionDirective = true;
+          buffer = "";
+        } else {
+          buffer = buffer.slice(next.index);
+        }
+        break;
+      }
+
+      const closeEnd = closeStart + next.close.length;
+      controlText += buffer.slice(next.index, closeEnd);
+      sawHostActionDirective = true;
+      buffer = buffer.slice(closeEnd);
+    }
+
+    return { visibleText, controlText, sawHostActionDirective };
+  };
+
+  return {
+    push(text: string) {
+      buffer += text;
+      return partitionBuffered(false);
+    },
+    flush() {
+      return partitionBuffered(true);
+    },
+  };
+}
+
+function trailingControlPrefixLength(buffer: string, openers: string[]): number {
+  const lower = buffer.toLowerCase();
+  const maxLength = Math.min(lower.length, Math.max(...openers.map((item) => item.length - 1)));
+  for (let length = maxLength; length > 0; length -= 1) {
+    const suffix = lower.slice(-length);
+    if (openers.some((opener) => opener.startsWith(suffix))) {
+      return length;
+    }
+  }
+  return 0;
+}
+
+function hostActionDirectiveJsonTexts(raw: string): string[] {
+  const jsonTexts: string[] = [];
+  for (const pattern of [
+    /<gee-host-actions>\s*([\s\S]*?)\s*<\/gee-host-actions>/gi,
+    /```gee-host-actions\s*([\s\S]*?)```/gi,
+  ]) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(raw)) !== null) {
+      const jsonText = match[1]?.trim();
+      if (jsonText) {
+        jsonTexts.push(jsonText);
+      }
+    }
+  }
+  return jsonTexts;
 }
 
 const ALLOWED_HOST_ACTION_TOOLS = new Set([
@@ -758,21 +1173,154 @@ const ALLOWED_HOST_ACTION_TOOLS = new Set([
   "gee.gear.invoke",
 ]);
 
-function hostActionFromDirective(value: unknown, index: number): RuntimeHostActionIntent | null {
+function hostActionFromDirective(
+  value: unknown,
+  index: number,
+): { action?: RuntimeHostActionIntent; error?: HostActionDirectiveValidationError } {
   if (!isRecord(value)) {
-    return null;
+    return {
+      error: {
+        action_index: index,
+        code: "gee.host_actions.invalid_action",
+        message: `Gee host-action directive action ${index + 1} is not an object.`,
+      },
+    };
   }
   const toolID = stringField(value, "tool_id") ?? stringField(value, "tool");
-  if (!toolID || !ALLOWED_HOST_ACTION_TOOLS.has(toolID)) {
-    return null;
+  if (!toolID) {
+    return {
+      error: {
+        action_index: index,
+        code: "gee.host_actions.missing_tool",
+        message: `Gee host-action directive action ${index + 1} is missing a supported tool_id.`,
+      },
+    };
   }
-  const args = recordField(value, "arguments") ?? recordField(value, "args") ?? {};
+  if (!ALLOWED_HOST_ACTION_TOOLS.has(toolID)) {
+    return {
+      error: {
+        action_index: index,
+        tool_id: toolID,
+        code: "gee.host_actions.unsupported_tool",
+        message: `Gee host-action directive tool \`${toolID}\` is not supported by the native host bridge.`,
+      },
+    };
+  }
+  const rawArgs = recordField(value, "arguments") ?? recordField(value, "args") ?? {};
+  const args = normalizeHostActionArguments(toolID, rawArgs);
+  const validation = validateHostActionDirectiveArgs(toolID, args);
+  if (validation) {
+    return {
+      error: {
+        action_index: index,
+        tool_id: toolID,
+        code: validation.code,
+        message: validation.message,
+      },
+    };
+  }
   const fingerprint = `${toolID}:${JSON.stringify(args)}:${index}`;
   return {
-    host_action_id: `host_action_directive_${stableHash(fingerprint)}`,
-    tool_id: toolID,
-    arguments: args,
+    action: {
+      host_action_id: `host_action_directive_${stableHash(fingerprint)}_${randomUUID().slice(0, 8)}`,
+      tool_id: toolID,
+      arguments: args,
+    },
   };
+}
+
+function validateHostActionDirectiveArgs(
+  toolID: string,
+  args: Record<string, unknown>,
+): HostActionDirectiveValidationError | null {
+  if (toolID !== "gee.gear.invoke") {
+    return null;
+  }
+
+  const gearID = typeof args.gear_id === "string" ? args.gear_id : "";
+  if (!gearID.trim()) {
+    return {
+      code: "gear.args.gear_id",
+      message: "required string `gear_id` is missing for gee.gear.invoke.",
+    };
+  }
+
+  const capabilityID =
+    typeof args.capability_id === "string" ? args.capability_id : "";
+  if (!capabilityID.trim()) {
+    return {
+      code: "gear.args.capability_id",
+      message: "required string `capability_id` is missing for gee.gear.invoke.",
+    };
+  }
+
+  const invokeArgs = recordField(args, "args") ?? {};
+  const validation = validateGearCapabilityArgs(gearID, capabilityID, invokeArgs);
+  return validation.ok ? null : gearDirectiveValidationError(validation);
+}
+
+function gearDirectiveValidationError(
+  validation: Extract<GearCapabilityValidationResult, { ok: false }>,
+): HostActionDirectiveValidationError {
+  return {
+    code: validation.code,
+    message: validation.message,
+  };
+}
+
+function hostActionDirectiveFailureReason(
+  errors: HostActionDirectiveValidationError[],
+): string {
+  const details = errors
+    .slice(0, 4)
+    .map((error) => {
+      const label = error.tool_id ? `${error.tool_id}: ` : "";
+      return `${label}${error.message}`;
+    })
+    .join(" ");
+  return `Gee host-action directive validation failed. ${details}`;
+}
+
+function normalizeHostActionArguments(
+  toolID: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (toolID !== "gee.gear.invoke") {
+    return args;
+  }
+
+  const normalized: Record<string, unknown> = {};
+  const gearID = typeof args.gear_id === "string" ? args.gear_id : undefined;
+  const capabilityID =
+    typeof args.capability_id === "string" ? args.capability_id : undefined;
+  if (gearID) {
+    normalized.gear_id = gearID;
+  }
+  if (capabilityID) {
+    normalized.capability_id = capabilityID;
+  }
+
+  const nestedArgs = firstRecord(args.args, args.input, args.payload);
+  const invokeArgs: Record<string, unknown> = nestedArgs ? { ...nestedArgs } : {};
+  const envelopeKeys = new Set(["gear_id", "capability_id", "args", "input", "payload"]);
+  for (const [key, value] of Object.entries(args)) {
+    if (!envelopeKeys.has(key) && invokeArgs[key] === undefined) {
+      invokeArgs[key] = value;
+    }
+  }
+  normalized.args = invokeArgs;
+  return normalized;
+}
+
+function firstRecord(
+  ...values: Array<unknown>
+): Record<string, unknown> | undefined {
+  for (const value of values) {
+    if (isRecord(value)) {
+      return value;
+    }
+  }
+  return undefined;
 }
 
 function recordField(value: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
@@ -808,13 +1356,22 @@ function summarizePrompt(prompt: string, maxLength: number): string {
 export const __sdkTurnRunnerTestHooks = {
   activeAgentSystemPrompt,
   closeUnfinishedToolEventsOnFailure,
+  composeHostActionContinuationPrompt,
   sdkBashRequestFromInput,
   sdkEventIdleTimeoutMs,
   sdkEventIdleTimeoutReason,
   shouldRecycleGatewayAfterTurn,
+  collectEventsUntilPauseOrResult,
+  gearFirstTurnPrompt,
+  gearFirstBoundaryViolationReason,
+  turnUsedGeeHostBridge,
   unsupportedToolDenialMessage,
   extractHostActionDirective,
+  extractHostActionDirectiveResult,
+  createAssistantControlTextFilter,
+  partitionAssistantControlText,
   normalizeSdkToolResult,
   runtimeProjectPath,
   summarizePrompt,
+  toolArtifactRoot,
 };

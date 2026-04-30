@@ -147,6 +147,16 @@ struct TwitterCapturedTweet: Codable, Hashable, Identifiable {
     }
 }
 
+enum TwitterCaptureLocalTimeFormatter {
+    static func localDisplay(from date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.string(from: date)
+    }
+}
+
 struct TwitterCaptureTaskRecord: Codable, Identifiable, Hashable {
     var id: String
     var kind: TwitterCaptureTaskKind
@@ -184,6 +194,10 @@ struct TwitterCaptureTaskRecord: Codable, Identifiable, Hashable {
 
     var taskURL: URL {
         URL(fileURLWithPath: taskDirectoryPath, isDirectory: true).appendingPathComponent("task.json")
+    }
+
+    var createdAtLocalDisplay: String {
+        TwitterCaptureLocalTimeFormatter.localDisplay(from: createdAt)
     }
 
     var resultSummary: String {
@@ -254,6 +268,14 @@ struct TwitterCaptureFileDatabase {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(task)
         try data.write(to: directory.appendingPathComponent("task.json"), options: .atomic)
+    }
+
+    func deleteAllTasks() throws {
+        let root = try tasksRoot()
+        if fileManager.fileExists(atPath: root.path) {
+            try fileManager.removeItem(at: root)
+        }
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
     }
 
     func taskDirectory(_ id: String) throws -> URL {
@@ -397,6 +419,26 @@ final class TwitterCaptureGearStore: ObservableObject {
         selectedTaskID = selectedTaskID ?? tasks.first?.id
     }
 
+    func confirmAndDeleteAllTasks() {
+        guard !tasks.isEmpty else {
+            return
+        }
+        guard !isBusy else {
+            statusMessage = "Wait for the active Twitter Capture task to finish before deleting all tasks."
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Delete all Twitter Capture tasks?"
+        alert.informativeText = "This removes every saved Twitter Capture task record from the Gear database. This cannot be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete All")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            return
+        }
+        deleteAllTasks()
+    }
+
     func chooseCookieFile() {
         let panel = NSOpenPanel()
         panel.title = "Choose Twitter/X Cookie JSON"
@@ -433,10 +475,27 @@ final class TwitterCaptureGearStore: ObservableObject {
                 "error": "unsupported_or_invalid_arguments"
             ]
         }
+        let clampedLimit = Self.clampedLimit(kind: request.kind, limit: request.limit)
+        if let sidecarRequest = try? validatedSidecarRequest(
+            kind: request.kind,
+            target: request.target,
+            limit: clampedLimit,
+            cookieFilePath: request.cookieFilePath
+        ),
+           let existing = reusableCompletedTask(
+            kind: request.kind,
+            normalizedTarget: sidecarRequest.normalizedTarget,
+            limit: clampedLimit
+           )
+        {
+            selectedTaskID = existing.id
+            statusMessage = "Using existing Twitter Capture result."
+            return agentPayload(capabilityID: capabilityID, task: existing, reused: true)
+        }
         let task = await runTask(
             kind: request.kind,
             target: request.target,
-            limit: request.limit,
+            limit: clampedLimit,
             cookieFilePath: request.cookieFilePath,
             capabilityID: capabilityID
         )
@@ -539,6 +598,17 @@ final class TwitterCaptureGearStore: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
+    func deleteAllTasks() {
+        do {
+            try database.deleteAllTasks()
+            tasks.removeAll()
+            selectedTaskID = nil
+            statusMessage = "Deleted all Twitter Capture tasks."
+        } catch {
+            statusMessage = "Could not delete Twitter Capture tasks: \(error.localizedDescription)"
+        }
+    }
+
     private func validatedSidecarRequest(
         kind: TwitterCaptureTaskKind,
         target: String,
@@ -622,7 +692,11 @@ final class TwitterCaptureGearStore: ObservableObject {
         }
     }
 
-    private func agentPayload(capabilityID: String, task: TwitterCaptureTaskRecord) -> [String: Any] {
+    private func agentPayload(
+        capabilityID: String,
+        task: TwitterCaptureTaskRecord,
+        reused: Bool = false
+    ) -> [String: Any] {
         var payload: [String: Any] = [
             "gear_id": TwitterCaptureGearDescriptor.gearID,
             "capability_id": capabilityID,
@@ -636,6 +710,9 @@ final class TwitterCaptureGearStore: ObservableObject {
             "tweet_count": task.tweets.count,
             "tweets": task.tweets.map(\.agentDictionary)
         ]
+        if reused {
+            payload["reused_existing_capture"] = true
+        }
         if let errorMessage = task.errorMessage?.nilIfBlank {
             payload["error"] = errorMessage
         }
@@ -643,6 +720,20 @@ final class TwitterCaptureGearStore: ObservableObject {
             payload["next_cursor"] = nextCursor
         }
         return payload
+    }
+
+    private func reusableCompletedTask(
+        kind: TwitterCaptureTaskKind,
+        normalizedTarget: String,
+        limit: Int
+    ) -> TwitterCaptureTaskRecord? {
+        tasks.first { task in
+            task.kind == kind &&
+                task.status == .completed &&
+                task.normalizedTarget == normalizedTarget &&
+                !task.tweets.isEmpty &&
+                (!kind.supportsLimit || task.limit >= limit)
+        }
     }
 
     private static func request(from capabilityID: String, args: [String: Any]) -> AgentRequest? {
@@ -774,7 +865,7 @@ struct TwitterCaptureSidecarRunner: @unchecked Sendable {
         let result = await runner.run(
             "python3",
             arguments: [scriptURL.path, requestURL.path],
-            timeoutSeconds: request.action == "fetch_tweet" ? 120 : 300
+            timeoutSeconds: request.action == "fetch_tweet" ? 60 : 240
         )
         guard result.exitCode == 0 else {
             if let error = try? Self.decodeError(from: result.stdout) {

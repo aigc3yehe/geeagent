@@ -425,8 +425,12 @@ async def main():
         sys.exit(1)
 
     try:
-        result = await ACTIONS[action](params)
+        timeout_seconds = float(params.get("timeout_seconds") or (45 if action == "fetch_tweet" else 180))
+        result = await asyncio.wait_for(ACTIONS[action](params), timeout=timeout_seconds)
         print(json.dumps(result, ensure_ascii=False, default=str), flush=True)
+    except asyncio.TimeoutError:
+        print(json.dumps({"error": f"{action} timed out after {int(timeout_seconds)} seconds"}), flush=True)
+        sys.exit(1)
     except Exception as exc:
         print(json.dumps({"error": str(exc)}), flush=True)
         sys.exit(1)

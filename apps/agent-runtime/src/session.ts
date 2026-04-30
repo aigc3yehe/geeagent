@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 
 import {
   createSdkMcpServer,
+  query,
   tool,
   unstable_v2_createSession,
   type SDKMessage,
-  type SDKSession,
+  type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod/v4";
 
@@ -15,6 +18,21 @@ import type {
   RuntimeContext,
   RuntimeEvent,
 } from "./protocol.js";
+import {
+  gearCapabilityContracts,
+  validateGearCapabilityArgs,
+  type GearCapabilityValidationResult,
+} from "./native-runtime/capabilities/gear-validation.js";
+import { prepareHostActionCompletionsForModel } from "./native-runtime/context/host-action-results.js";
+import {
+  normalizeToolBoundaryInput,
+  normalizeToolInput,
+  preToolUseBoundaryOutput,
+} from "./tool-boundary-gateway.js";
+import {
+  DEFAULT_SDK_AVAILABLE_TOOLS,
+  isGeeHostSdkTool,
+} from "./sdk-tool-policy.js";
 
 type SessionConfig = {
   sessionId: string;
@@ -27,8 +45,11 @@ type SessionConfig = {
   autoApproveTools: string[];
   disallowedTools: string[];
   enableGeeHostTools?: boolean;
+  artifactRoot: string;
   gatewayBaseUrl: string;
   gatewayApiKey: string;
+  toolBoundaryMode?: "default" | "gear_first";
+  sdkSessionFactory?: RuntimeSdkSessionFactory;
 };
 
 type ApprovalDecision = {
@@ -47,9 +68,150 @@ type PendingHostAction = {
   reject: (error: Error) => void;
 };
 
+type RuntimeBootstrapState = "not_sent" | "queued" | "sent";
+
+type QueuedRuntimeMessage = {
+  content: string;
+  includeRuntimeBootstrap: boolean;
+};
+
+type RuntimeSdkSession = {
+  send(content: string): void;
+  stream(): AsyncIterable<SDKMessage>;
+  close(): void;
+};
+
+type RuntimeSdkSessionFactory = (
+  options: Parameters<typeof unstable_v2_createSession>[0],
+) => RuntimeSdkSession;
+
+class AsyncMessageQueue<T> implements AsyncIterable<T> {
+  private readonly values: T[] = [];
+  private readonly waiters: Array<(result: IteratorResult<T>) => void> = [];
+  private closed = false;
+
+  enqueue(value: T): void {
+    if (this.closed) {
+      return;
+    }
+    const waiter = this.waiters.shift();
+    if (waiter) {
+      waiter({ done: false, value });
+      return;
+    }
+    this.values.push(value);
+  }
+
+  done(): void {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    for (const waiter of this.waiters.splice(0)) {
+      waiter({ done: true, value: undefined as T });
+    }
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<T> {
+    return {
+      next: () => {
+        const value = this.values.shift();
+        if (value !== undefined) {
+          return Promise.resolve({ done: false, value });
+        }
+        if (this.closed) {
+          return Promise.resolve({ done: true, value: undefined as T });
+        }
+        return new Promise<IteratorResult<T>>((resolve) => {
+          this.waiters.push(resolve);
+        });
+      },
+    };
+  }
+}
+
+function sdkUserMessage(content: string): SDKUserMessage {
+  return {
+    type: "user",
+    session_id: "",
+    message: {
+      role: "user",
+      content: [{ type: "text", text: content }],
+    },
+    parent_tool_use_id: null,
+  };
+}
+
+function createQueryBackedSession(
+  options: Parameters<typeof unstable_v2_createSession>[0],
+): RuntimeSdkSession {
+  const input = new AsyncMessageQueue<SDKUserMessage>();
+  const session = query({
+    prompt: input,
+    options,
+  });
+  const iterator = session[Symbol.asyncIterator]();
+  let closed = false;
+
+  return {
+    send(content: string): void {
+      if (closed) {
+        throw new Error("SDK query session is already closed");
+      }
+      input.enqueue(sdkUserMessage(content));
+    },
+    async *stream(): AsyncIterable<SDKMessage> {
+      while (!closed) {
+        const next = await iterator.next();
+        if (next.done) {
+          return;
+        }
+        yield next.value;
+        if (next.value.type === "result") {
+          return;
+        }
+      }
+    },
+    close(): void {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      input.done();
+      session.close();
+    },
+  };
+}
+
 function claudeCodeExecutablePath(): string | undefined {
   const path = process.env.GEEAGENT_CLAUDE_CODE_EXECUTABLE?.trim();
   return path && path.length > 0 ? path : undefined;
+}
+
+function claudeConfigDir(artifactRoot: string): string {
+  return join(artifactRoot, "ClaudeConfig");
+}
+
+function sanitizedSdkEnvironment(
+  config: Pick<SessionConfig, "artifactRoot" | "gatewayApiKey" | "gatewayBaseUrl">,
+) {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    const upper = key.toUpperCase();
+    if (upper.startsWith("CLAUDE") || upper.startsWith("ANTHROPIC")) {
+      delete env[key];
+    }
+  }
+
+  const configDir = claudeConfigDir(config.artifactRoot);
+  mkdirSync(configDir, { recursive: true });
+  return {
+    ...env,
+    ANTHROPIC_BASE_URL: config.gatewayBaseUrl,
+    ANTHROPIC_API_KEY: config.gatewayApiKey,
+    CLAUDE_AGENT_SDK_CLIENT_APP: "geeagent/agent-runtime",
+    CLAUDE_CONFIG_DIR: configDir,
+  };
 }
 
 function buildSystemPrompt(
@@ -67,8 +229,10 @@ function buildSystemPrompt(
     "If the latest user request asks for local machine state, you MUST call an appropriate tool before answering. A response that says you cannot directly inspect is incorrect unless the host denies or withholds the tool.",
     "Do not use SDK WebSearch or WebFetch in GeeAgent. When current public web information is needed, use Bash with an inspectable command such as curl, python3 urllib, or another local CLI, so the host can show and approve the exact operation.",
     "Do not use TodoWrite or maintain a separate SDK todo list; GeeAgent owns task and approval state at the host layer.",
+    "Do not use SDK Agent, Task, or subagent delegation tools in GeeAgent's main runtime. GeeAgent owns delegation, worktree isolation, and task state at the host layer.",
     "Gee's default specialty and preset task domain are not code development. Unless the user explicitly asks you to develop, fix, refactor, or edit code, do not modify local project source code or configuration as the way to satisfy a request.",
     "If a task needs scripting, data processing, inspection helpers, or a temporary automation program, you may write and run that code as an implementation detail, but do not turn ordinary app control, file management, research, or configuration requests into edits to the user's local codebase.",
+    "Do not use fallback task execution paths. If the intended tool, Gear, provider, permission, or session continuation is unavailable, report the real failed or degraded state instead of switching to another route or presenting partial work as complete.",
   ];
 
   if (context) {
@@ -93,13 +257,35 @@ function buildSystemPrompt(
     }
     if (context.capabilities?.includes("gee_host_bridge")) {
       lines.push(
-        "- Gee Gear controls are available through the host bridge. If `mcp__gee__gear_list_capabilities`, `mcp__gee__gear_invoke`, or `mcp__gee__app_open_surface` are visible as callable tools, use them progressively and inspect each structured result before deciding the next step.",
+        "- Gee Gear controls are available through the host bridge. If `mcp__gee__gear_list_capabilities`, `mcp__gee__gear_invoke`, or `mcp__gee__app_open_surface` are visible as callable tools, use them deliberately and inspect each structured result before deciding the next step.",
       );
       lines.push(
-        "- If those MCP tools are not visible in this SDK session, do not inspect source code or claim the bridge is unavailable. Instead emit exactly one `<gee-host-actions>` directive and no user-facing prose. GeeAgent will execute it in the native host, then resume this same task with structured results.",
+        "- For requests that match an installed Gear or built-in app, use the Gee Gear bridge as the execution path. Do not inspect GeeAgent source files, call SDK Skill aliases, or use Bash to discover product internals unless the user explicitly asks to debug GeeAgent itself.",
       );
       lines.push(
-        '- Host-action directive shape: `<gee-host-actions>{"actions":[{"tool_id":"gee.gear.listCapabilities","arguments":{"detail":"summary"}}]}</gee-host-actions>`. Allowed `tool_id` values are `gee.app.openSurface`, `gee.gear.listCapabilities`, and `gee.gear.invoke`.',
+        "- WeChat article and album URLs (`mp.weixin.qq.com/s/...` and `mp.weixin.qq.com/mp/appmsgalbum?...`) belong to the installed WeSpy Reader Gear (`wespy.reader`). Use the Gear bridge first for fetching or listing those pages; use Bash/file tools only after the Gear returns structured results and the user asked for local composition, copying, or saving.",
+      );
+      lines.push(
+        "- If those MCP tools are not visible in this SDK session, report the missing Gee host bridge as a runtime failure. Do not emit text control directives, do not inspect source code as a substitute, and do not claim the task is complete.",
+      );
+      lines.push(
+        "- Use progressive Gear disclosure: first call `mcp__gee__gear_list_capabilities` with `detail: \"summary\"`, then inspect specific capabilities only when the summary is insufficient. When the summary already contains the needed capability id and required args, invoke the capability directly instead of re-reading every schema.",
+      );
+      lines.push(
+        "- Never call `gee.gear.invoke` with guessed or empty required arguments. If required arguments are not known from the latest user request, recent assistant result, or a specific Gear schema, read the schema or report the missing argument as a real blockage.",
+      );
+      lines.push(renderGearCapabilityContractHints());
+      lines.push(
+        '- For `gee.gear.invoke`, always place gear-specific parameters inside `arguments.args`, for example `{"tool_id":"gee.gear.invoke","arguments":{"gear_id":"wespy.reader","capability_id":"wespy.fetch_article","args":{"url":"https://mp.weixin.qq.com/s/..."}}}`. Do not use `payload`, `input`, or top-level gear parameters outside `args`.',
+      );
+      lines.push(
+        "- Treat a user Gear request as complete only when the user's full objective is complete, not when one atomic Gear call succeeds. If a Gear result reveals that another Gear step is required, continue the same task with another Gee host-action directive.",
+      );
+      lines.push(
+        "- For X/Twitter bookmark requests, do not stop after `twitter.capture/twitter.fetch_tweet`. If the user asks to preserve media or the tweet strongly implies media acquisition, continue through `smartyt.media/smartyt.download_now`, then `media.library/media.import_files`, then `bookmark.vault/bookmark.save` with `local_media_paths`. Remote media URLs are only media candidates; they are not saved local media files unless a download/import capability returns local paths.",
+      );
+      lines.push(
+        "- For WeChat article requests that ask to save Markdown to a local destination, first fetch with `wespy.reader`, then use the returned file/artifact paths to complete the requested local save or clearly report the missing step.",
       );
     }
   }
@@ -111,22 +297,44 @@ function buildSystemPrompt(
   return lines.join("\n");
 }
 
-function normalizeToolInput(input: unknown): Record<string, unknown> {
-  if (input && typeof input === "object" && !Array.isArray(input)) {
-    return input as Record<string, unknown>;
+function renderGearCapabilityContractHints(): string {
+  const lines = gearCapabilityContracts().map((contract) => {
+    const required = contract.required_args
+      .map((requirement) => {
+        const details: string[] = [requirement.kind];
+        if (requirement.aliases.length > 1) {
+          details.push(`aliases: ${requirement.aliases.join(", ")}`);
+        }
+        return `args.${requirement.field} (${details.join("; ")})`;
+      })
+      .join(", ");
+    return `  - ${contract.gear_id}/${contract.capability_id}: ${required}`;
+  });
+  return [
+    "- Known Gee Gear required args:",
+    ...lines,
+  ].join("\n");
+}
+
+function sdkSessionBootstrapPrompt(
+  config: Pick<SessionConfig, "systemPrompt" | "runtimeContext">,
+): string {
+  return buildSystemPrompt(config.systemPrompt, config.runtimeContext);
+}
+
+function runtimeUserMessage(content: string, runtimePrompt?: string): string {
+  const trimmedPrompt = runtimePrompt?.trim() ?? "";
+  if (trimmedPrompt.length > 0) {
+    return `${trimmedPrompt}\n\n[GeeAgent Turn]\n${content}`;
   }
-  return {};
+  return content;
 }
 
 function sanitizeToolInput(
   toolName: string,
   input: unknown,
 ): Record<string, unknown> {
-  const normalized = { ...normalizeToolInput(input) };
-  if (toolName === "Read" && normalized.pages === "") {
-    delete normalized.pages;
-  }
-  return normalized;
+  return normalizeToolBoundaryInput(toolName, input);
 }
 
 function compactRecord(record: Record<string, unknown>): Record<string, unknown> {
@@ -139,12 +347,33 @@ function hostActionId(toolID: string): string {
   return `sdk_host_action_${toolID.replace(/[^a-z0-9]+/gi, "_")}_${randomUUID().slice(0, 8)}`;
 }
 
-function parseHostActionResultJSON(raw: string): unknown {
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return raw;
-  }
+function gearCapabilityValidationToolResult(
+  toolID: string,
+  gearID: string,
+  capabilityID: string,
+  args: Record<string, unknown>,
+  validation: Extract<GearCapabilityValidationResult, { ok: false }>,
+) {
+  const payload = {
+    tool_id: toolID,
+    status: "failed",
+    code: validation.code,
+    error: validation.message,
+    gear_id: gearID,
+    capability_id: capabilityID,
+    args,
+    retry_hint:
+      "Inspect the Gear schema and retry with the missing argument inside args.",
+  };
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: JSON.stringify(payload, null, 2),
+      },
+    ],
+    isError: true,
+  };
 }
 
 function summarizeToolResultContent(content: unknown): string | undefined {
@@ -190,8 +419,10 @@ export class ClaudeRuntimeSession {
   private readonly config: SessionConfig;
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly pendingHostActions = new Map<string, PendingHostAction>();
-  private readonly queuedMessages: string[] = [];
-  private readonly sdkSession: SDKSession;
+  private readonly queuedMessages: QueuedRuntimeMessage[] = [];
+  private readonly sdkSession: RuntimeSdkSession;
+  private runtimeBootstrapState: RuntimeBootstrapState = "not_sent";
+  private requestedGeeHostAction = false;
   private listening = false;
   private closed = false;
 
@@ -199,24 +430,27 @@ export class ClaudeRuntimeSession {
     this.sessionId = config.sessionId;
     this.config = config;
     this.emit = emit;
-    this.sdkSession = unstable_v2_createSession({
+    const availableTools = config.availableTools ?? DEFAULT_SDK_AVAILABLE_TOOLS;
+    const sdkOptions = {
       cwd: config.cwd,
       model: config.model,
       pathToClaudeCodeExecutable: claudeCodeExecutablePath(),
-      ...(config.availableTools ? { tools: config.availableTools } : {}),
+      tools: availableTools,
       ...(config.enableGeeHostTools === false
         ? {}
         : { mcpServers: { gee: this.createGeeHostMcpServer() } }),
       allowedTools: config.autoApproveTools,
       disallowedTools: config.disallowedTools,
-      env: {
-        ...process.env,
-        ANTHROPIC_BASE_URL: config.gatewayBaseUrl,
-        ANTHROPIC_API_KEY: config.gatewayApiKey,
-        CLAUDE_AGENT_SDK_CLIENT_APP: "geeagent/agent-runtime",
-      },
+      env: sanitizedSdkEnvironment(config),
       canUseTool: async (toolName: string, input: unknown) => {
         const normalizedInput = sanitizeToolInput(toolName, input);
+        const boundaryDenial = this.toolBoundaryDenial(toolName);
+        if (boundaryDenial) {
+          return {
+            behavior: "deny",
+            message: boundaryDenial,
+          };
+        }
 
         if (config.autoApproveTools.includes(toolName)) {
           return {
@@ -250,7 +484,17 @@ export class ClaudeRuntimeSession {
           message: decision.message ?? "GeeAgent host denied this tool request.",
         };
       },
-    });
+      hooks: {
+        PreToolUse: [
+          {
+            hooks: [
+              async (input) => preToolUseBoundaryOutput(input) ?? { continue: true },
+            ],
+          },
+        ],
+      },
+    } as Parameters<typeof unstable_v2_createSession>[0] & { tools: string[] };
+    this.sdkSession = (config.sdkSessionFactory ?? createQueryBackedSession)(sdkOptions);
   }
 
   send(content: string): void {
@@ -258,15 +502,11 @@ export class ClaudeRuntimeSession {
       throw new Error(`session ${this.sessionId} is already closed`);
     }
 
-    const runtimePrompt = buildSystemPrompt(
-      this.config.systemPrompt,
-      this.config.runtimeContext,
-    );
-    this.queuedMessages.push(
-      runtimePrompt.trim().length > 0
-        ? `${runtimePrompt}\n\n[GeeAgent Turn]\n${content}`
-        : content,
-    );
+    const includeRuntimeBootstrap = this.runtimeBootstrapState === "not_sent";
+    if (includeRuntimeBootstrap) {
+      this.runtimeBootstrapState = "queued";
+    }
+    this.queuedMessages.push({ content, includeRuntimeBootstrap });
     if (!this.listening) {
       void this.startListening();
     }
@@ -323,6 +563,24 @@ export class ClaudeRuntimeSession {
     this.pendingHostActions.clear();
   }
 
+  private toolBoundaryDenial(toolName: string): string | null {
+    if (this.config.toolBoundaryMode !== "gear_first") {
+      return null;
+    }
+    if (this.requestedGeeHostAction) {
+      return null;
+    }
+    if (isGeeHostToolName(toolName)) {
+      return null;
+    }
+    return (
+      "This turn is a Gee Gear task. GeeAgent requires the active SDK run to " +
+      "use the Gee MCP Gear bridge before any shell, file, skill, or source " +
+      "inspection tools. The request was blocked so bridge/tool problems are " +
+      "exposed instead of hidden by fallback probing."
+    );
+  }
+
   private createGeeHostMcpServer() {
     return createSdkMcpServer({
       name: "gee",
@@ -340,7 +598,7 @@ export class ClaudeRuntimeSession {
         ),
         tool(
           "gear_list_capabilities",
-          "Progressively disclose enabled Gee Gear capabilities. Use detail='summary' first, then detail='capabilities' for one gear_id, then detail='schema' for one capability_id.",
+          "List enabled Gee Gear capabilities. Use detail='summary' first; invoke directly when the summary contains the needed capability and required args. Request detail='schema' only when optional arguments or exact types are unclear.",
           {
             detail: z.enum(["summary", "capabilities", "schema"]).optional(),
             gear_id: z.string().optional(),
@@ -356,12 +614,28 @@ export class ClaudeRuntimeSession {
             capability_id: z.string(),
             args: z.record(z.string(), z.unknown()).optional(),
           },
-          async (args) =>
-            this.callGeeHostAction("gee.gear.invoke", {
+          async (args) => {
+            const gearArgs = args.args ?? {};
+            const validation = validateGearCapabilityArgs(
+              args.gear_id,
+              args.capability_id,
+              gearArgs,
+            );
+            if (!validation.ok) {
+              return gearCapabilityValidationToolResult(
+                "gee.gear.invoke",
+                args.gear_id,
+                args.capability_id,
+                gearArgs,
+                validation,
+              );
+            }
+            return this.callGeeHostAction("gee.gear.invoke", {
               gear_id: args.gear_id,
               capability_id: args.capability_id,
-              args: args.args ?? {},
-            }),
+              args: gearArgs,
+            });
+          },
         ),
       ],
     });
@@ -376,15 +650,16 @@ export class ClaudeRuntimeSession {
       tool_id: toolID,
       arguments: args,
     });
-    const payload = {
+    const prepared = await prepareHostActionCompletionsForModel(
+      [completion],
+      this.config.artifactRoot,
+    );
+    const payload = prepared.completions[0] ?? {
       host_action_id: completion.host_action_id,
       tool_id: completion.tool_id,
       status: completion.status,
       ...(completion.summary ? { summary: completion.summary } : {}),
       ...(completion.error ? { error: completion.error } : {}),
-      ...(completion.result_json
-        ? { result: parseHostActionResultJSON(completion.result_json) }
-        : {}),
     };
     return {
       content: [
@@ -405,6 +680,7 @@ export class ClaudeRuntimeSession {
         new Error(`session ${this.sessionId} is already closed`),
       );
     }
+    this.requestedGeeHostAction = true;
 
     this.emit({
       type: "session.host_action_requested",
@@ -430,11 +706,24 @@ export class ClaudeRuntimeSession {
           continue;
         }
 
-        await this.sdkSession.send(nextMessage);
-        for await (const message of this.sdkSession.stream()) {
-          if (this.handleSdkMessage(message)) {
-            break;
+        try {
+          await this.sendQueuedMessage(nextMessage);
+          let sawStreamEvent = false;
+          for await (const message of this.sdkSession.stream()) {
+            if (nextMessage.includeRuntimeBootstrap && !sawStreamEvent) {
+              this.runtimeBootstrapState = "sent";
+            }
+            sawStreamEvent = true;
+            if (this.handleSdkMessage(message)) {
+              break;
+            }
           }
+          if (nextMessage.includeRuntimeBootstrap && !sawStreamEvent) {
+            this.forgetUnconfirmedBootstrap(nextMessage);
+          }
+        } catch (error) {
+          this.forgetUnconfirmedBootstrap(nextMessage);
+          throw error;
         }
       }
     } catch (error) {
@@ -449,6 +738,33 @@ export class ClaudeRuntimeSession {
         void this.startListening();
       }
     }
+  }
+
+  private async sendQueuedMessage(message: QueuedRuntimeMessage): Promise<void> {
+    const runtimePrompt = message.includeRuntimeBootstrap
+      ? sdkSessionBootstrapPrompt(this.config)
+      : undefined;
+    await this.sdkSession.send(runtimeUserMessage(message.content, runtimePrompt));
+  }
+
+  private forgetUnconfirmedBootstrap(message: QueuedRuntimeMessage): void {
+    if (!message.includeRuntimeBootstrap || this.runtimeBootstrapState === "sent") {
+      return;
+    }
+    this.runtimeBootstrapState = "not_sent";
+    this.promoteNextQueuedBootstrap();
+  }
+
+  private promoteNextQueuedBootstrap(): void {
+    if (this.runtimeBootstrapState !== "not_sent") {
+      return;
+    }
+    const nextMessage = this.queuedMessages[0];
+    if (!nextMessage || nextMessage.includeRuntimeBootstrap) {
+      return;
+    }
+    nextMessage.includeRuntimeBootstrap = true;
+    this.runtimeBootstrapState = "queued";
   }
 
   private handleSdkMessage(message: SDKMessage): boolean {
@@ -536,9 +852,28 @@ export class ClaudeRuntimeSession {
   }
 }
 
+function isGeeHostToolName(toolName: string): boolean {
+  return (
+    isGeeHostSdkTool(toolName) ||
+    [
+      "gee.app.openSurface",
+      "gee.gear.listCapabilities",
+      "gee.gear.invoke",
+    ].includes(toolName)
+  );
+}
+
 export const __sessionTestHooks = {
   buildSystemPrompt,
+  claudeConfigDir,
+  isGeeHostToolName,
   normalizeToolInput,
+  preToolUseBoundaryOutput,
+  runtimeUserMessage,
   sanitizeToolInput,
+  sanitizedSdkEnvironment,
+  sdkSessionBootstrapPrompt,
   summarizeToolResultContent,
+  gearCapabilityContracts,
+  validateGearCapabilityArgs,
 };

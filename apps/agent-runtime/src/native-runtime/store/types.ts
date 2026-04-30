@@ -74,6 +74,20 @@ export type RuntimeConversationSummary = {
   is_active: boolean;
 };
 
+export type RuntimeHostActionRunSource = "sdk_same_run" | "static_fallback";
+
+export type RuntimeHostActionRunRecord = {
+  host_action_id: string;
+  tool_id: string;
+  session_id: string;
+  conversation_id: string;
+  user_message_id: string;
+  source: RuntimeHostActionRunSource;
+  status: "pending" | "completed" | "failed";
+  created_at: string;
+  updated_at: string;
+};
+
 export type RuntimeStore = {
   quick_input_hint: string;
   quick_reply: string;
@@ -96,6 +110,7 @@ export type RuntimeStore = {
   workspace_focus: Record<string, unknown>;
   workspace_runtime: Record<string, unknown>;
   host_action_intents?: RuntimeHostActionIntent[];
+  host_action_runs?: RuntimeHostActionRunRecord[];
 };
 
 export type RuntimeSecurityPreferences = {
@@ -104,7 +119,7 @@ export type RuntimeSecurityPreferences = {
 
 export type RuntimeSnapshot = Omit<
   RuntimeStore,
-  "active_agent_profile_id" | "active_conversation_id" | "conversations"
+  "active_agent_profile_id" | "active_conversation_id" | "conversations" | "host_action_runs"
 > & {
   active_agent_profile: AgentProfile;
   conversations: RuntimeConversationSummary[];

@@ -331,10 +331,25 @@ final class SmartYTMediaGearStore: ObservableObject {
             ]
         }
 
+        let kind = downloadKind ?? .video
+        if outputDirectory == nil,
+           let existing = reusableCompletedDownload(for: cleanURL, kind: kind)
+        {
+            selectedJobID = existing.id
+            let outputPaths = reusableOutputPaths(for: existing, kind: kind)
+            statusMessage = "Using existing download."
+            return agentPayload(
+                capabilityID: "smartyt.download_now",
+                job: existing,
+                status: "completed",
+                outputPaths: outputPaths,
+                reused: true
+            )
+        }
+
         let now = Date()
         let id = "smartyt-\(Self.timestamp())-\(UUID().uuidString.prefix(8))"
         let artifactDirectory = resolvedArtifactDirectory(jobID: id, requestedPath: outputDirectory)
-        let kind = downloadKind ?? .video
         let job = SmartYTMediaJob(
             id: id,
             url: cleanURL,
@@ -452,7 +467,8 @@ final class SmartYTMediaGearStore: ObservableObject {
         job: SmartYTMediaJob,
         status: String,
         outputPaths: [String],
-        error: String? = nil
+        error: String? = nil,
+        reused: Bool = false
     ) -> [String: Any] {
         var payload: [String: Any] = [
             "gear_id": SmartYTMediaGearDescriptor.gearID,
@@ -465,6 +481,9 @@ final class SmartYTMediaGearStore: ObservableObject {
             "artifact_root": artifactDirectory(for: job).path,
             "output_paths": outputPaths
         ]
+        if reused {
+            payload["reused_existing_download"] = true
+        }
         if let mediaInfo = job.mediaInfo {
             payload["media_info"] = [
                 "title": mediaInfo.title,
@@ -481,6 +500,41 @@ final class SmartYTMediaGearStore: ObservableObject {
             payload["error"] = error
         }
         return payload
+    }
+
+    private func reusableCompletedDownload(
+        for url: String,
+        kind: SmartYTDownloadKind
+    ) -> SmartYTMediaJob? {
+        jobs.first { job in
+            job.action == .download &&
+                job.status == .completed &&
+                job.url == url &&
+                !reusableOutputPaths(for: job, kind: kind).isEmpty
+        }
+    }
+
+    private func reusableOutputPaths(
+        for job: SmartYTMediaJob,
+        kind: SmartYTDownloadKind
+    ) -> [String] {
+        let existingPaths = job.outputPaths.filter { fileManager.fileExists(atPath: $0) }
+        switch kind {
+        case .audio:
+            return existingPaths.filter { Self.isAudioPath($0) }
+        case .video:
+            return existingPaths.filter { Self.isVideoPath($0) }
+        case .both:
+            return existingPaths
+        }
+    }
+
+    private static func isAudioPath(_ path: String) -> Bool {
+        ["mp3", "m4a", "wav", "aac", "opus"].contains(URL(fileURLWithPath: path).pathExtension.lowercased())
+    }
+
+    private static func isVideoPath(_ path: String) -> Bool {
+        ["mp4", "mov", "mkv", "webm"].contains(URL(fileURLWithPath: path).pathExtension.lowercased())
     }
 
     private func run(jobID: String, language: String?) async {

@@ -126,7 +126,7 @@ global background の優先順位は video、次に image です。
 
 Live2D persona が `global_background` を宣言していない場合、GeeAgent は default abstract Home background の上に Live2D を描画します。
 
-Live2D persona はローカル UI から poses、actions、expressions、viewport position、scale を扱えます。
+Live2D persona はローカル UI から poses、actions、expressions、viewport position、scale を扱えます。Home surface では、表示されている character をクリックすると利用可能な actions や expression changes を発火でき、local interaction layer は viewport position や scale の調整後も整合します。
 
 ## Runtime Influence
 

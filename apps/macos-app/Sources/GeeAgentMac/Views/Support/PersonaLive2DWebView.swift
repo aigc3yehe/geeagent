@@ -3,10 +3,11 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
 
-/// Decorative WKWebView that renders the active persona's Live2D bundle on the home hero.
+/// WKWebView that renders the active persona's Live2D bundle on the home hero.
 ///
 /// Design contract:
-/// - **Decorative only.** The SwiftUI launcher cards sit on top; this view disables hit-testing.
+/// - **Interactive canvas.** Native Home controls sit above it, while open hero-space clicks can
+///   still reach the Live2D host and the companion interaction surface.
 /// - **Pauses on home-invisibility.** When `isActive` flips to `false` (the user navigated away
 ///   from the home surface), we message the host page to stop its RAF loop. Reactivating the
 ///   home surface resumes the loop.

@@ -22,13 +22,14 @@ AGENT_RUNTIME="$REPO_ROOT/apps/agent-runtime"
 SOURCE_CONFIG="$REPO_ROOT/config"
 SDK_CLI="$AGENT_RUNTIME/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude"
 ROOT_BACKGROUND="$REPO_ROOT/bg.png"
+APP_SUPPORT_ROOT="$HOME/Library/Application Support/GeeAgent"
 
 stop_running_app_processes() {
-  quit_bundle_id "io.geeagent.desktop"
   terminate_process_name "$APP_NAME"
   terminate_process_pattern "[g]eeagent_desktop_shell"
-  terminate_process_pattern "[i]o.geeagent.desktop/runtime/native-runtime/index.mjs snapshot"
-  terminate_process_pattern "[i]o.geeagent.desktop/runtime/native-runtime/index.mjs serve"
+  terminate_process_pattern "$APP_SUPPORT_ROOT/runtime/native-runtime/index.mjs snapshot"
+  terminate_process_pattern "$APP_SUPPORT_ROOT/runtime/native-runtime/index.mjs serve"
+  terminate_process_pattern "$APP_SUPPORT_ROOT/runtime/claude-sdk/claude"
   terminate_process_pattern "$REPO_ROOT/apps/agent-runtime/dist/native-runtime/index.mjs snapshot"
   terminate_process_pattern "$REPO_ROOT/apps/agent-runtime/dist/native-runtime/index.mjs serve"
   terminate_process_pattern "$REPO_ROOT/apps/agent-runtime/dist/native-runtime/index.js snapshot"
@@ -38,18 +39,16 @@ stop_running_app_processes() {
   terminate_process_pattern "$REPO_ROOT/apps/agent-runtime/node_modules/@anthropic-ai/claude-agent-sdk"
 }
 
-quit_bundle_id() {
-  local bundle_id="$1"
-  /usr/bin/osascript >/dev/null 2>&1 <<APPLESCRIPT || true
-try
-  tell application id "$bundle_id" to quit
-end try
-APPLESCRIPT
-}
-
 terminate_process_name() {
   local name="$1"
   pkill -x "$name" >/dev/null 2>&1 || true
+  for _ in {1..30}; do
+    if ! pgrep -x "$name" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  pkill -9 -x "$name" >/dev/null 2>&1 || true
 }
 
 terminate_process_pattern() {

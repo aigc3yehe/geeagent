@@ -19,6 +19,7 @@ struct MediaLibraryModuleView: View {
     @State private var nativePreviewController = MediaLibraryNativePreviewController()
     @State private var isChoosingLibrary = false
     @State private var visibleDynamicItemIDs: Set<MediaLibraryItem.ID> = []
+    @State private var didRequestInitialLibraryRestore = false
 
     init(store: MediaLibraryModuleStore = .shared) {
         self.store = store
@@ -35,8 +36,8 @@ struct MediaLibraryModuleView: View {
                 }
             }
         }
-        .task {
-            await store.restoreLastLibraryIfNeeded()
+        .onAppear {
+            restoreLastLibraryOnce()
         }
         .onDeleteCommand {
             Task { await store.deleteSelectedItems() }
@@ -88,6 +89,12 @@ struct MediaLibraryModuleView: View {
         }
     }
 
+    private func restoreLastLibraryOnce() {
+        guard !didRequestInitialLibraryRestore else { return }
+        didRequestInitialLibraryRestore = true
+        Task { await store.restoreLastLibraryIfNeeded() }
+    }
+
     private var welcomeSurface: some View {
         VStack(spacing: 22) {
             VStack(spacing: 16) {
@@ -113,6 +120,7 @@ struct MediaLibraryModuleView: View {
                         Label("Open Library", systemImage: "folder")
                     }
                     .buttonStyle(EaglePillButtonStyle(variant: .primary))
+                    .disabled(store.isLoading)
 
                     Button {
                         Task { await store.createLibrary() }
@@ -120,6 +128,18 @@ struct MediaLibraryModuleView: View {
                         Label("Create Library", systemImage: "folder.badge.plus")
                     }
                     .buttonStyle(EaglePillButtonStyle())
+                    .disabled(store.isLoading)
+                }
+
+                if store.isLoading {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Opening last library...")
+                            .font(.geeBody(12))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 2)
                 }
             }
             .padding(28)
@@ -579,6 +599,10 @@ struct MediaLibraryModuleView: View {
             if let error = store.errorMessage {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
+                    .lineLimit(1)
+            } else if store.isLoading {
+                Label("Opening last library...", systemImage: "hourglass")
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
             } else if store.library != nil {
                 Text(store.visibleSummary)

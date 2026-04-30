@@ -1,11 +1,23 @@
 import { createConversation, QUICK_CONVERSATION_TAG } from "./store/conversations.js";
+import { loadChatReadiness, type ChatReadiness } from "../chat-runtime.js";
 import { loadRuntimeStore, persistRuntimeStore } from "./store/persistence.js";
 import { snapshotFromStore } from "./store/snapshot.js";
 import type {
   RuntimeHostActionCompletion,
   RuntimeHostActionIntent,
 } from "../protocol.js";
-import type { RuntimeSnapshot, RuntimeStore } from "./store/types.js";
+import type {
+  RuntimeHostActionRunRecord,
+  RuntimeHostActionRunSource,
+  RuntimeSnapshot,
+  RuntimeStore,
+} from "./store/types.js";
+import {
+  buildStageSummaryCapsule,
+  renderStageSummaryCapsule,
+  type StageSummaryArtifactRef,
+  type StageSummaryStatus,
+} from "./context/stage-summary.js";
 import {
   resumeSdkRuntimeHostActions,
   runSdkRuntimeTurn,
@@ -19,7 +31,6 @@ import {
   installClaudeSdkTerminalApproval,
   resolveApproval,
 } from "./turns/approvals.js";
-import { routeLocalGearIntent, type RoutedGearIntent } from "./turns/gear-intents.js";
 import {
   composeClaudeSdkTurnPrompt,
   isTransientQuickPrompt,
@@ -29,9 +40,11 @@ import {
   transientRuntimeSessionId,
 } from "./turns/context.js";
 import {
+  appendAssistantDeltaForActiveConversation,
   appendAssistantMessageForActiveConversation,
   appendSessionStateForSession,
   appendToolEvents,
+  appendToolResultForHostBridgeCompletion,
   appendToolResultForExistingInvocation,
   beginTurnReplay,
   executionSessionIdForConversation,
@@ -48,11 +61,22 @@ import {
   claudeSdkQuickReply,
   errorMessage,
   findTask,
+  isRecord,
   runtimeRunState,
   stringField,
+  summarizePrompt,
   toolStepCount,
 } from "./turns/state.js";
 import type { PreparedTurnContext, TurnReplayCursor } from "./turns/types.js";
+import { requiresGeeGearBridgeFirst } from "./turns/gear-intents.js";
+
+const GEAR_COMPLETION_SDK_IDLE_TIMEOUT_MS = 75_000;
+
+type HostActionCompletionContext = {
+  sessionId: string;
+  conversationId: string;
+  source: RuntimeHostActionRunSource | null;
+};
 
 export async function submitWorkspaceMessage(
   configDir: string,
@@ -152,9 +176,15 @@ export async function completeHostActionTurn(
   completions: RuntimeHostActionCompletion[],
 ): Promise<RuntimeSnapshot> {
   const store = await loadRuntimeStore(configDir);
+  const completionContext = hostActionCompletionContext(store, completions);
+  if (completionContext) {
+    store.active_conversation_id = completionContext.conversationId;
+  }
   store.host_action_intents = [];
 
-  const runtimeSessionId = executionSessionIdForConversation(store.active_conversation_id);
+  const runtimeSessionId =
+    completionContext?.sessionId ??
+    executionSessionIdForConversation(store.active_conversation_id);
   appendSessionStateForSession(
     store,
     runtimeSessionId,
@@ -171,103 +201,33 @@ export async function completeHostActionTurn(
       completion.error,
     );
   }
+  markHostActionRunsCompleted(store, completions);
 
   const resumedTurn = await resumeSdkRuntimeHostActions(
     configDir,
     runtimeSessionId,
     completions,
+    GEAR_COMPLETION_SDK_IDLE_TIMEOUT_MS,
+    (delta) => appendLiveAssistantDelta(store, configDir, runtimeSessionId, delta),
   );
   if (resumedTurn) {
-    await applyResumedSdkHostActionTurn(store, configDir, runtimeSessionId, resumedTurn);
+    await applyResumedSdkHostActionTurn(
+      store,
+      configDir,
+      runtimeSessionId,
+      resumedTurn,
+      completions,
+    );
     return snapshotFromStore(store, configDir);
   }
 
-  const activeProfile = store.agent_profiles.find(
-    (profile) => profile.id === store.active_agent_profile_id,
-  );
-  if (!activeProfile) {
-    throw new Error("active agent profile not found");
-  }
-
-  const route: TurnRoute = {
-    mode: "workspace_message",
-    source: "workspace_chat",
-    surface: "cli_workspace_chat",
-  };
-  let sdkTurn: SdkTurnResult;
-  const sdkRuntimeSessionId = `${runtimeSessionId}:gear-completion`;
-  try {
-    sdkTurn = await runSdkRuntimeTurn(
-      configDir,
-      sdkRuntimeSessionId,
-      route,
-      activeProfile,
-      composeGearCompletionPrompt(store, completions),
-      [],
-      {
-        availableTools: [],
-        autoApproveTools: [],
-        disallowedTools: [],
-        enableGeeHostTools: false,
-      },
-    );
-  } catch (error) {
-    const reason = errorMessage(error);
-    sdkTurn = {
-      assistant_chunks: [claudeSdkFailureAssistantReply(reason)],
-      tool_events: [],
-      auto_approved_tools: 0,
-      failed_reason: reason,
-    };
-  }
-
-  if (sdkTurn.pending_terminal_approval) {
-    sdkTurn.failed_reason =
-      "The agent tried to request terminal access while summarizing Gear results. Gear completion replies must be text-only and cannot pause for terminal approval.";
-  }
-  if (sdkTurn.terminal_access_denied_reason) {
-    sdkTurn.failed_reason = sdkTurn.terminal_access_denied_reason;
-  }
-  if (sdkTurn.failed_reason) {
-    sdkTurn.assistant_chunks = [
-      claudeSdkFailureAssistantReply(sdkTurn.failed_reason),
-    ];
-  }
-
-  const originatingMessageId = lastUserMessageId(store) ?? "host-action-user";
-  appendToolEvents(store, runtimeSessionId, originatingMessageId, sdkTurn.tool_events);
-  const assistantReply = assistantReplyFromTurn(
-    sdkTurn,
-    "The Gear action completed, but the agent did not produce a text summary.",
-  );
-  appendAssistantMessageForActiveConversation(store, runtimeSessionId, assistantReply);
-  appendSessionStateForSession(
+  await applyUnresumableHostActionCompletions(
     store,
+    configDir,
     runtimeSessionId,
-    sdkTurn.failed_reason
-      ? "the SDK runtime failed while composing the Gear completion reply"
-      : "the SDK runtime composed the final user-facing reply from Gear host results",
+    completions,
+    completionContext,
   );
-
-  const quickReply = sdkTurn.failed_reason
-    ? claudeSdkFailedQuickReply(sdkTurn.failed_reason)
-    : claudeSdkQuickReply(assistantReply, toolStepCount(sdkTurn));
-  store.quick_reply = quickReply;
-  store.chat_runtime = sdkTurn.failed_reason
-    ? claudeSdkDegradedChatRuntimeRecord(sdkTurn.failed_reason)
-    : claudeSdkChatRuntimeRecord();
-  store.last_run_state = sdkTurn.failed_reason
-    ? claudeSdkFailedRunState(store, sdkTurn.failed_reason)
-    : claudeSdkCompletedRunState(store, assistantReply);
-  store.last_request_outcome = {
-    source: route.source,
-    kind: "host_action_completed",
-    detail: quickReply,
-    task_id: null,
-    module_run_id: null,
-  };
-
-  await persistRuntimeStore(configDir, store);
   return snapshotFromStore(store, configDir);
 }
 
@@ -276,6 +236,7 @@ async function applyResumedSdkHostActionTurn(
   configDir: string,
   runtimeSessionId: string,
   sdkTurn: SdkTurnResult,
+  completions: RuntimeHostActionCompletion[],
 ): Promise<void> {
   const originatingMessageId = lastUserMessageId(store) ?? "host-action-user";
   appendToolEvents(store, runtimeSessionId, originatingMessageId, sdkTurn.tool_events);
@@ -291,6 +252,13 @@ async function applyResumedSdkHostActionTurn(
       runtimeSessionId,
       originatingMessageId,
       sdkTurn,
+    );
+    recordHostActionRuns(
+      store,
+      "sdk_same_run",
+      runtimeSessionId,
+      originatingMessageId,
+      sdkTurn.pending_host_actions,
     );
     markHostActionsPending(
       store,
@@ -312,9 +280,15 @@ async function applyResumedSdkHostActionTurn(
   if (sdkTurn.terminal_access_denied_reason) {
     sdkTurn.failed_reason = sdkTurn.terminal_access_denied_reason;
   }
-  if (sdkTurn.failed_reason) {
+  const completionFailureReason = sdkTurn.failed_reason;
+  if (completionFailureReason) {
     sdkTurn.assistant_chunks = [
-      claudeSdkFailureAssistantReply(sdkTurn.failed_reason),
+      gearCompletionFailureReply(
+        lastUserMessageContent(store) ?? "",
+        completions,
+        completionFailureReason,
+        sdkTurn,
+      ),
     ];
   }
 
@@ -326,8 +300,8 @@ async function applyResumedSdkHostActionTurn(
   appendSessionStateForSession(
     store,
     runtimeSessionId,
-    sdkTurn.failed_reason
-      ? "the SDK runtime failed while continuing after Gear host results"
+    completionFailureReason
+      ? "the SDK runtime failed while continuing after Gear host results; GeeAgent recorded the structured Gear result and preserved the runtime failure for retry"
       : "the SDK runtime continued after Gear host results and completed the active user turn",
   );
 
@@ -352,6 +326,73 @@ async function applyResumedSdkHostActionTurn(
   await persistRuntimeStore(configDir, store);
 }
 
+async function applyUnresumableHostActionCompletions(
+  store: RuntimeStore,
+  configDir: string,
+  runtimeSessionId: string,
+  completions: RuntimeHostActionCompletion[],
+  completionContext: HostActionCompletionContext | null,
+): Promise<void> {
+  for (const completion of completions) {
+    appendToolResultForHostBridgeCompletion(
+      store,
+      runtimeSessionId,
+      completion.tool_id,
+      completion.status,
+      completion.summary,
+      completion.error,
+    );
+  }
+
+  const legacyFallback = completionContext?.source
+    ? completionContext.source === "static_fallback"
+    : lastRunStopReason(store) === "static_gear_fallback_running";
+  const failureReason = legacyFallback
+    ? "A legacy native Gear fallback completion was received, but fallback task execution is now prohibited. GeeAgent recorded the structured result and marked the turn failed instead of presenting it as complete."
+    : "The same-run SDK runtime session is no longer alive, so GeeAgent cannot safely continue this Gear host-action turn.";
+  const assistantReply = unresumableHostActionReply(
+    lastUserMessageContent(store) ?? "",
+    completions,
+    failureReason,
+    legacyFallback,
+  );
+
+  appendAssistantMessageForActiveConversation(store, runtimeSessionId, assistantReply);
+  appendSessionStateForSession(
+    store,
+    runtimeSessionId,
+    legacyFallback
+      ? "a legacy native Gear fallback completion arrived; GeeAgent recorded structured results and exposed the prohibited fallback as a failed turn"
+      : "the native Gear host action completed, but the same SDK run could not be resumed; GeeAgent did not start a detached completion turn",
+  );
+
+  const quickReply = claudeSdkFailedQuickReply(failureReason);
+  store.quick_reply = quickReply;
+  if (!legacyFallback) {
+    store.chat_runtime = claudeSdkDegradedChatRuntimeRecord(failureReason);
+  }
+  store.last_run_state = runtimeRunState(
+    store.active_conversation_id,
+    "failed",
+    legacyFallback
+      ? "legacy_static_gear_fallback_prohibited"
+      : "sdk_host_action_session_lost",
+    assistantReply,
+    false,
+    null,
+    null,
+  );
+  store.last_request_outcome = {
+    source: "workspace_chat",
+    kind: "host_action_completed",
+    detail: quickReply,
+    task_id: null,
+    module_run_id: null,
+  };
+
+  await persistRuntimeStore(configDir, store);
+}
+
 async function applyClaudeSdkTurn(
   store: RuntimeStore,
   configDir: string,
@@ -364,9 +405,9 @@ async function applyClaudeSdkTurn(
     createConversation(store, quickConversationTitle(text), [QUICK_CONVERSATION_TAG]);
   }
 
-  const routedGearIntent = routeLocalGearIntent(text);
-  if (routedGearIntent) {
-    recordRoutedGearHostTurn(store, route, text, routedGearIntent);
+  const readiness = await loadChatReadiness(configDir);
+  if (readiness.status !== "live") {
+    recordRuntimeUnavailableTurn(store, route, text, readiness);
     return;
   }
 
@@ -399,6 +440,7 @@ async function applyClaudeSdkTurn(
 
   let sdkTurn: SdkTurnResult;
   try {
+    const gearBridgeFirst = requiresGeeGearBridgeFirst(text);
     sdkTurn = await runSdkRuntimeTurn(
       configDir,
       runtimeSessionId,
@@ -408,6 +450,15 @@ async function applyClaudeSdkTurn(
       [],
       {
         onToolEvent: (event) => appendLiveSdkToolEvent(store, configDir, cursor, event),
+        onAssistantText: (delta) =>
+          appendLiveAssistantDelta(
+            store,
+            configDir,
+            cursor.sessionId,
+            delta,
+            cursor.assistantMessageId,
+          ),
+        toolBoundaryMode: gearBridgeFirst ? "gear_first" : "default",
       },
     );
   } catch (error) {
@@ -473,42 +524,63 @@ async function appendLiveSdkToolEvent(
   await persistRuntimeStore(configDir, store);
 }
 
-function recordRoutedGearHostTurn(
+async function appendLiveAssistantDelta(
+  store: RuntimeStore,
+  configDir: string,
+  sessionId: string,
+  delta: string,
+  assistantMessageId?: string,
+): Promise<void> {
+  appendAssistantDeltaForActiveConversation(store, sessionId, delta, assistantMessageId);
+  await persistRuntimeStore(configDir, store);
+}
+
+function recordRuntimeUnavailableTurn(
   store: RuntimeStore,
   route: TurnRoute,
   text: string,
-  routed: RoutedGearIntent,
+  readiness: ChatReadiness,
 ): void {
-  store.host_action_intents = routed.hostActions;
-  const toolEvents = routed.hostActions.map((action) => ({
-      kind: "invocation" as const,
-      invocation_id: action.host_action_id,
-      tool_name: action.tool_id,
-      input_summary: JSON.stringify(action.arguments ?? {}),
-    }));
-
   const cursor = beginTurnReplay(store, route.surface, text);
+  const detail = [
+    "the SDK runtime is not live, so GeeAgent stopped before executing tools or Gear actions",
+    `(${readiness.status}: ${readiness.detail})`,
+  ].join(" ");
   appendSessionStateForSession(
     store,
     cursor.sessionId,
-    "routing this Gear request through the native Gee host; the final reply will be generated by the agent after host results return",
+    detail,
   );
-  appendToolEvents(store, cursor.sessionId, cursor.userMessageId, toolEvents);
-  store.quick_reply = "Running the Gear action in the native host.";
-  store.chat_runtime = claudeSdkChatRuntimeRecord();
+  const assistantReply = claudeSdkFailureAssistantReply(
+    `The SDK runtime is not live. ${readiness.detail}`,
+  );
+  appendAssistantMessageForActiveConversation(
+    store,
+    cursor.sessionId,
+    assistantReply,
+    cursor.assistantMessageId,
+  );
+  finalizeTurnReplay(store, cursor, "blocked because the SDK runtime is not live");
+  store.host_action_intents = [];
+  store.quick_reply = claudeSdkFailedQuickReply(readiness.detail);
+  store.chat_runtime = {
+    status: readiness.status === "needs_setup" ? "needs_setup" : "degraded",
+    active_provider: readiness.active_provider ?? null,
+    detail: readiness.detail,
+  };
   store.last_run_state = runtimeRunState(
     store.active_conversation_id,
-    "running",
-    "gear_host_action_running",
-    "GeeAgent is applying the Gear action in the native host before asking the agent to summarize the result.",
+    "failed",
+    "sdk_runtime_not_live",
+    detail,
     false,
     null,
     null,
   );
   store.last_request_outcome = {
     source: route.source,
-    kind: "host_action_pending",
-    detail: "Running the Gear action in the native host.",
+    kind: "chat_reply",
+    detail: store.quick_reply,
     task_id: null,
     module_run_id: null,
   };
@@ -537,6 +609,13 @@ function installClaudeSdkHostActions(
     cursor.sessionId,
     cursor.userMessageId,
     sdkTurn,
+  );
+  recordHostActionRuns(
+    store,
+    "sdk_same_run",
+    cursor.sessionId,
+    cursor.userMessageId,
+    hostActions,
   );
   appendSessionStateForSession(
     store,
@@ -600,35 +679,182 @@ function markHostActionsPending(
   };
 }
 
-function composeGearCompletionPrompt(
+function recordHostActionRuns(
+  store: RuntimeStore,
+  source: RuntimeHostActionRunSource,
+  sessionId: string,
+  userMessageId: string,
+  hostActions: RuntimeHostActionIntent[],
+): void {
+  if (hostActions.length === 0) {
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const hostActionIds = new Set(hostActions.map((action) => action.host_action_id));
+  const existingRuns = (store.host_action_runs ?? []).filter(
+    (record) => !hostActionIds.has(record.host_action_id),
+  );
+  const recordedRuns = hostActions.map((action) => ({
+    host_action_id: action.host_action_id,
+    tool_id: action.tool_id,
+    session_id: sessionId,
+    conversation_id: store.active_conversation_id,
+    user_message_id: userMessageId,
+    source,
+    status: "pending" as const,
+    created_at: now,
+    updated_at: now,
+  }));
+
+  store.host_action_runs = [...existingRuns, ...recordedRuns].slice(-200);
+}
+
+function hostActionCompletionContext(
   store: RuntimeStore,
   completions: RuntimeHostActionCompletion[],
-): string {
-  const userRequest = lastUserMessageContent(store) ?? "The user requested a Gear action.";
-  const resultLines = completions.map((completion) => {
-    const summary = completion.summary?.trim();
-    const error = completion.error?.trim();
-    const resultJSON = completion.result_json?.trim();
-    const detail = completion.status === "succeeded"
-      ? (summary || "completed without a text summary")
-      : (error || summary || "failed without a text error");
-    const result = resultJSON ? `\n  Structured result: ${resultJSON}` : "";
-    return `- ${completion.tool_id} (${completion.host_action_id}): ${completion.status}. ${detail}${result}`;
+): HostActionCompletionContext | null {
+  const completionIds = new Set(
+    completions.map((completion) => completion.host_action_id),
+  );
+  const records = (store.host_action_runs ?? []).filter((record) =>
+    completionIds.has(record.host_action_id),
+  );
+  const record =
+    records.find((candidate) => candidate.status === "pending") ??
+    records.at(-1);
+  if (!record) {
+    return null;
+  }
+
+  return {
+    sessionId: record.session_id,
+    conversationId: record.conversation_id,
+    source: record.source,
+  };
+}
+
+function markHostActionRunsCompleted(
+  store: RuntimeStore,
+  completions: RuntimeHostActionCompletion[],
+): void {
+  if (!store.host_action_runs || completions.length === 0) {
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const completionStatuses = new Map<string, RuntimeHostActionRunRecord["status"]>(
+    completions.map((completion) => [
+      completion.host_action_id,
+      completion.status === "succeeded" ? "completed" : "failed",
+    ]),
+  );
+  store.host_action_runs = store.host_action_runs.map((record) => {
+    const status = completionStatuses.get(record.host_action_id);
+    if (!status) {
+      return record;
+    }
+    return {
+      ...record,
+      status,
+      updated_at: now,
+    };
   });
-  return [
-    "You are GeeAgent continuing the same user turn after native Gear host actions completed.",
-    "Write the final user-facing reply in the user's language.",
-    "Use the Gear tool results below as the source of truth.",
-    "Do not claim the action succeeded if any required Gear result failed.",
-    "Do not expose raw JSON unless it helps the user.",
-    "Keep the reply concise and natural.",
-    "",
-    "Original user request:",
-    userRequest,
-    "",
-    "Gear host results:",
-    ...resultLines,
-  ].join("\n");
+}
+
+function gearCompletionFailureReply(
+  userRequest: string,
+  completions: RuntimeHostActionCompletion[],
+  reason: string,
+  sdkTurn?: SdkTurnResult,
+): string {
+  const failed = completions.filter((completion) => completion.status !== "succeeded");
+  if (failed.length > 0) {
+    const details = failed.map((completion) =>
+      completion.error || completion.summary || `${completion.tool_id} failed`
+    );
+    return `The Gear action did not complete: ${details.join("; ")}`;
+  }
+
+  const summaries = completions
+    .map((completion) => completion.summary?.trim())
+    .filter((summary): summary is string => Boolean(summary));
+  const successfulToolSummaries = successfulToolResultSummaries(sdkTurn);
+  const header = successfulToolSummaries.length > 0
+      ? "Some Gear and follow-up local steps returned successfully, but the final agent-written reply timed out, so the user objective is not confirmed complete. The structured result was recorded in the tool steps."
+      : "The Gear step returned successfully, but the final agent-written reply timed out, so the user objective is not confirmed complete. The structured result was recorded in the tool steps.";
+
+  const sections: string[] = [];
+  if (summaries.length > 0) {
+    sections.push(summaries.join("\n"));
+  }
+  if (successfulToolSummaries.length > 0) {
+    sections.push(`Follow-up completed steps:\n${successfulToolSummaries.map((summary) => `- ${summary}`).join("\n")}`);
+  }
+
+  if (sections.length > 0) {
+    return `${header}\n\n${sections.join("\n\n")}`;
+  }
+
+  return `${header}\n\nSummary failure reason: ${reason}`;
+}
+
+function successfulToolResultSummaries(sdkTurn?: SdkTurnResult): string[] {
+  if (!sdkTurn) {
+    return [];
+  }
+  const toolNamesById = new Map<string, string>();
+  for (const event of sdkTurn.tool_events) {
+    if (event.kind === "invocation") {
+      toolNamesById.set(event.invocation_id, event.tool_name);
+    }
+  }
+
+  return sdkTurn.tool_events
+    .filter(
+      (event): event is Extract<SdkToolEvent, { kind: "result" }> =>
+        event.kind === "result" && event.status === "succeeded",
+    )
+    .map((event) => {
+      const toolName = toolNamesById.get(event.invocation_id) ?? "Tool";
+      const summary = event.summary?.trim();
+      return summary ? `${toolName}: ${summarizePrompt(summary, 220)}` : null;
+    })
+    .filter((summary): summary is string => Boolean(summary))
+    .slice(-3);
+}
+
+function unresumableHostActionReply(
+  userRequest: string,
+  completions: RuntimeHostActionCompletion[],
+  reason: string,
+  legacyFallback: boolean,
+): string {
+  const failed = completions.filter((completion) => completion.status !== "succeeded");
+  if (failed.length > 0) {
+    const details = failed.map((completion) =>
+      completion.error || completion.summary || `${completion.tool_id} failed`
+    );
+    return `The Gear action did not complete: ${details.join("; ")}`;
+  }
+
+  const summaries = completions
+    .map((completion) => completion.summary?.trim())
+    .filter((summary): summary is string => Boolean(summary));
+  const header = legacyFallback
+      ? "A legacy native Gear fallback completion arrived, but fallback execution is now prohibited, so GeeAgent marked this turn failed. The structured result was recorded in the tool steps."
+      : "The Gear action completed, but the same SDK run could not be resumed. GeeAgent did not start a detached completion turn; the structured result was recorded in the tool steps.";
+
+  if (summaries.length > 0) {
+    return `${header}\n\n${summaries.join("\n")}`;
+  }
+
+  return `${header}\n\n${reason}`;
+}
+
+function lastRunStopReason(store: RuntimeStore): string | null {
+  const value = store.last_run_state;
+  return isRecord(value) ? stringField(value, "stop_reason") ?? null : null;
 }
 
 function lastUserMessageContent(store: RuntimeStore): string | null {
@@ -665,26 +891,32 @@ async function applyTransientClaudeSdkQuickTurn(
   text: string,
 ): Promise<void> {
   store.host_action_intents = [];
-  const routedGearIntent = routeLocalGearIntent(text);
-  if (routedGearIntent) {
-    recordRoutedGearHostTurn(store, route, text, routedGearIntent);
+  const readiness = await loadChatReadiness(configDir);
+  if (readiness.status !== "live") {
+    recordRuntimeUnavailableTurn(store, route, text, readiness);
     return;
   }
 
   const transientPrepared: PreparedTurnContext = {
     ...prepared,
     workspaceMessages: [],
+    stageCapsuleMessages: [],
     shouldReuseActiveConversation: true,
   };
   const runtimeSessionId = transientRuntimeSessionId(text);
   let sdkTurn: SdkTurnResult;
   try {
+    const gearBridgeFirst = requiresGeeGearBridgeFirst(text);
     sdkTurn = await runSdkRuntimeTurn(
       configDir,
       runtimeSessionId,
       route,
       transientPrepared.activeAgentProfile,
       composeClaudeSdkTurnPrompt(route, transientPrepared, text),
+      [],
+      {
+        toolBoundaryMode: gearBridgeFirst ? "gear_first" : "default",
+      },
     );
   } catch (error) {
     const reason = errorMessage(error);
@@ -761,13 +993,20 @@ function recordClaudeSdkTurn(
     sdkTurn,
     "The SDK completed the turn without a text summary.",
   );
-  appendAssistantMessageForActiveConversation(store, cursor.sessionId, assistantReply);
+  appendAssistantMessageForActiveConversation(
+    store,
+    cursor.sessionId,
+    assistantReply,
+    cursor.assistantMessageId,
+  );
+  const stageCapsule = stageSummaryCapsuleForTurn(store, cursor, sdkTurn, assistantReply);
   finalizeTurnReplay(
     store,
     cursor,
     sdkTurn.failed_reason
       ? "the SDK runtime surfaced a real runtime failure and GeeAgent committed that failed turn back into the active conversation"
       : "the SDK runtime completed the active turn and committed the resulting tool trace back into GeeAgent",
+    stageCapsule,
   );
   return assistantReply;
 }
@@ -789,19 +1028,116 @@ function recordLiveClaudeSdkTurnCompletion(
     sdkTurn,
     "The SDK completed the turn without a text summary.",
   );
-  appendAssistantMessageForActiveConversation(store, cursor.sessionId, assistantReply);
+  appendAssistantMessageForActiveConversation(
+    store,
+    cursor.sessionId,
+    assistantReply,
+    cursor.assistantMessageId,
+  );
+  const stageCapsule = stageSummaryCapsuleForTurn(store, cursor, sdkTurn, assistantReply);
   finalizeTurnReplay(
     store,
     cursor,
     sdkTurn.failed_reason
       ? "the SDK runtime surfaced a real runtime failure and GeeAgent committed that failed turn back into the active conversation"
       : "the SDK runtime completed the active turn and committed the resulting tool trace back into GeeAgent",
+    stageCapsule,
   );
   return assistantReply;
 }
 
+function stageSummaryCapsuleForTurn(
+  store: RuntimeStore,
+  cursor: TurnReplayCursor,
+  sdkTurn: SdkTurnResult,
+  assistantReply: string,
+): string {
+  const status: StageSummaryStatus = sdkTurn.failed_reason ? "failed" : "succeeded";
+  const latestUserRequest = userMessageContentForCursor(store, cursor) ?? "";
+  const capsule = buildStageSummaryCapsule({
+    stage_id: cursor.sessionId,
+    run_id: cursor.sessionId,
+    session_id: cursor.sessionId,
+    status,
+    objective: summarizePrompt(latestUserRequest, 240),
+    latest_user_request: latestUserRequest,
+    completed_steps: status === "succeeded" ? [assistantReply] : [],
+    blockers: sdkTurn.failed_reason ? [sdkTurn.failed_reason] : [],
+    next_steps: sdkTurn.failed_reason
+      ? ["Recover from the recorded runtime failure before claiming completion."]
+      : [],
+    tool_records: stageToolRecordsFromTurn(sdkTurn),
+  });
+  return renderStageSummaryCapsule(capsule);
+}
+
+function stageToolRecordsFromTurn(sdkTurn: SdkTurnResult) {
+  const resultsById = new Map(
+    sdkTurn.tool_events
+      .filter((event) => event.kind === "result")
+      .map((event) => [event.invocation_id, event]),
+  );
+  return sdkTurn.tool_events
+    .filter((event) => event.kind === "invocation")
+    .map((invocation) => {
+      const result = resultsById.get(invocation.invocation_id);
+      const status: StageSummaryStatus = result?.status ?? "running";
+      return {
+        invocation_id: invocation.invocation_id,
+        tool_name: invocation.tool_name,
+        status,
+        input_summary: invocation.input_summary ?? null,
+        output_summary: result?.summary ?? null,
+        error: result?.error ?? null,
+        artifact_refs: (result?.artifacts ?? []).map(stageArtifactRefFromSdk),
+      };
+    });
+}
+
+function stageArtifactRefFromSdk(artifact: {
+  artifactId: string;
+  type: string;
+  title: string;
+  payloadRef: string;
+  inlinePreviewSummary?: string;
+}): StageSummaryArtifactRef {
+  return {
+    artifact_id: artifact.artifactId,
+    kind: artifact.type,
+    path: artifact.payloadRef,
+    title: artifact.title,
+    summary: artifact.inlinePreviewSummary,
+  };
+}
+
+function userMessageContentForCursor(
+  store: RuntimeStore,
+  cursor: TurnReplayCursor,
+): string | null {
+  const executionSession = store.execution_sessions.find(
+    (session) => isRecord(session) && session.session_id === cursor.sessionId,
+  );
+  const conversationId =
+    (isRecord(executionSession) ? stringField(executionSession, "conversation_id") : null) ??
+    (cursor.sessionId.startsWith("session_")
+      ? cursor.sessionId.slice("session_".length)
+      : store.active_conversation_id);
+  const conversation = store.conversations.find(
+    (candidate) => candidate.conversation_id === conversationId,
+  );
+  const found = conversation?.messages.find(
+    (message) => message.message_id === cursor.userMessageId && message.role === "user",
+  );
+  return found?.content ?? null;
+}
+
 export const __turnTestHooks = {
   composeClaudeSdkTurnPrompt,
+  gearCompletionFailureReply,
   isTransientQuickPrompt,
+  prepareTurnContext,
   routeQuickPromptToBestConversation,
+  stageSummaryCapsuleForTurn,
+  successfulToolResultSummaries,
+  userMessageContentForCursor,
 };

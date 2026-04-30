@@ -315,12 +315,6 @@ function markSdkRuntimeApprovalResumeStarted(
       ? `terminal access denied, sending the deny decision back into the paused SDK run: ${summarizePrompt(command, 120)}`
       : `terminal access approved, resuming the paused SDK run: ${summarizePrompt(command, 120)}`,
   );
-  appendToolResultForExistingInvocation(
-    store,
-    sessionId,
-    `toolinv_${approvalRequestId}`,
-    "succeeded",
-  );
 
   const detail =
     decision === "deny"

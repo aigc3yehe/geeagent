@@ -50,6 +50,22 @@ struct GearHostNativeWindowScenes: Scene {
             width: GearHost.bookmarkVaultWindowDescriptor.defaultWidth,
             height: GearHost.bookmarkVaultWindowDescriptor.defaultHeight
         )
+
+        Window(GearHost.weSpyReaderWindowDescriptor.title, id: GearHost.weSpyReaderWindowDescriptor.windowID) {
+            GearHost.makeNativeWindowView(for: GearHost.weSpyReaderWindowDescriptor.gearID)
+        }
+        .defaultSize(
+            width: GearHost.weSpyReaderWindowDescriptor.defaultWidth,
+            height: GearHost.weSpyReaderWindowDescriptor.defaultHeight
+        )
+
+        Window(GearHost.mediaGeneratorWindowDescriptor.title, id: GearHost.mediaGeneratorWindowDescriptor.windowID) {
+            GearHost.makeNativeWindowView(for: GearHost.mediaGeneratorWindowDescriptor.gearID)
+        }
+        .defaultSize(
+            width: GearHost.mediaGeneratorWindowDescriptor.defaultWidth,
+            height: GearHost.mediaGeneratorWindowDescriptor.defaultHeight
+        )
     }
 }
 

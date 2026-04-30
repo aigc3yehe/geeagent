@@ -1,4 +1,5 @@
 import { argError, getRecordArg, getStringArg } from "./args.js";
+import { validateGearCapabilityArgs } from "../capabilities/gear-validation.js";
 import type { ToolOutcome, ToolRequest } from "./types.js";
 
 const DISCLOSURE_LEVELS = new Set(["summary", "capabilities", "schema"]);
@@ -48,6 +49,17 @@ export function geeGearInvoke(request: ToolRequest): ToolOutcome {
     );
   }
 
+  const args = getRecordArg(request, "args") ?? {};
+  const validation = validateGearCapabilityArgs(gearID, capabilityID, args);
+  if (!validation.ok) {
+    return {
+      kind: "error",
+      tool_id: request.tool_id,
+      code: validation.code,
+      message: validation.message,
+    };
+  }
+
   return {
     kind: "completed",
     tool_id: request.tool_id,
@@ -55,7 +67,7 @@ export function geeGearInvoke(request: ToolRequest): ToolOutcome {
       intent: "gear.invoke",
       gear_id: gearID,
       capability_id: capabilityID,
-      args: getRecordArg(request, "args") ?? {},
+      args,
     },
   };
 }

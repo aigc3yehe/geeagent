@@ -269,6 +269,11 @@ private struct GearCatalogCard: View {
         guard app.installState == .installed else {
             return app.installIssue ?? app.summary
         }
+        if preparation?.state == .installFailed,
+           let detailLine = preparation?.detail?.split(whereSeparator: \.isNewline).first
+        {
+            return "\(preparation?.summary ?? app.summary)\n\(detailLine)"
+        }
         return preparation?.summary ?? app.summary
     }
 

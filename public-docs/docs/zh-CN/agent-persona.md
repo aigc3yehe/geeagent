@@ -126,7 +126,7 @@ global background 的优先级是 video 优先，然后 image。
 
 如果 Live2D persona 没有声明 `global_background`，GeeAgent 会把 Live2D 渲染在默认 abstract Home 背景上。
 
-Live2D persona 可以通过本地 UI 暴露姿势、动作、表情、viewport 位置和缩放。
+Live2D persona 可以通过本地 UI 暴露姿势、动作、表情、viewport 位置和缩放。在 Home surface 上，点击可见角色可以触发可用动作或表情变化，并且本地交互层会在 viewport 位置或缩放调整后保持对齐。
 
 ## 运行时影响
 

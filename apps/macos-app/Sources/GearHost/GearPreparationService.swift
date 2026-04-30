@@ -154,10 +154,35 @@ actor GearPreparationService {
             let version = installer.version ?? "0.4.20"
             return await runner.run("npm", arguments: ["install", "-g", "hyperframes@\(version)"])
         case "python3.install.user.twikit":
-            return await runner.run("python3", arguments: ["-m", "pip", "install", "--user", "twikit", "httpx"])
+            return await runPythonUserInstall(packages: ["twikit", "httpx"])
+        case "python3.install.user.wespy":
+            return await runPythonUserInstall(packages: ["wespy"])
         default:
             return GearCommandResult(exitCode: 1, stdout: "", stderr: "Unknown installer recipe `\(id)`.")
         }
+    }
+
+    private func runPythonUserInstall(packages: [String]) async -> GearCommandResult {
+        let firstArgs = ["-m", "pip", "install", "--user"] + packages
+        let first = await runner.run("python3", arguments: firstArgs)
+        guard first.exitCode != 0, first.isExternallyManagedPythonFailure else {
+            return first
+        }
+
+        let retryArgs = ["-m", "pip", "install", "--user", "--break-system-packages"] + packages
+        let retry = await runner.run("python3", arguments: retryArgs)
+        let retryNote = "Retried with --user --break-system-packages because this Python reports an externally managed environment."
+        return GearCommandResult(
+            exitCode: retry.exitCode,
+            stdout: [first.stdout, retryNote, retry.stdout]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n"),
+            stderr: [first.stderr, retry.stderr]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+        )
     }
 
     private func runBrewInstall(package: String) async -> GearCommandResult {
@@ -175,6 +200,16 @@ actor GearPreparationService {
     private func missingSummary(_ missing: [GearDependencyCheckResult]) -> String {
         let names = missing.map(\.item.id).joined(separator: ", ")
         return "Missing dependencies: \(names)"
+    }
+}
+
+private extension GearCommandResult {
+    var isExternallyManagedPythonFailure: Bool {
+        let output = combinedOutput.lowercased()
+        return output.contains("externally-managed-environment")
+            || output.contains("externally managed environment")
+            || output.contains("pep 668")
+            || output.contains("--break-system-packages")
     }
 }
 

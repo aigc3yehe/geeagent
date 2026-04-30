@@ -48,7 +48,7 @@ struct HomeWidgetLayer: View {
                 var positions = decodedPositions()
                 let base = storedPosition(for: widget)
                 let next = CGPoint(x: base.x + value.translation.width, y: base.y + value.translation.height)
-                positions[widget.id] = WidgetPoint(clamped(next))
+                positions[widget.id] = HomeWidgetStoredPoint(clamped(next))
                 storedPositions = encode(positions)
                 dragTranslations[widget.id] = nil
             }
@@ -61,41 +61,26 @@ struct HomeWidgetLayer: View {
     }
 
     private func storedPosition(for widget: InstalledAppRecord) -> CGPoint {
-        if let point = decodedPositions()[widget.id]?.cgPoint {
-            return clamped(point)
-        }
-        return defaultPosition(for: widget)
-    }
-
-    private func defaultPosition(for widget: InstalledAppRecord) -> CGPoint {
-        let y = min(max(canvasSize.height * 0.34, 190), canvasSize.height - 160)
-        switch widget.id {
-        case "btc.price":
-            return clamped(CGPoint(x: min(max(canvasSize.width * 0.34, 280), canvasSize.width - 160), y: y))
-        case "system.monitor":
-            return clamped(CGPoint(x: min(max(canvasSize.width * 0.54, 530), canvasSize.width - 160), y: y + 18))
-        default:
-            return clamped(CGPoint(x: canvasSize.width * 0.44, y: y + 32))
-        }
-    }
-
-    private func clamped(_ point: CGPoint) -> CGPoint {
-        CGPoint(
-            x: min(max(point.x, 128), max(canvasSize.width - 128, 128)),
-            y: min(max(point.y, 92), max(canvasSize.height - 92, 92))
+        HomeWidgetPlacement.storedPosition(
+            for: widget.id,
+            canvasSize: canvasSize,
+            storedPositions: storedPositions
         )
     }
 
-    private func decodedPositions() -> [String: WidgetPoint] {
-        guard let data = storedPositions.data(using: .utf8),
-              let positions = try? JSONDecoder().decode([String: WidgetPoint].self, from: data)
-        else {
-            return [:]
-        }
-        return positions
+    private func defaultPosition(for widget: InstalledAppRecord) -> CGPoint {
+        HomeWidgetPlacement.defaultPosition(for: widget.id, canvasSize: canvasSize)
     }
 
-    private func encode(_ positions: [String: WidgetPoint]) -> String {
+    private func clamped(_ point: CGPoint) -> CGPoint {
+        HomeWidgetPlacement.clamped(point, canvasSize: canvasSize)
+    }
+
+    private func decodedPositions() -> [String: HomeWidgetStoredPoint] {
+        HomeWidgetPlacement.decodedPositions(from: storedPositions)
+    }
+
+    private func encode(_ positions: [String: HomeWidgetStoredPoint]) -> String {
         guard let data = try? JSONEncoder().encode(positions),
               let string = String(data: data, encoding: .utf8)
         else {
@@ -105,7 +90,50 @@ struct HomeWidgetLayer: View {
     }
 }
 
-private struct WidgetPoint: Codable, Equatable {
+enum HomeWidgetPlacement {
+    static let size = CGSize(width: 230, height: 118)
+
+    static func storedPosition(
+        for widgetID: String,
+        canvasSize: CGSize,
+        storedPositions: String
+    ) -> CGPoint {
+        if let point = decodedPositions(from: storedPositions)[widgetID]?.cgPoint {
+            return clamped(point, canvasSize: canvasSize)
+        }
+        return defaultPosition(for: widgetID, canvasSize: canvasSize)
+    }
+
+    static func defaultPosition(for widgetID: String, canvasSize: CGSize) -> CGPoint {
+        let y = min(max(canvasSize.height * 0.34, 190), canvasSize.height - 160)
+        switch widgetID {
+        case "btc.price":
+            return clamped(CGPoint(x: min(max(canvasSize.width * 0.34, 280), canvasSize.width - 160), y: y), canvasSize: canvasSize)
+        case "system.monitor":
+            return clamped(CGPoint(x: min(max(canvasSize.width * 0.54, 530), canvasSize.width - 160), y: y + 18), canvasSize: canvasSize)
+        default:
+            return clamped(CGPoint(x: canvasSize.width * 0.44, y: y + 32), canvasSize: canvasSize)
+        }
+    }
+
+    static func clamped(_ point: CGPoint, canvasSize: CGSize) -> CGPoint {
+        CGPoint(
+            x: min(max(point.x, 128), max(canvasSize.width - 128, 128)),
+            y: min(max(point.y, 92), max(canvasSize.height - 92, 92))
+        )
+    }
+
+    static func decodedPositions(from storedPositions: String) -> [String: HomeWidgetStoredPoint] {
+        guard let data = storedPositions.data(using: .utf8),
+              let positions = try? JSONDecoder().decode([String: HomeWidgetStoredPoint].self, from: data)
+        else {
+            return [:]
+        }
+        return positions
+    }
+}
+
+struct HomeWidgetStoredPoint: Codable, Equatable {
     var x: Double
     var y: Double
 

@@ -220,6 +220,18 @@ struct TwitterCaptureGearWindow: View {
                             .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     }
                     .buttonStyle(.plain)
+
+                    Button {
+                        model.confirmAndDeleteAllTasks()
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.red.opacity((model.tasks.isEmpty || model.isBusy) ? 0.32 : 0.78))
+                            .frame(width: 32, height: 32)
+                            .background(Color.red.opacity((model.tasks.isEmpty || model.isBusy) ? 0.035 : 0.09), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.tasks.isEmpty || model.isBusy)
                 }
 
                 if model.tasks.isEmpty {
@@ -375,6 +387,10 @@ private struct TwitterCaptureTaskRow: View {
                     .font(.geeBody(11))
                     .foregroundStyle(.white.opacity(0.38))
                     .lineLimit(1)
+                Label("Task created \(task.createdAtLocalDisplay)", systemImage: "clock")
+                    .font(.geeBodyMedium(10))
+                    .foregroundStyle(.white.opacity(0.38))
+                    .lineLimit(1)
             }
 
             Spacer()
@@ -417,6 +433,7 @@ private struct TwitterCaptureTaskSummary: View {
                     TwitterCaptureTag(task.kind.title)
                     TwitterCaptureTag("\(task.tweets.count) tweets")
                     TwitterCaptureTag("limit \(task.limit)")
+                    TwitterCaptureTag("created \(task.createdAtLocalDisplay)")
                 }
 
                 Text(task.taskURL.path)

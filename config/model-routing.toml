@@ -4,25 +4,21 @@ allow_user_overrides = true
 
 [continuation]
 min_confidence_to_resume = 0.85
-fallback_action = "new_conversation"
 
 [route_classes.cheap]
-provider = "openai"
-model = "gpt-4.1-mini"
+provider = "xenodia"
+model = "gpt-5.4-mini"
 reasoning_effort = "low"
-fallback_model = "gpt-4.1-mini"
 
 [route_classes.balanced]
-provider = "openai"
-model = "gpt-5"
+provider = "xenodia"
+model = "gpt-5.4"
 reasoning_effort = "medium"
-fallback_model = "gpt-4.1-mini"
 
 [route_classes.strong]
-provider = "openai"
-model = "gpt-5"
+provider = "xenodia"
+model = "gpt-5.4"
 reasoning_effort = "high"
-fallback_model = "gpt-4.1-mini"
 
 [profiles.main]
 default_route_class = "balanced"

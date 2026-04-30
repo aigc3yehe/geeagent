@@ -78,6 +78,34 @@ final class MediaLibraryAgentImportTests: XCTestCase {
     }
 
     @MainActor
+    func testAgentImportFallsBackToLastLibraryPathWhenStoredBookmarkIsInvalid() async throws {
+        let suiteName = "media-agent-bookmark-fallback-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-agent-bookmark-fallback-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let source = root.appendingPathComponent("sample.png")
+        try makePNGData().write(to: source)
+
+        let library = try MediaLibraryService().createLibrary(parentURL: root, name: "AgentBookmarkFallback.library")
+        defaults.set(Data([0, 1, 2, 3]), forKey: lastLibraryBookmarkKey)
+        defaults.set(library.url.path, forKey: lastLibraryPathKey)
+
+        let store = MediaLibraryModuleStore(defaults: defaults)
+        let imported = try await store.importMediaForAgent(paths: [source.path])
+
+        XCTAssertEqual(imported.count, 1)
+        XCTAssertEqual(store.library?.url.path, library.url.path)
+        XCTAssertEqual(store.items.count, 1)
+        XCTAssertNotNil(defaults.data(forKey: lastLibraryBookmarkKey))
+        XCTAssertEqual(defaults.string(forKey: lastLibraryPathKey), library.url.path)
+    }
+
+    @MainActor
     func testAgentImportRouterReportsMissingSourcePaths() async throws {
         let store = MediaLibraryModuleStore.shared
         let originalLibrary = store.library

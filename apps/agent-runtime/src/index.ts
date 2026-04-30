@@ -1,10 +1,13 @@
 import readline from "node:readline";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 import {
   startAnthropicGateway,
   type AnthropicGatewayHandle,
 } from "./gateway.js";
 import {
+  DEFAULT_SDK_AVAILABLE_TOOLS,
   DEFAULT_SDK_AUTO_APPROVE_TOOLS,
   DEFAULT_SDK_DISALLOWED_TOOLS,
 } from "./sdk-tool-policy.js";
@@ -21,7 +24,19 @@ let gateway: AnthropicGatewayHandle | null = null;
 let commandChain = Promise.resolve();
 
 function configuredGatewayTimeoutSeconds(): number | undefined {
-  const raw = process.env.GEEAGENT_XENODIA_REQUEST_TIMEOUT_SECONDS?.trim();
+  return configuredPositiveNumber("GEEAGENT_XENODIA_REQUEST_TIMEOUT_SECONDS");
+}
+
+function configuredGatewayMaxCompletionTokens(): number | undefined {
+  return configuredPositiveNumber("GEEAGENT_XENODIA_MAX_COMPLETION_TOKENS");
+}
+
+function configuredGatewayTemperature(): number | undefined {
+  return configuredPositiveNumber("GEEAGENT_XENODIA_TEMPERATURE");
+}
+
+function configuredPositiveNumber(envName: string): number | undefined {
+  const raw = process.env[envName]?.trim();
   if (!raw) {
     return undefined;
   }
@@ -51,11 +66,16 @@ async function ensureGateway(): Promise<AnthropicGatewayHandle> {
     throw new Error("GEEAGENT_XENODIA_API_KEY is missing for the SDK runtime");
   }
 
+  const requestTimeoutSeconds = configuredGatewayTimeoutSeconds();
+  const maxCompletionTokens = configuredGatewayMaxCompletionTokens();
+  const temperature = configuredGatewayTemperature();
   gateway = await startAnthropicGateway({
     xenodiaApiKey,
     backendUrl: process.env.GEEAGENT_XENODIA_CHAT_COMPLETIONS_URL,
     modelOverride: process.env.GEEAGENT_XENODIA_MODEL,
-    requestTimeoutSeconds: configuredGatewayTimeoutSeconds(),
+    ...(requestTimeoutSeconds ? { requestTimeoutSeconds } : {}),
+    ...(maxCompletionTokens ? { maxCompletionTokens } : {}),
+    ...(temperature ? { temperature } : {}),
   });
   return gateway;
 }
@@ -79,6 +99,7 @@ async function handleCommand(command: RuntimeCommand): Promise<void> {
       const cwd = command.cwd ?? process.cwd();
       const model = command.model ?? initializedDefaultModel;
       const maxTurns = command.maxTurns ?? DEFAULT_MAX_TURNS;
+      const availableTools = command.availableTools ?? DEFAULT_SDK_AVAILABLE_TOOLS;
       const autoApproveTools =
         command.autoApproveTools ?? DEFAULT_SDK_AUTO_APPROVE_TOOLS;
       const disallowedTools =
@@ -93,9 +114,12 @@ async function handleCommand(command: RuntimeCommand): Promise<void> {
           maxTurns,
           systemPrompt: command.systemPrompt,
           runtimeContext: command.runtimeContext,
-          availableTools: command.availableTools,
+          availableTools,
           autoApproveTools,
           disallowedTools,
+          artifactRoot:
+            process.env.GEEAGENT_ARTIFACT_ROOT ??
+            join(tmpdir(), "geeagent-artifacts"),
           gatewayBaseUrl: activeGateway.baseUrl,
           gatewayApiKey: activeGateway.apiKey,
         },

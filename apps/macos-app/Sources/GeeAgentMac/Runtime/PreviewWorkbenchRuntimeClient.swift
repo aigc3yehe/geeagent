@@ -360,8 +360,7 @@ struct PreviewWorkbenchRuntimeClient: WorkbenchRuntimeClient {
                     summary: "Default routing preferences for chat and automations.",
                     items: [
                         SettingValue(id: "models-chat", label: "Chat default", value: "GPT-5"),
-                        SettingValue(id: "models-automation", label: "Automation default", value: "GPT-5 mini"),
-                        SettingValue(id: "models-fallback", label: "Fallback", value: "Disabled")
+                        SettingValue(id: "models-automation", label: "Automation default", value: "GPT-5 mini")
                     ]
                 ),
                 SettingsPaneSummary(
@@ -804,8 +803,7 @@ struct PreviewWorkbenchRuntimeClient: WorkbenchRuntimeClient {
                     name: "default",
                     provider: "xenodia",
                     model: "gpt-5.4",
-                    reasoningEffort: "medium",
-                    fallbackModel: "gpt-5.4"
+                    reasoningEffort: "medium"
                 )
             ],
             profiles: []

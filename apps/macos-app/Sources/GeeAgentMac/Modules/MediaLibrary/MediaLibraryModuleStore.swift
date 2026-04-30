@@ -36,6 +36,7 @@ final class MediaLibraryModuleStore {
     var errorMessage: String?
     var pendingAgentImportPaths: [String] = []
     var libraryHistory: [MediaLibraryHistoryEntry] = []
+    private var restoreGeneration = 0
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -114,8 +115,27 @@ final class MediaLibraryModuleStore {
         guard library == nil else {
             return
         }
-        await runLoading {
-            _ = try await restoreLastLibraryFromPreferences()
+        guard !isLoading else {
+            return
+        }
+
+        let generation = nextRestoreGeneration()
+        isLoading = true
+        errorMessage = nil
+        do {
+            _ = try await restoreLastLibraryFromPreferencesWithTimeout(
+                seconds: 8,
+                restoreGeneration: generation
+            )
+        } catch MediaLibraryRestoreError.timedOut {
+            invalidateRestoreGeneration(generation)
+            errorMessage = "Automatic restore is waiting for macOS authorization. Use Open Library to grant access."
+        } catch {
+            invalidateRestoreGeneration(generation)
+            errorMessage = error.localizedDescription
+        }
+        if restoreGeneration == generation {
+            isLoading = false
         }
     }
 
@@ -239,14 +259,19 @@ final class MediaLibraryModuleStore {
             throw MediaLibraryAgentImportError.libraryLoading
         }
 
+        let generation = nextRestoreGeneration()
         do {
-            if try await restoreLastLibraryFromPreferences(), let library {
+            if try await restoreLastLibraryFromPreferencesWithTimeout(seconds: 8, restoreGeneration: generation),
+               let library
+            {
                 return library
             }
         } catch {
+            invalidateRestoreGeneration(generation)
             pendingAgentImportPaths = pendingPaths
             throw MediaLibraryAgentImportError.authorizationRequired(pendingPaths: pendingPaths)
         }
+        invalidateRestoreGeneration(generation)
 
         pendingAgentImportPaths = pendingPaths
         throw MediaLibraryAgentImportError.authorizationRequired(pendingPaths: pendingPaths)
@@ -397,14 +422,40 @@ final class MediaLibraryModuleStore {
     }
 
     private func openLibrary(at url: URL) async {
-        await runLoading {
-            try await openLibraryThrowing(at: url, shouldPersistBookmark: true)
+        let generation = nextRestoreGeneration()
+        isLoading = true
+        errorMessage = nil
+        do {
+            try await openLibraryWithTimeout(
+                at: url,
+                seconds: 12,
+                shouldUseSecurityScope: true,
+                shouldPersistBookmark: true,
+                restoreGeneration: generation
+            )
+        } catch MediaLibraryRestoreError.timedOut {
+            invalidateRestoreGeneration(generation)
+            errorMessage = "Opening this library is waiting for macOS authorization. Use Open Library to grant access."
+        } catch {
+            invalidateRestoreGeneration(generation)
+            errorMessage = error.localizedDescription
+        }
+        if restoreGeneration == generation {
+            isLoading = false
         }
     }
 
-    private func openLibraryThrowing(at url: URL, shouldPersistBookmark: Bool) async throws {
-        let access = MediaLibrarySecurityScope(url: url)
+    private func openLibraryThrowing(
+        at url: URL,
+        shouldUseSecurityScope: Bool,
+        shouldPersistBookmark: Bool,
+        restoreGeneration expectedRestoreGeneration: Int? = nil
+    ) async throws {
+        let access = shouldUseSecurityScope ? MediaLibrarySecurityScope(url: url) : nil
         let loaded = try await loadLibrarySnapshot(at: url)
+        if let expectedRestoreGeneration, restoreGeneration != expectedRestoreGeneration {
+            throw CancellationError()
+        }
         activeLibraryAccess = access
         applyLoadedLibrary(loaded, shouldPersistBookmark: shouldPersistBookmark)
     }
@@ -461,37 +512,132 @@ final class MediaLibraryModuleStore {
         }
     }
 
-    private func restoreLastLibraryFromPreferences() async throws -> Bool {
-        guard let url = try restoredLibraryURLFromPreferences() else {
+    private func restoreLastLibraryFromPreferencesWithTimeout(
+        seconds: Double,
+        restoreGeneration: Int
+    ) async throws -> Bool {
+        try await raceLibraryOperation(
+            seconds: seconds,
+            restoreGeneration: restoreGeneration
+        ) {
+            try await self.restoreLastLibraryFromPreferences(restoreGeneration: restoreGeneration)
+        }
+    }
+
+    private func openLibraryWithTimeout(
+        at url: URL,
+        seconds: Double,
+        shouldUseSecurityScope: Bool,
+        shouldPersistBookmark: Bool,
+        restoreGeneration: Int
+    ) async throws {
+        try await raceLibraryOperation(
+            seconds: seconds,
+            restoreGeneration: restoreGeneration
+        ) {
+            try await self.openLibraryThrowing(
+                at: url,
+                shouldUseSecurityScope: shouldUseSecurityScope,
+                shouldPersistBookmark: shouldPersistBookmark,
+                restoreGeneration: restoreGeneration
+            )
+        }
+    }
+
+    private func raceLibraryOperation<T>(
+        seconds: Double,
+        restoreGeneration: Int,
+        operation: @escaping @MainActor () async throws -> T
+    ) async throws -> T {
+        let race = MediaLibraryRestoreRace()
+        return try await withCheckedThrowingContinuation { continuation in
+            Task { @MainActor in
+                do {
+                    let result = try await operation()
+                    if await race.claim() {
+                        continuation.resume(returning: result)
+                    }
+                } catch {
+                    if await race.claim() {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                guard await race.claim() else {
+                    return
+                }
+                await MainActor.run {
+                    self.invalidateRestoreGeneration(restoreGeneration)
+                }
+                continuation.resume(throwing: MediaLibraryRestoreError.timedOut)
+            }
+        }
+    }
+
+    private func restoreLastLibraryFromPreferences(restoreGeneration: Int? = nil) async throws -> Bool {
+        if let bookmarkData = defaults.data(forKey: PreferenceKey.lastLibraryBookmark) {
+            do {
+                let url = try restoredBookmarkedLibraryURL(from: bookmarkData)
+                if FileManager.default.fileExists(atPath: url.path) {
+                    try await openLibraryThrowing(
+                        at: url,
+                        shouldUseSecurityScope: true,
+                        shouldPersistBookmark: true,
+                        restoreGeneration: restoreGeneration
+                    )
+                    return true
+                }
+                defaults.removeObject(forKey: PreferenceKey.lastLibraryBookmark)
+            } catch {
+                defaults.removeObject(forKey: PreferenceKey.lastLibraryBookmark)
+            }
+        }
+
+        guard let path = defaults.string(forKey: PreferenceKey.lastLibraryPath), !path.isEmpty else {
             return false
         }
+        let url = URL(fileURLWithPath: path)
         guard FileManager.default.fileExists(atPath: url.path) else {
             clearStoredLibraryAccess()
             return false
         }
-        try await openLibraryThrowing(at: url, shouldPersistBookmark: true)
+
+        try await openLibraryThrowing(
+            at: url,
+            shouldUseSecurityScope: false,
+            shouldPersistBookmark: true,
+            restoreGeneration: restoreGeneration
+        )
         return true
     }
 
-    private func restoredLibraryURLFromPreferences() throws -> URL? {
-        if let bookmarkData = defaults.data(forKey: PreferenceKey.lastLibraryBookmark) {
-            var isStale = false
-            let url = try URL(
-                resolvingBookmarkData: bookmarkData,
-                options: [.withSecurityScope, .withoutUI],
-                relativeTo: nil,
-                bookmarkDataIsStale: &isStale
-            )
-            if isStale {
-                persistBookmark(for: url)
-            }
-            return url
-        }
+    private func nextRestoreGeneration() -> Int {
+        restoreGeneration += 1
+        return restoreGeneration
+    }
 
-        guard let path = defaults.string(forKey: PreferenceKey.lastLibraryPath), !path.isEmpty else {
-            return nil
+    private func invalidateRestoreGeneration(_ generation: Int) {
+        if restoreGeneration == generation {
+            restoreGeneration += 1
         }
-        return URL(fileURLWithPath: path)
+        isLoading = false
+    }
+
+    private func restoredBookmarkedLibraryURL(from bookmarkData: Data) throws -> URL {
+        var isStale = false
+        let url = try URL(
+            resolvingBookmarkData: bookmarkData,
+            options: [.withSecurityScope, .withoutUI],
+            relativeTo: nil,
+            bookmarkDataIsStale: &isStale
+        )
+        if isStale {
+            persistBookmark(for: url)
+        }
+        return url
     }
 
     private func persistBookmark(for url: URL) {
@@ -577,6 +723,22 @@ enum MediaLibraryAgentImportError: LocalizedError {
         case .noReadableFiles:
             return "No readable local media files were provided."
         }
+    }
+}
+
+private enum MediaLibraryRestoreError: Error {
+    case timedOut
+}
+
+private actor MediaLibraryRestoreRace {
+    private var isClaimed = false
+
+    func claim() -> Bool {
+        guard !isClaimed else {
+            return false
+        }
+        isClaimed = true
+        return true
     }
 }
 

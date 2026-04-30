@@ -22,21 +22,28 @@ const MEDIA_EXTENSION_KIND: Record<string, "image" | "video"> = {
   mkv: "video",
 };
 
-export function routeLocalGearIntent(prompt: string): RoutedGearIntent | null {
+export function routeLocalGearIntent(
+  prompt: string,
+): RoutedGearIntent | null {
   const rawText = prompt.trim();
   const text = rawText.toLowerCase();
   if (shouldDeferToAgentPlannedGearWorkflow(rawText, text)) {
     return null;
   }
 
-  const bookmarkIntent = routeBookmarkVaultIntent(rawText, text);
-  if (bookmarkIntent) {
-    return bookmarkIntent;
-  }
-
   const twitterIntent = routeTwitterCaptureIntent(text);
   if (twitterIntent) {
     return twitterIntent;
+  }
+
+  const weSpyIntent = routeWeSpyReaderIntent(rawText, text);
+  if (weSpyIntent) {
+    return weSpyIntent;
+  }
+
+  const bookmarkIntent = routeBookmarkVaultIntent(rawText, text);
+  if (bookmarkIntent) {
+    return bookmarkIntent;
   }
 
   if (!mentionsMediaLibrary(text)) {
@@ -76,6 +83,19 @@ export function routeLocalGearIntent(prompt: string): RoutedGearIntent | null {
       },
     ],
   };
+}
+
+export function requiresGeeGearBridgeFirst(prompt: string): boolean {
+  const rawText = prompt.trim();
+  const text = rawText.toLowerCase();
+  const url = firstURL(rawText);
+  return (
+    shouldDeferToAgentPlannedGearWorkflow(rawText, text) ||
+    mentionsTwitterCapture(text) ||
+    mentionsBookmarkVault(text) ||
+    mentionsMediaLibrary(text) ||
+    (url !== null && isWeChatReaderURL(url))
+  );
 }
 
 function shouldDeferToAgentPlannedGearWorkflow(rawText: string, text: string): boolean {
@@ -216,6 +236,48 @@ function routeTwitterCaptureIntent(text: string): RoutedGearIntent | null {
   };
 }
 
+function routeWeSpyReaderIntent(rawText: string, text: string): RoutedGearIntent | null {
+  const url = firstURL(rawText);
+  if (!url || !isWeChatReaderURL(url)) {
+    return null;
+  }
+
+  const isAlbum = isWeChatAlbumURL(url);
+  const capabilityID = isAlbum && mentionsAlbumListOnly(text)
+    ? "wespy.list_album"
+    : isAlbum
+      ? "wespy.fetch_album"
+      : "wespy.fetch_article";
+  const args: Record<string, unknown> = { url };
+  const articleLimit = requestedArticleLimit(text);
+  if (capabilityID !== "wespy.fetch_article") {
+    args.max_articles = articleLimit;
+  }
+  if (requestsMarkdownExport(text)) {
+    args.export_markdown = true;
+  }
+
+  const runID = uniqueHostActionRunID();
+  return {
+    hostActions: [
+      {
+        host_action_id: hostActionID("open_wespy_reader", text, runID),
+        tool_id: "gee.app.openSurface",
+        arguments: { gear_id: "wespy.reader" },
+      },
+      {
+        host_action_id: hostActionID(capabilityID.replace(".", "_"), text, runID),
+        tool_id: "gee.gear.invoke",
+        arguments: {
+          gear_id: "wespy.reader",
+          capability_id: capabilityID,
+          args,
+        },
+      },
+    ],
+  };
+}
+
 function mentionsTwitterCapture(text: string): boolean {
   return (
     text.includes("twitter") ||
@@ -243,6 +305,24 @@ function requestedLimit(text: string): number {
   return 30;
 }
 
+function requestedArticleLimit(text: string): number {
+  const patterns = [
+    /(?:first|latest|top)\s+(\d{1,3})\s*(?:articles?|posts?|items?)?/,
+    /(\d{1,3})\s*(?:articles?|posts?|items?)/,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      return clampLimit(Number.parseInt(match[1], 10), 10);
+    }
+  }
+  return 10;
+}
+
+function clampLimit(value: number, fallback: number): number {
+  return Math.min(Math.max(Number.isFinite(value) ? value : fallback, 1), 200);
+}
+
 function requestedHandle(text: string, url: string | null): string | null {
   const mention = text.match(/@([a-z0-9_]{1,15})/i)?.[1];
   if (mention) {
@@ -257,6 +337,38 @@ function requestedHandle(text: string, url: string | null): string | null {
     return null;
   }
   return handle;
+}
+
+function isWeChatReaderURL(url: string): boolean {
+  return /^https?:\/\/mp\.weixin\.qq\.com\/(?:s(?:\/|\?)|mp\/appmsgalbum\?)/i.test(url);
+}
+
+function isWeChatAlbumURL(url: string): boolean {
+  return /^https?:\/\/mp\.weixin\.qq\.com\/mp\/appmsgalbum\?/i.test(url);
+}
+
+function mentionsAlbumListOnly(text: string): boolean {
+  if (
+    text.includes("fetch") ||
+    text.includes("download") ||
+    text.includes("capture") ||
+    text.includes("save") ||
+    text.includes("markdown") ||
+    text.includes("md")
+  ) {
+    return false;
+  }
+  return (
+    text.includes("list") ||
+    text.includes("urls") ||
+    text.includes("links")
+  );
+}
+
+function requestsMarkdownExport(text: string): boolean {
+  const wantsMarkdown = text.includes("markdown") || /\bmd\b/i.test(text);
+  const wantsSave = text.includes("save") || text.includes("export");
+  return wantsMarkdown && wantsSave;
 }
 
 function mentionsMediaLibrary(text: string): boolean {

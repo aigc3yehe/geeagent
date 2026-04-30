@@ -167,6 +167,7 @@ function pruneConversationRuntimeHistory(
   conversationId: string,
   sessionIds: Set<string>,
 ): void {
+  const prunedHostActionIds = new Set<string>();
   store.execution_sessions = store.execution_sessions.filter((session) => {
     if (!isRecord(session)) {
       return true;
@@ -182,6 +183,19 @@ function pruneConversationRuntimeHistory(
     }
     return typeof event.session_id !== "string" || !sessionIds.has(event.session_id);
   });
+  store.host_action_runs = (store.host_action_runs ?? []).filter((record) => {
+    const shouldPrune =
+      record.conversation_id === conversationId || sessionIds.has(record.session_id);
+    if (shouldPrune) {
+      prunedHostActionIds.add(record.host_action_id);
+    }
+    return !shouldPrune;
+  });
+  if (prunedHostActionIds.size > 0) {
+    store.host_action_intents = (store.host_action_intents ?? []).filter(
+      (intent) => !prunedHostActionIds.has(intent.host_action_id),
+    );
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

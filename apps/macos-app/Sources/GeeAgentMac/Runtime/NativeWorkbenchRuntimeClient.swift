@@ -33,6 +33,39 @@ private struct RuntimeChatRuntimeDTO: Decodable {
     let detail: String
 }
 
+private struct RuntimeLastRunStateDTO: Decodable {
+    let conversationId: String?
+    let status: String
+    let stopReason: String?
+    let detail: String?
+    let resumable: Bool?
+    let taskId: String?
+    let moduleRunId: String?
+}
+
+struct XenodiaMediaBackend: Codable, Hashable, Sendable {
+    let apiKey: String
+    let imageGenerationsURL: String
+    let taskRetrievalURL: String
+    let storageUploadURL: String?
+    let requestTimeoutSeconds: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case apiKey = "api_key"
+        case imageGenerationsURL = "image_generations_url"
+        case taskRetrievalURL = "task_retrieval_url"
+        case storageUploadURL = "storage_upload_url"
+        case requestTimeoutSeconds = "request_timeout_seconds"
+    }
+
+    static func decodeRuntimePayload(_ data: Data) throws -> XenodiaMediaBackend {
+        // This DTO already declares explicit snake_case CodingKeys. Do not reuse
+        // the runtime-wide .convertFromSnakeCase decoder or the keys are converted
+        // twice and valid Xenodia channel JSON fails before any API request is made.
+        try JSONDecoder().decode(XenodiaMediaBackend.self, from: data)
+    }
+}
+
 private struct RuntimeContextBudgetDTO: Decodable {
     let maxTokens: Int
     let usedTokens: Int
@@ -43,6 +76,12 @@ private struct RuntimeContextBudgetDTO: Decodable {
     let lastSummarizedAt: String?
     let nextSummaryAtRatio: Double
     let compactedMessagesCount: Int
+    let projectionMode: String?
+    let rawHistoryTokens: Int?
+    let projectedHistoryTokens: Int?
+    let recentTokens: Int?
+    let summaryTokens: Int?
+    let latestRequestTokens: Int?
 }
 
 private struct RuntimeConversationMessageDTO: Decodable {
@@ -270,6 +309,7 @@ private struct RuntimeToolInvocationDTO: Decodable {
 private enum RuntimeTranscriptEventPayloadDTO: Decodable {
     case userMessage(messageId: String, content: String)
     case assistantMessage(messageId: String, content: String)
+    case assistantMessageDelta(messageId: String, delta: String)
     case toolInvocation(invocation: RuntimeToolInvocationDTO)
     case toolResult(
         invocationId: String,
@@ -284,6 +324,7 @@ private enum RuntimeTranscriptEventPayloadDTO: Decodable {
         case kind
         case messageId
         case content
+        case delta
         case invocation
         case invocationId
         case status
@@ -304,6 +345,11 @@ private enum RuntimeTranscriptEventPayloadDTO: Decodable {
             self = .assistantMessage(
                 messageId: try container.decode(String.self, forKey: .messageId),
                 content: try container.decode(String.self, forKey: .content)
+            )
+        case "assistant_message_delta":
+            self = .assistantMessageDelta(
+                messageId: try container.decode(String.self, forKey: .messageId),
+                delta: try container.decode(String.self, forKey: .delta)
             )
         case "tool_invocation":
             self = .toolInvocation(
@@ -341,6 +387,7 @@ private struct RuntimeSnapshotDTO: Decodable {
     let contextBudget: RuntimeContextBudgetDTO?
     let interactionCapabilities: RuntimeInteractionCapabilitiesDTO?
     let lastRequestOutcome: RuntimeRequestOutcomeDTO?
+    let lastRunState: RuntimeLastRunStateDTO?
     let chatRuntime: RuntimeChatRuntimeDTO
     let conversations: [RuntimeConversationSummaryDTO]
     let activeConversation: RuntimeConversationDTO
@@ -409,7 +456,66 @@ private struct RuntimeSecurityPreferencesDTO: Decodable {
     let highestAuthorizationEnabled: Bool?
 }
 
+enum AssistantTranscriptSanitizer {
+    static func sanitize(_ content: String) -> String {
+        let cleanedContent = removingControlFrames(from: content)
+        var lines = cleanedContent
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .components(separatedBy: "\n")
+
+        while let last = lines.last,
+              last.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.removeLast()
+        }
+
+        guard let lastLine = lines.last else {
+            return ""
+        }
+
+        let normalizedLastLine = lastLine
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "# "))
+            .lowercased()
+
+        guard normalizedLastLine == "sources:"
+            || normalizedLastLine == "sources："
+            || normalizedLastLine == "sources"
+        else {
+            return cleanedContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        lines.removeLast()
+        return lines
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func removingControlFrames(from content: String) -> String {
+        var output = content
+        for pattern in [
+            #"(?is)<gee-host-actions>\s*.*?\s*</gee-host-actions>"#,
+            #"(?is)```gee-host-actions\s*.*?```"#
+        ] {
+            guard let expression = try? NSRegularExpression(pattern: pattern) else {
+                continue
+            }
+            let range = NSRange(output.startIndex..<output.endIndex, in: output)
+            output = expression.stringByReplacingMatches(
+                in: output,
+                options: [],
+                range: range,
+                withTemplate: ""
+            )
+        }
+        return output
+    }
+}
+
 private final class AgentRuntimeProcess {
+    private static let applicationSupportFolderName = "GeeAgent"
+    private static let legacyApplicationSupportFolderName = "io.geeagent.desktop"
+
     private let fileManager = FileManager.default
     private let nativeRuntimeServer = RuntimeCommandServer(label: "TypeScript native runtime")
     private let decoder: JSONDecoder = {
@@ -423,12 +529,23 @@ private final class AgentRuntimeProcess {
         return encoder
     }()
 
+    private static func redactSensitiveJSON(_ raw: String) -> String {
+        raw.replacing(
+            /"api_key"\s*:\s*"[^"]*"/,
+            with: #""api_key":"<redacted>""#
+        )
+    }
+
     private var repoRootURL: URL {
-        var url = URL(fileURLWithPath: #filePath)
-        for _ in 0..<6 {
-            url.deleteLastPathComponent()
+        let sourceURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        if let discovered = discoverRepoRoot(startingAt: sourceURL) {
+            return discovered
         }
-        return url
+        if let resourceURL = Bundle.main.resourceURL,
+           let discovered = discoverRepoRoot(startingAt: resourceURL) {
+            return discovered
+        }
+        return URL(fileURLWithPath: fileManager.currentDirectoryPath)
     }
 
     private var agentRuntimeRootURL: URL {
@@ -470,27 +587,31 @@ private final class AgentRuntimeProcess {
     }
 
     private var stagedNativeRuntimeEntryURL: URL {
-        fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library")
-            .appendingPathComponent("Application Support")
-            .appendingPathComponent("io.geeagent.desktop")
+        applicationSupportRootURL
             .appendingPathComponent("runtime")
             .appendingPathComponent("native-runtime")
             .appendingPathComponent(NativeRuntimeBundle.entryFileName)
     }
 
     private var stagedClaudeSdkCliURL: URL {
-        fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library")
-            .appendingPathComponent("Application Support")
-            .appendingPathComponent("io.geeagent.desktop")
+        applicationSupportRootURL
             .appendingPathComponent("runtime")
             .appendingPathComponent("claude-sdk")
             .appendingPathComponent(NativeRuntimeBundle.sdkCliFileName)
     }
 
+    private var applicationSupportRootURL: URL {
+        applicationSupportBaseURL()
+            .appendingPathComponent(Self.applicationSupportFolderName, isDirectory: true)
+    }
+
+    private var legacyApplicationSupportRootURL: URL {
+        applicationSupportBaseURL()
+            .appendingPathComponent(Self.legacyApplicationSupportFolderName, isDirectory: true)
+    }
+
     private var safeRuntimeWorkingDirectoryURL: URL {
-        fileManager.homeDirectoryForCurrentUser
+        applicationSupportRootURL
     }
 
     private var envExecutableURL: URL {
@@ -506,7 +627,7 @@ private final class AgentRuntimeProcess {
     }
 
     func loadSnapshot() throws -> RuntimeSnapshotDTO {
-        try decodeSnapshot(arguments: ["snapshot"])
+        try decodeSnapshotStandalone(arguments: ["snapshot"])
     }
 
     func loadLiveSnapshot() throws -> RuntimeSnapshotDTO {
@@ -615,6 +736,18 @@ private final class AgentRuntimeProcess {
         }
     }
 
+    func loadXenodiaMediaBackend() throws -> XenodiaMediaBackend {
+        let data = try run(arguments: ["get-xenodia-media-backend"])
+        do {
+            return try XenodiaMediaBackend.decodeRuntimePayload(data)
+        } catch {
+            let raw = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+            throw RuntimeProcessError.runtimeInvocation(
+                "The agent runtime returned invalid JSON while loading the Xenodia media channel: \(Self.redactSensitiveJSON(raw))"
+            )
+        }
+    }
+
     func saveChatRoutingSettings(_ settings: ChatRoutingSettings) throws -> RuntimeSnapshotDTO {
         let data = try encoder.encode(settings)
         guard let raw = String(data: data, encoding: .utf8) else {
@@ -699,7 +832,9 @@ private final class AgentRuntimeProcess {
     private func decodeSnapshot(arguments: [String]) throws -> RuntimeSnapshotDTO {
         let data = try run(arguments: arguments)
         do {
-            return try decoder.decode(RuntimeSnapshotDTO.self, from: data)
+            let snapshot = try decoder.decode(RuntimeSnapshotDTO.self, from: data)
+            recycleStatefulServerIfTurnClosed(arguments: arguments, snapshot: snapshot)
+            return snapshot
         } catch {
             let raw = String(data: data, encoding: .utf8) ?? "<non-utf8 output>"
             throw RuntimeProcessError.runtimeInvocation(
@@ -718,6 +853,22 @@ private final class AgentRuntimeProcess {
                 "The agent runtime returned invalid JSON: \(raw)"
             )
         }
+    }
+
+    private func recycleStatefulServerIfTurnClosed(
+        arguments: [String],
+        snapshot: RuntimeSnapshotDTO
+    ) {
+        guard let command = arguments.first,
+              Self.statefulRuntimeCommands.contains(command),
+              command != "invoke-tool" else {
+            return
+        }
+        guard snapshot.lastRunState?.resumable == false,
+              snapshot.hostActionIntents?.isEmpty != false else {
+            return
+        }
+        nativeRuntimeServer.stop()
     }
 
     private func run(arguments: [String]) throws -> Data {
@@ -805,7 +956,6 @@ private final class AgentRuntimeProcess {
     }
 
     private static let statefulRuntimeCommands: Set<String> = [
-        "snapshot",
         "submit-workspace-message",
         "submit-routed-workspace-message",
         "submit-quick-prompt",
@@ -818,16 +968,145 @@ private final class AgentRuntimeProcess {
         guard !arguments.isEmpty else {
             throw RuntimeProcessError.runtimeInvocation("missing runtime command")
         }
+        try migrateLegacyRuntimeSupportIfNeeded()
         try verifyNativeRuntimeLauncher()
         let entryURL = try prepareNativeRuntimeEntry()
         let claudeSdkCliURL = try prepareClaudeSdkCli()
         return RuntimeCommandLaunch(
             executableURL: envExecutableURL,
-            arguments: ["node", entryURL.path] + arguments,
+            arguments: ["node", entryURL.path] + arguments + ["--config-dir", applicationSupportRootURL.path],
             currentDirectoryURL: safeRuntimeWorkingDirectoryURL,
             fingerprintURL: entryURL,
             environment: nativeRuntimeEnvironment(claudeSdkCliURL: claudeSdkCliURL)
         )
+    }
+
+    private func discoverRepoRoot(startingAt startURL: URL) -> URL? {
+        var candidate = startURL.standardizedFileURL
+        for _ in 0..<14 {
+            let runtimeRoot = candidate
+                .appendingPathComponent("apps", isDirectory: true)
+                .appendingPathComponent("agent-runtime", isDirectory: true)
+            let configRoot = candidate.appendingPathComponent("config", isDirectory: true)
+            var isRuntimeDirectory: ObjCBool = false
+            var isConfigDirectory: ObjCBool = false
+            if fileManager.fileExists(atPath: runtimeRoot.path, isDirectory: &isRuntimeDirectory),
+               isRuntimeDirectory.boolValue,
+               fileManager.fileExists(atPath: configRoot.path, isDirectory: &isConfigDirectory),
+               isConfigDirectory.boolValue {
+                return candidate
+            }
+            let parent = candidate.deletingLastPathComponent()
+            if parent.path == candidate.path {
+                break
+            }
+            candidate = parent
+        }
+        return nil
+    }
+
+    private func applicationSupportBaseURL() -> URL {
+        fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? fileManager.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library", isDirectory: true)
+                .appendingPathComponent("Application Support", isDirectory: true)
+    }
+
+    private func migrateLegacyRuntimeSupportIfNeeded() throws {
+        guard fileManager.fileExists(atPath: legacyApplicationSupportRootURL.path) else {
+            try fileManager.createDirectory(
+                at: applicationSupportRootURL,
+                withIntermediateDirectories: true
+            )
+            try ensureDefaultRuntimeConfigFilesIfNeeded()
+            return
+        }
+
+        try fileManager.createDirectory(
+            at: applicationSupportRootURL,
+            withIntermediateDirectories: true
+        )
+
+        for relativePath in legacyRuntimeSupportMigrationPaths {
+            let sourceURL = legacyApplicationSupportRootURL.appendingPathComponent(relativePath)
+            let targetURL = applicationSupportRootURL.appendingPathComponent(relativePath)
+            guard fileManager.fileExists(atPath: sourceURL.path),
+                  !fileManager.fileExists(atPath: targetURL.path) else {
+                continue
+            }
+            try fileManager.createDirectory(
+                at: targetURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try fileManager.copyItem(at: sourceURL, to: targetURL)
+        }
+        try migrateLegacyRuntimeStoreIfNeeded()
+        try ensureDefaultRuntimeConfigFilesIfNeeded()
+    }
+
+    private var legacyRuntimeSupportMigrationPaths: [String] {
+        [
+            "chat-runtime-secrets.toml",
+            "model-routing.toml",
+            "runtime-security.json",
+            "runtime-skill-sources.json",
+            "terminal-access.json",
+            "agents",
+        ]
+    }
+
+    private var defaultRuntimeConfigMigrationPaths: [String] {
+        [
+            NativeRuntimeBundle.chatRuntimeConfigFileName,
+            NativeRuntimeBundle.modelRoutingConfigFileName,
+        ]
+    }
+
+    private func ensureDefaultRuntimeConfigFilesIfNeeded() throws {
+        for fileName in defaultRuntimeConfigMigrationPaths {
+            let targetURL = applicationSupportRootURL.appendingPathComponent(fileName)
+            guard !fileManager.fileExists(atPath: targetURL.path),
+                  let text = defaultRuntimeConfigText(fileName: fileName) else {
+                continue
+            }
+            try fileManager.createDirectory(
+                at: targetURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try text.write(to: targetURL, atomically: true, encoding: .utf8)
+        }
+    }
+
+    private func migrateLegacyRuntimeStoreIfNeeded() throws {
+        let relativePath = "runtime-store.json"
+        let sourceURL = legacyApplicationSupportRootURL.appendingPathComponent(relativePath)
+        let targetURL = applicationSupportRootURL.appendingPathComponent(relativePath)
+        guard fileManager.fileExists(atPath: sourceURL.path) else {
+            return
+        }
+        if !fileManager.fileExists(atPath: targetURL.path) {
+            try fileManager.copyItem(at: sourceURL, to: targetURL)
+            return
+        }
+        guard shouldReplaceBrokenRuntimeStore(targetURL) else {
+            return
+        }
+
+        let backupURL = applicationSupportRootURL
+            .appendingPathComponent("runtime-store.json.pre-geeagent-migration", isDirectory: false)
+        if !fileManager.fileExists(atPath: backupURL.path) {
+            try fileManager.copyItem(at: targetURL, to: backupURL)
+        }
+        let legacyData = try Data(contentsOf: sourceURL)
+        try legacyData.write(to: targetURL, options: [.atomic])
+    }
+
+    private func shouldReplaceBrokenRuntimeStore(_ storeURL: URL) -> Bool {
+        guard let text = try? String(contentsOf: storeURL, encoding: .utf8) else {
+            return false
+        }
+        return text.contains("/apps/config/chat-runtime.toml")
+            || text.contains("Application Support/config/chat-runtime.toml")
     }
 
     private func verifyNativeRuntimeLauncher() throws {
@@ -931,19 +1210,33 @@ private final class AgentRuntimeProcess {
     }
 
     private func nativeRuntimeEnvironment(claudeSdkCliURL: URL) -> [String: String] {
-        var environment = ProcessInfo.processInfo.environment
-        environment["HOME"] = environment["HOME"] ?? NSHomeDirectory()
-        environment["GEEAGENT_RUNTIME_PROJECT_PATH"] = environment["GEEAGENT_RUNTIME_PROJECT_PATH"] ?? repoRootURL.path
-        environment["GEEAGENT_CLAUDE_CODE_EXECUTABLE"] = environment["GEEAGENT_CLAUDE_CODE_EXECUTABLE"] ?? claudeSdkCliURL.path
-        environment["GEEAGENT_REPO_ROOT"] = environment["GEEAGENT_REPO_ROOT"] ?? repoRootURL.path
+        let hostEnvironment = ProcessInfo.processInfo.environment
+        var environment: [String: String] = [:]
+        environment["HOME"] = hostEnvironment["HOME"] ?? NSHomeDirectory()
+        environment["USER"] = hostEnvironment["USER"] ?? NSUserName()
+        environment["LOGNAME"] = hostEnvironment["LOGNAME"] ?? NSUserName()
+        environment["SHELL"] = hostEnvironment["SHELL"] ?? "/bin/zsh"
+        environment["TMPDIR"] = hostEnvironment["TMPDIR"] ?? NSTemporaryDirectory()
+        environment["LANG"] = hostEnvironment["LANG"] ?? "en_US.UTF-8"
+        environment["PWD"] = safeRuntimeWorkingDirectoryURL.path
+        environment["GEEAGENT_CONFIG_DIR"] = hostEnvironment["GEEAGENT_CONFIG_DIR"] ?? applicationSupportRootURL.path
+        environment["GEEAGENT_RUNTIME_PROJECT_PATH"] = hostEnvironment["GEEAGENT_RUNTIME_PROJECT_PATH"] ?? applicationSupportRootURL.path
+        environment["GEEAGENT_CLAUDE_CODE_EXECUTABLE"] = hostEnvironment["GEEAGENT_CLAUDE_CODE_EXECUTABLE"] ?? claudeSdkCliURL.path
+        environment["GEEAGENT_REPO_ROOT"] = hostEnvironment["GEEAGENT_REPO_ROOT"] ?? repoRootURL.path
+        environment["GEEAGENT_GATEWAY_TRACE_PATH"] =
+            hostEnvironment["GEEAGENT_GATEWAY_TRACE_PATH"] ??
+            applicationSupportRootURL.appendingPathComponent("runtime-gateway-trace.jsonl").path
         environment["GEEAGENT_DEFAULT_MODEL_ROUTING_TOML"] =
-            environment["GEEAGENT_DEFAULT_MODEL_ROUTING_TOML"] ??
+            hostEnvironment["GEEAGENT_DEFAULT_MODEL_ROUTING_TOML"] ??
             defaultRuntimeConfigText(fileName: NativeRuntimeBundle.modelRoutingConfigFileName)
         environment["GEEAGENT_DEFAULT_CHAT_RUNTIME_TOML"] =
-            environment["GEEAGENT_DEFAULT_CHAT_RUNTIME_TOML"] ??
+            hostEnvironment["GEEAGENT_DEFAULT_CHAT_RUNTIME_TOML"] ??
             defaultRuntimeConfigText(fileName: NativeRuntimeBundle.chatRuntimeConfigFileName)
+        if let idleTimeout = hostEnvironment["GEEAGENT_SDK_EVENT_IDLE_TIMEOUT_MS"] {
+            environment["GEEAGENT_SDK_EVENT_IDLE_TIMEOUT_MS"] = idleTimeout
+        }
         let commonPaths = [
-            environment["PATH"],
+            hostEnvironment["PATH"],
             "/opt/homebrew/bin",
             "/usr/local/bin",
             "/usr/bin",
@@ -1307,6 +1600,10 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
         }
     }
 
+    func loadXenodiaMediaBackend() throws -> XenodiaMediaBackend {
+        try runtime.loadXenodiaMediaBackend()
+    }
+
     func saveChatRoutingSettings(
         _ settings: ChatRoutingSettings,
         in snapshot: WorkbenchSnapshot
@@ -1577,7 +1874,13 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
             summaryState: ContextBudgetRecord.SummaryState(rawValue: dto.summaryState) ?? .watching,
             lastSummarizedAt: dto.lastSummarizedAt,
             nextSummaryAtRatio: dto.nextSummaryAtRatio,
-            compactedMessagesCount: dto.compactedMessagesCount
+            compactedMessagesCount: dto.compactedMessagesCount,
+            projectionMode: dto.projectionMode ?? "unknown",
+            rawHistoryTokens: dto.rawHistoryTokens ?? 0,
+            projectedHistoryTokens: dto.rawHistoryTokens == nil ? 0 : dto.projectedHistoryTokens ?? dto.usedTokens,
+            recentTokens: dto.recentTokens ?? 0,
+            summaryTokens: dto.summaryTokens ?? 0,
+            latestRequestTokens: dto.latestRequestTokens ?? 0
         )
     }
 
@@ -1729,9 +2032,7 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
         }
 
         let transcriptMessageIDs = Set(transcriptEvents.compactMap(transcriptMessageID(for:)))
-        var projectedMessages = snapshot.activeConversation.messages
-            .filter { !transcriptMessageIDs.contains($0.messageId) }
-            .map(mapConversationMessage)
+        var projectedMessages: [ConversationMessage] = []
 
         let approvalsByID = Dictionary(
             uniqueKeysWithValues: snapshot.approvalRequests.map { ($0.approvalRequestId, $0) }
@@ -1750,14 +2051,18 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
                     )
                 )
             case let .assistantMessage(messageId, content):
-                projectedMessages.append(
-                    ConversationMessage(
-                        id: messageId,
-                        role: .assistant,
-                        kind: .chat,
-                        content: sanitizedAssistantContent(content),
-                        timestampLabel: formattedConversationTimestamp(event.createdAt)
-                    )
+                upsertAssistantMessage(
+                    messageId: messageId,
+                    content: sanitizedAssistantContent(content),
+                    timestampLabel: formattedConversationTimestamp(event.createdAt),
+                    messages: &projectedMessages
+                )
+            case let .assistantMessageDelta(messageId, delta):
+                appendAssistantDelta(
+                    messageId: messageId,
+                    delta: delta,
+                    timestampLabel: formattedConversationTimestamp(event.createdAt),
+                    messages: &projectedMessages
                 )
             case let .toolInvocation(invocation):
                 projectedMessages.append(mapActionInvocationMessage(invocation, createdAt: event.createdAt))
@@ -1794,7 +2099,68 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
             }
         }
 
-        return projectedMessages
+        let legacyMessages = snapshot.activeConversation.messages
+            .filter { !transcriptMessageIDs.contains($0.messageId) }
+            .map(mapConversationMessage)
+        return projectedMessages + legacyMessages
+    }
+
+    private func upsertAssistantMessage(
+        messageId: String,
+        content: String,
+        timestampLabel: String,
+        messages: inout [ConversationMessage]
+    ) {
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            messages.removeAll { $0.id == messageId }
+            return
+        }
+        let message = ConversationMessage(
+            id: messageId,
+            role: .assistant,
+            kind: .chat,
+            content: content,
+            timestampLabel: timestampLabel
+        )
+        if let index = messages.firstIndex(where: { $0.id == messageId }) {
+            messages.remove(at: index)
+            messages.append(message)
+        } else {
+            messages.append(message)
+        }
+    }
+
+    private func appendAssistantDelta(
+        messageId: String,
+        delta: String,
+        timestampLabel: String,
+        messages: inout [ConversationMessage]
+    ) {
+        guard !delta.isEmpty else {
+            return
+        }
+        if let index = messages.firstIndex(where: { $0.id == messageId }) {
+            let sanitizedContent = sanitizedAssistantContent(messages[index].content + delta)
+            if sanitizedContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                messages.remove(at: index)
+            } else {
+                messages[index].content = sanitizedContent
+            }
+        } else {
+            let sanitizedContent = sanitizedAssistantContent(delta)
+            guard !sanitizedContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return
+            }
+            messages.append(
+                ConversationMessage(
+                    id: messageId,
+                    role: .assistant,
+                    kind: .chat,
+                    content: sanitizedContent,
+                    timestampLabel: timestampLabel
+                )
+            )
+        }
     }
 
     private func mapConversationMessage(_ message: RuntimeConversationMessageDTO) -> ConversationMessage {
@@ -1809,41 +2175,14 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
     }
 
     private func sanitizedAssistantContent(_ content: String) -> String {
-        var lines = content
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
-            .components(separatedBy: "\n")
-
-        while let last = lines.last,
-              last.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            lines.removeLast()
-        }
-
-        guard let lastLine = lines.last else {
-            return content
-        }
-
-        let normalizedLastLine = lastLine
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "# "))
-            .lowercased()
-
-        guard normalizedLastLine == "sources:"
-            || normalizedLastLine == "sources："
-            || normalizedLastLine == "sources"
-        else {
-            return content
-        }
-
-        lines.removeLast()
-        return lines
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        AssistantTranscriptSanitizer.sanitize(content)
     }
 
     private func transcriptMessageID(for event: RuntimeTranscriptEventDTO) -> String? {
         switch event.payload {
-        case let .userMessage(messageId, _), let .assistantMessage(messageId, _):
+        case let .userMessage(messageId, _),
+             let .assistantMessage(messageId, _),
+             let .assistantMessageDelta(messageId, _):
             return messageId
         case .toolInvocation, .toolResult, .sessionStateChanged:
             return nil
@@ -1882,7 +2221,7 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
             detailItems.append(
                 ConversationMessageDetailItem(
                     label: "Artifacts",
-                    value: artifacts.count == 1 ? "1 ready" : "\(artifacts.count) ready"
+                    value: artifactSummary(artifacts)
                 )
             )
         }
@@ -1901,6 +2240,37 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
             sourceReferenceID: invocationId,
             tone: actionTone(for: status)
         )
+    }
+
+    private func artifactSummary(_ artifacts: [RuntimeArtifactRefDTO]) -> String {
+        let visible = artifacts.prefix(2).map { artifact in
+            compactArtifactLabel(artifact)
+        }
+        let prefix = artifacts.count == 1 ? "1 artifact" : "\(artifacts.count) artifacts"
+        let details = visible.isEmpty ? "" : ": \(visible.joined(separator: " · "))"
+        let suffix = artifacts.count > visible.count ? " · +\(artifacts.count - visible.count) more" : ""
+        return "\(prefix)\(details)\(suffix)"
+    }
+
+    private func compactArtifactLabel(_ artifact: RuntimeArtifactRefDTO) -> String {
+        let title = artifact.title.nilIfBlank ?? "Artifact"
+        guard let preview = artifact.inlinePreviewSummary?.nilIfBlank else {
+            return clampDetailText(title, limit: 80)
+        }
+        return "\(clampDetailText(title, limit: 56)): \(clampDetailText(preview, limit: 96))"
+    }
+
+    private func clampDetailText(_ text: String, limit: Int) -> String {
+        let normalized = text.replacingOccurrences(
+            of: "\\s+",
+            with: " ",
+            options: .regularExpression
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count > limit else {
+            return normalized
+        }
+        return "\(normalized.prefix(max(0, limit - 1)))…"
     }
 
     private func mapApprovalMessage(

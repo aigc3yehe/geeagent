@@ -147,11 +147,11 @@ struct ChatView: View {
                         isChatScrolledNearBottom = true
                         scrollToChatBottom(scrollProxy, conversation: conversation, animated: false)
                     }
-                    .onChange(of: conversationMessageIDs(conversation)) { oldIDs, newIDs in
+                    .onChange(of: conversationMessageSignatures(conversation)) { oldSignatures, newSignatures in
                         guard shouldAutoFollowChat(
                             conversation: conversation,
-                            oldIDs: oldIDs,
-                            newIDs: newIDs
+                            oldSignatures: oldSignatures,
+                            newSignatures: newSignatures
                         ) else {
                             return
                         }
@@ -272,28 +272,32 @@ struct ChatView: View {
         store.sendMessage(message)
     }
 
-    private func conversationMessageIDs(_ conversation: ConversationThread) -> [String] {
-        conversation.visibleMessages.map(\.id)
+    private func conversationMessageSignatures(_ conversation: ConversationThread) -> [String] {
+        conversation.visibleMessages.map { message in
+            "\(message.id):\(message.content.count):\(message.statusLabel ?? "")"
+        }
     }
 
     private func shouldAutoFollowChat(
         conversation: ConversationThread,
-        oldIDs: [String],
-        newIDs: [String]
+        oldSignatures: [String],
+        newSignatures: [String]
     ) -> Bool {
         isChatScrolledNearBottom || didAppendUserMessage(
             conversation: conversation,
-            oldIDs: oldIDs,
-            newIDs: newIDs
+            oldSignatures: oldSignatures,
+            newSignatures: newSignatures
         )
     }
 
     private func didAppendUserMessage(
         conversation: ConversationThread,
-        oldIDs: [String],
-        newIDs: [String]
+        oldSignatures: [String],
+        newSignatures: [String]
     ) -> Bool {
-        let appendedIDs = Set(newIDs).subtracting(oldIDs)
+        let oldIDs = Set(oldSignatures.map(messageIDFromSignature))
+        let newIDs = Set(newSignatures.map(messageIDFromSignature))
+        let appendedIDs = newIDs.subtracting(oldIDs)
         guard !appendedIDs.isEmpty else {
             return false
         }
@@ -301,6 +305,10 @@ struct ChatView: View {
         return conversation.visibleMessages.contains { message in
             appendedIDs.contains(message.id) && message.role == .user
         }
+    }
+
+    private func messageIDFromSignature(_ signature: String) -> String {
+        signature.split(separator: ":", maxSplits: 1).first.map(String.init) ?? signature
     }
 
     private func updateChatScrollPosition() {

@@ -10,6 +10,8 @@ results into a local file database owned by the Gear.
 - Fetch the first N tweets from a Twitter/X List URL.
 - Fetch the first N tweets from a username or profile URL.
 - Save task metadata and result tweets in the Gear data directory.
+- Show the task creation time in the native UI, formatted as local time.
+- Clear all saved Twitter Capture task records from the Gear task database.
 - Expose the same three operations to the Gee agent through Gear capabilities.
 
 ## Cookie Requirement

@@ -1,3 +1,4 @@
+import { existsSync, statSync } from "node:fs";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +16,9 @@ export type ChatProviderConfig = {
   api_key_env: string;
   chat_completions_url: string;
   model_discovery_url: string;
+  image_generations_url?: string;
+  task_retrieval_url?: string;
+  storage_upload_url?: string;
   model_override_env: string;
   default_model: string;
 };
@@ -24,7 +28,6 @@ export type ChatRuntimeConfig = {
   request_timeout_seconds: number;
   temperature: number;
   max_completion_tokens: number;
-  fallback_provider_order: string[];
   providers: Record<string, ChatProviderConfig>;
 };
 
@@ -49,18 +52,26 @@ export type XenodiaGatewayBackend = {
   chat_completions_url: string;
   model: string;
   request_timeout_seconds: number;
+  max_completion_tokens: number;
+  temperature: number;
+};
+
+export type XenodiaMediaBackend = {
+  api_key: string;
+  image_generations_url: string;
+  task_retrieval_url: string;
+  storage_upload_url?: string;
+  request_timeout_seconds: number;
 };
 
 export type RouteClass = {
   provider: string;
   model: string;
   reasoning_effort: string;
-  fallback_model: string;
 };
 
 type ContinuationConfig = {
   min_confidence_to_resume: number;
-  fallback_action: string;
 };
 
 type ProfileRoutingPolicy = {
@@ -89,7 +100,6 @@ export type RouteClassSetting = {
   provider: string;
   model: string;
   reasoningEffort: string;
-  fallbackModel: string;
 };
 
 export type ProfileRouteSetting = {
@@ -112,7 +122,33 @@ function repoRoot(): string {
   }
 
   const currentDir = dirname(fileURLToPath(import.meta.url));
-  return resolve(currentDir, "../../..");
+  return discoverRepoRoot(currentDir) ?? resolve(currentDir, "../../..");
+}
+
+function discoverRepoRoot(startingDirectory: string): string | undefined {
+  let candidate = resolve(startingDirectory);
+  for (let index = 0; index < 14; index += 1) {
+    if (
+      isDirectory(resolve(candidate, "apps", "agent-runtime")) &&
+      isDirectory(resolve(candidate, "config"))
+    ) {
+      return candidate;
+    }
+    const parent = dirname(candidate);
+    if (parent === candidate) {
+      break;
+    }
+    candidate = parent;
+  }
+  return undefined;
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return existsSync(path) && statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 function defaultConfigPath(fileName: string): string {
@@ -154,6 +190,13 @@ function requireString(value: unknown, path: string): string {
     throw new Error(`${path} must be a string`);
   }
   return value;
+}
+
+function optionalString(value: unknown, path: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return requireString(value, path);
 }
 
 function requireBoolean(value: unknown, path: string): boolean {
@@ -289,10 +332,6 @@ export function parseRoutingConfig(raw: string): RoutingConfig {
         continuation.min_confidence_to_resume,
         "continuation.min_confidence_to_resume",
       ),
-      fallback_action: requireString(
-        continuation.fallback_action,
-        "continuation.fallback_action",
-      ),
     },
     route_classes: {},
     profiles: {},
@@ -301,21 +340,17 @@ export function parseRoutingConfig(raw: string): RoutingConfig {
 
   for (const [name, routeClassRaw] of Object.entries(routeClassesRaw)) {
     const routeClass = requireRecord(routeClassRaw, `route_classes.${name}`);
-    routing.route_classes[name] = {
-      provider: requireString(
-        routeClass.provider,
-        `route_classes.${name}.provider`,
-      ),
-      model: requireString(routeClass.model, `route_classes.${name}.model`),
-      reasoning_effort: requireString(
-        routeClass.reasoning_effort,
-        `route_classes.${name}.reasoning_effort`,
-      ),
-      fallback_model: requireString(
-        routeClass.fallback_model,
-        `route_classes.${name}.fallback_model`,
-      ),
-    };
+      routing.route_classes[name] = {
+        provider: requireString(
+          routeClass.provider,
+          `route_classes.${name}.provider`,
+        ),
+        model: requireString(routeClass.model, `route_classes.${name}.model`),
+        reasoning_effort: requireString(
+          routeClass.reasoning_effort,
+          `route_classes.${name}.reasoning_effort`,
+        ),
+      };
   }
 
   for (const [name, profileRaw] of Object.entries(profilesRaw)) {
@@ -375,6 +410,18 @@ export function parseChatRuntimeConfig(raw: string): ChatRuntimeConfig {
         provider.model_discovery_url,
         `providers.${name}.model_discovery_url`,
       ),
+      image_generations_url: optionalString(
+        provider.image_generations_url,
+        `providers.${name}.image_generations_url`,
+      ),
+      task_retrieval_url: optionalString(
+        provider.task_retrieval_url,
+        `providers.${name}.task_retrieval_url`,
+      ),
+      storage_upload_url: optionalString(
+        provider.storage_upload_url,
+        `providers.${name}.storage_upload_url`,
+      ),
       model_override_env: requireString(
         provider.model_override_env,
         `providers.${name}.model_override_env`,
@@ -396,10 +443,6 @@ export function parseChatRuntimeConfig(raw: string): ChatRuntimeConfig {
     max_completion_tokens: requireNumber(
       value.max_completion_tokens,
       "max_completion_tokens",
-    ),
-    fallback_provider_order: optionalStringArray(
-      value.fallback_provider_order,
-      "fallback_provider_order",
     ),
     providers,
   };
@@ -480,7 +523,6 @@ export function chatRoutingSettingsFromConfig(
         provider: routeClass.provider,
         model: routeClass.model,
         reasoningEffort: routeClass.reasoning_effort,
-        fallbackModel: routeClass.fallback_model,
       }))
       .sort((left, right) => left.name.localeCompare(right.name)),
     profiles: Object.entries(routing.profiles)
@@ -532,57 +574,31 @@ function resolveProvider(
   secrets: ChatRuntimeSecretsConfig,
   environment: NodeJS.ProcessEnv = process.env,
 ): { name: string; apiKey: string; chatCompletionsUrl: string; model: string } {
-  const providerOrder = [routeClass.provider.toLowerCase()];
-  for (const providerName of chatRuntime.fallback_provider_order) {
-    if (!providerOrder.includes(providerName)) {
-      providerOrder.push(providerName);
-    }
+  const providerName = routeClass.provider.toLowerCase();
+  const providerConfig = chatRuntime.providers[providerName];
+  if (!providerConfig?.enabled) {
+    throw new Error(`chat provider \`${providerName}\` is not enabled`);
   }
 
-  const missingKeyProviders: string[] = [];
-  for (const providerName of providerOrder) {
-    const providerConfig = chatRuntime.providers[providerName];
-    if (!providerConfig?.enabled) {
-      continue;
-    }
-
-    const providerSecrets = secrets.providers[providerName];
-    const apiKey =
-      nonEmptyTrimmed(environment[providerConfig.api_key_env]) ??
-      nonEmptyTrimmed(providerSecrets?.api_key);
-    if (!apiKey) {
-      missingKeyProviders.push(providerName);
-      continue;
-    }
-
-    const configuredModel =
-      nonEmptyTrimmed(environment[providerConfig.model_override_env]) ??
-      nonEmptyTrimmed(providerSecrets?.model_override);
-    const model =
-      configuredModel ??
-      (providerName === routeClass.provider
-        ? routeClass.model
-        : providerConfig.default_model);
-
-    return {
-      name: providerName,
-      apiKey,
-      chatCompletionsUrl: providerConfig.chat_completions_url,
-      model,
-    };
+  const providerSecrets = secrets.providers[providerName];
+  const apiKey =
+    nonEmptyTrimmed(environment[providerConfig.api_key_env]) ??
+    nonEmptyTrimmed(providerSecrets?.api_key);
+  if (!apiKey) {
+    throw new Error(
+      `chat provider \`${providerName}\` is missing an API key. Expected ${providerConfig.api_key_env} or a saved ${providerName} key`,
+    );
   }
 
-  if (missingKeyProviders.length === 0) {
-    throw new Error("no enabled chat providers are defined");
-  }
-
-  const expectedEnvVars = missingKeyProviders
-    .map((providerName) => chatRuntime.providers[providerName]?.api_key_env)
-    .filter((value): value is string => value !== undefined)
-    .join(", ");
-  throw new Error(
-    `no chat provider API key is configured. Expected one of: ${expectedEnvVars}`,
-  );
+  const configuredModel =
+    nonEmptyTrimmed(environment[providerConfig.model_override_env]) ??
+    nonEmptyTrimmed(providerSecrets?.model_override);
+  return {
+    name: providerName,
+    apiKey,
+    chatCompletionsUrl: providerConfig.chat_completions_url,
+    model: configuredModel ?? routeClass.model,
+  };
 }
 
 export async function loadChatReadiness(
@@ -677,6 +693,49 @@ export async function loadXenodiaGatewayBackend(
     chat_completions_url: providerConfig.chat_completions_url,
     model,
     request_timeout_seconds: chatRuntime.request_timeout_seconds,
+    max_completion_tokens: chatRuntime.max_completion_tokens,
+    temperature: chatRuntime.temperature,
+  };
+}
+
+export async function loadXenodiaMediaBackend(
+  configDir?: string,
+): Promise<XenodiaMediaBackend> {
+  const [chatRuntime, secrets] = await Promise.all([
+    loadChatRuntimeConfig(configDir),
+    loadChatRuntimeSecretsConfig(configDir),
+  ]);
+
+  const providerName = "xenodia";
+  const providerConfig = chatRuntime.providers[providerName];
+  if (!providerConfig) {
+    throw new Error("xenodia provider is not defined in chat runtime config");
+  }
+  if (!providerConfig.enabled) {
+    throw new Error("xenodia provider is disabled in chat runtime config");
+  }
+
+  const providerSecrets = secrets.providers[providerName];
+  const apiKey =
+    nonEmptyTrimmed(process.env[providerConfig.api_key_env]) ??
+    nonEmptyTrimmed(providerSecrets?.api_key);
+  if (!apiKey) {
+    throw new Error(
+      `xenodia provider is missing an API key. Expected ${providerConfig.api_key_env} or a saved xenodia key`,
+    );
+  }
+
+  return {
+    api_key: apiKey,
+    image_generations_url:
+      providerConfig.image_generations_url ??
+      "https://api.xenodia.xyz/v1/images/generations",
+    task_retrieval_url:
+      providerConfig.task_retrieval_url ?? "https://api.xenodia.xyz/v1/tasks",
+    ...(providerConfig.storage_upload_url
+      ? { storage_upload_url: providerConfig.storage_upload_url }
+      : {}),
+    request_timeout_seconds: chatRuntime.request_timeout_seconds,
   };
 }
 
@@ -696,11 +755,6 @@ function validateChatRoutingSettings(
     }
     if (!routeClass.model.trim()) {
       throw new Error(`route class \`${routeClass.name}\` requires a model`);
-    }
-    if (!routeClass.fallbackModel.trim()) {
-      throw new Error(
-        `route class \`${routeClass.name}\` requires a fallback model`,
-      );
     }
     if (!providerChoices.has(routeClass.provider)) {
       throw new Error(
@@ -755,7 +809,6 @@ export async function persistChatRoutingSettings(
         provider: routeClass.provider,
         model: routeClass.model,
         reasoning_effort: routeClass.reasoningEffort,
-        fallback_model: routeClass.fallbackModel,
       },
     ]),
   );

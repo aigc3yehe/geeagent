@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 
 import {
+  buildContextProjection,
+  contextBudgetRecordFromProjection,
+} from "../context/projector.js";
+import { renderProjectedTurnPrompt } from "../context/prompt-renderer.js";
+import {
   activeConversation,
   isQuickConversation,
   syncConversationStatuses,
@@ -8,21 +13,37 @@ import {
 import { currentTimestamp } from "../store/defaults.js";
 import type { AgentProfile, RuntimeConversation, RuntimeStore } from "../store/types.js";
 import type { TurnRoute } from "../sdk-turn-runner.js";
-import { summarizePrompt } from "./state.js";
+import { isRecord, summarizePrompt } from "./state.js";
 import type { PreparedTurnContext } from "./types.js";
 
-const CONTEXT_AUTO_SUMMARY_TRIGGER_TOKENS = 220_000;
-const CONTEXT_RECENT_MESSAGE_KEEP_COUNT = 24;
+const MAX_STAGE_CAPSULES_IN_PROMPT = 3;
 
 export function prepareTurnContext(
   store: RuntimeStore,
   route: TurnRoute,
   text: string,
 ): PreparedTurnContext {
+  const workspaceMessages =
+    route.mode === "workspace_message" ? workspaceMessagesFromStore(store) : [];
+  const stageCapsuleMessages =
+    route.mode === "workspace_message" ? stageCapsuleMessagesFromStore(store) : [];
+  const baseProjection = buildContextProjection(workspaceMessages, {
+    latestUserRequest: text,
+  });
+  const modelFacingMessages =
+    baseProjection.mode === "compacted"
+      ? [...workspaceMessages, ...stageCapsuleMessages]
+      : workspaceMessages;
+  const contextProjection = buildContextProjection(modelFacingMessages, {
+    latestUserRequest: text,
+  });
+  store.context_budget = contextBudgetRecordFromProjection(contextProjection);
+
   return {
     activeAgentProfile: resolvedActiveAgentProfile(store),
-    workspaceMessages:
-      route.mode === "workspace_message" ? workspaceMessagesFromStore(store) : [],
+    workspaceMessages,
+    stageCapsuleMessages,
+    contextProjection,
     shouldReuseActiveConversation:
       route.mode === "quick_prompt" ? false : shouldReuseActiveConversation(store, text),
   };
@@ -38,12 +59,7 @@ export function composeClaudeSdkTurnPrompt(
     return trimmed;
   }
 
-  const projectedMessages = contextProjectedWorkspaceMessages(prepared.workspaceMessages)[0];
-  const history = projectedMessages
-    .map((message) => `${message.role === "assistant" ? "Assistant" : "User"}: ${message.content}`)
-    .join("\n");
-
-  return `Conversation context before the latest turn:\n${history}\n\nLatest user request:\n${trimmed}\n\nSolve the latest request directly. Use tools when needed. Do not ask the user to type 'continue' for ordinary local work.`;
+  return renderProjectedTurnPrompt(prepared.contextProjection, trimmed);
 }
 
 export function routeQuickPromptToBestConversation(
@@ -232,80 +248,21 @@ function workspaceMessagesFromStore(
   }));
 }
 
-function contextProjectedWorkspaceMessages(
-  messages: Array<{ role: string; content: string }>,
-): [Array<{ role: string; content: string }>, number, number] {
-  const rawTokens = estimateWorkspaceMessagesTokens(messages);
-  if (
-    rawTokens < CONTEXT_AUTO_SUMMARY_TRIGGER_TOKENS ||
-    messages.length <= CONTEXT_RECENT_MESSAGE_KEEP_COUNT
-  ) {
-    return [messages, 0, rawTokens];
-  }
-  const splitAt = messages.length - CONTEXT_RECENT_MESSAGE_KEEP_COUNT;
-  const older = messages.slice(0, splitAt);
-  const recent = messages.slice(splitAt);
-  const summary = {
-    role: "assistant",
-    content: buildContextCompactionSummary(older),
-  };
-  const projected = [summary, ...recent];
-  return [projected, older.length, estimateWorkspaceMessagesTokens(projected)];
-}
-
-function buildContextCompactionSummary(
-  messages: Array<{ role: string; content: string }>,
-): string {
-  const userMessages = messages
-    .filter((message) => message.role !== "assistant")
-    .map((message) => summarizePrompt(message.content, 180));
-  const assistantMessages = messages
-    .filter((message) => message.role === "assistant")
-    .map((message) => summarizePrompt(message.content, 180));
-  return [
-    "[AUTO CONTEXT SUMMARY] Older conversation turns were compacted before the 256k context window filled. The full transcript remains available in GeeAgent history; this summary is the model-facing continuity layer.",
-    `Compacted messages: ${messages.length}.`,
-    userMessages.length > 0
-      ? `User intent and feedback from compacted history:\n${userMessages
-          .slice(0, 12)
-          .map((entry) => `- ${entry}`)
-          .join("\n")}`
-      : "",
-    assistantMessages.length > 0
-      ? `Prior assistant work from compacted history:\n${assistantMessages
-          .slice(-8)
-          .map((entry) => `- ${entry}`)
-          .join("\n")}`
-      : "",
-    "Continue from the recent verbatim messages below. Preserve active tasks, approvals, files, commands, and user corrections from the recent context.",
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-function estimateWorkspaceMessagesTokens(
-  messages: Array<{ role: string; content: string }>,
-): number {
-  return messages.reduce(
-    (sum, message) =>
-      sum + approximateContextTokens(message.role) + approximateContextTokens(message.content) + 8,
-    0,
-  );
-}
-
-function approximateContextTokens(text: string): number {
-  let cjkChars = 0;
-  let otherChars = 0;
-  for (const ch of text) {
-    if (/[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(ch)) {
-      cjkChars += 1;
-    } else {
-      otherChars += 1;
-    }
-  }
-  const charEstimate = cjkChars + Math.ceil(otherChars / 4);
-  const byteEstimate = Math.ceil(Buffer.byteLength(text) / 4);
-  return Math.max(1, charEstimate, byteEstimate);
+function stageCapsuleMessagesFromStore(
+  store: RuntimeStore,
+): Array<{ role: "assistant"; content: string }> {
+  const activeSessionId = `session_${store.active_conversation_id}`;
+  return store.transcript_events
+    .filter((event) => isRecord(event) && event.session_id === activeSessionId)
+    .map((event) => (isRecord(event) ? event.payload : null))
+    .filter((payload): payload is Record<string, unknown> => isRecord(payload))
+    .map((payload) => payload.stage_capsule)
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .slice(-MAX_STAGE_CAPSULES_IN_PROMPT)
+    .map((content) => ({
+      role: "assistant",
+      content,
+    }));
 }
 
 function resolvedActiveAgentProfile(store: RuntimeStore): AgentProfile {

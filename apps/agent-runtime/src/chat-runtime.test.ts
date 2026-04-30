@@ -9,6 +9,7 @@ import {
   loadChatRoutingSettings,
   loadRoutingConfig,
   loadXenodiaGatewayBackend,
+  loadXenodiaMediaBackend,
   persistChatRoutingSettings,
 } from "./chat-runtime.js";
 
@@ -58,13 +59,11 @@ allow_user_overrides = true
 
 [continuation]
 min_confidence_to_resume = 0.85
-fallback_action = "new_conversation"
 
 [route_classes.balanced]
 provider = "xenodia"
 model = "gpt-5.4"
 reasoning_effort = "medium"
-fallback_model = "gpt-5.4-mini"
 
 [profiles.main]
 default_route_class = "balanced"
@@ -80,13 +79,14 @@ version = 1
 request_timeout_seconds = 30
 temperature = 0.3
 max_completion_tokens = 600
-fallback_provider_order = ["xenodia"]
 
 [providers.xenodia]
 enabled = true
 api_key_env = "XENODIA_API_KEY"
 chat_completions_url = "https://api.xenodia.xyz/v1/chat/completions"
 model_discovery_url = "https://api.xenodia.xyz/v1/models"
+image_generations_url = "https://api.xenodia.xyz/v1/images/generations"
+task_retrieval_url = "https://api.xenodia.xyz/v1/tasks"
 model_override_env = "GEEAGENT_XENODIA_MODEL"
 default_model = "gpt-5.4"
 `;
@@ -128,7 +128,7 @@ default_model = "gpt-5.4"
         settings.routeClasses.some(
           (routeClass) =>
             routeClass.name === "balanced" &&
-            routeClass.provider === "openai" &&
+            routeClass.provider === "xenodia" &&
             routeClass.reasoningEffort === "medium",
         ),
       );
@@ -206,10 +206,42 @@ model_override = "gpt-5.4"
       assert.equal(backend.api_key, "saved-xenodia-key");
       assert.equal(backend.model, "gpt-5.4");
       assert.equal(backend.request_timeout_seconds, 45);
+      assert.equal(backend.max_completion_tokens, 700);
+      assert.equal(backend.temperature, 0.35);
       assert.equal(
         backend.chat_completions_url,
         "https://api.xenodia.xyz/v1/chat/completions",
       );
+    } finally {
+      await rm(configDir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves the global Xenodia media backend from the provider channel", async () => {
+    const configDir = await tempConfigDir();
+    try {
+      await writeFile(
+        join(configDir, "chat-runtime-secrets.toml"),
+        `
+version = 1
+
+[providers.xenodia]
+api_key = "saved-xenodia-key"
+`,
+        "utf8",
+      );
+
+      const backend = await withCleanProviderEnv(() =>
+        loadXenodiaMediaBackend(configDir),
+      );
+
+      assert.equal(backend.api_key, "saved-xenodia-key");
+      assert.equal(
+        backend.image_generations_url,
+        "https://api.xenodia.xyz/v1/images/generations",
+      );
+      assert.equal(backend.task_retrieval_url, "https://api.xenodia.xyz/v1/tasks");
+      assert.equal(backend.request_timeout_seconds, 45);
     } finally {
       await rm(configDir, { recursive: true, force: true });
     }
@@ -225,7 +257,6 @@ model_override = "gpt-5.4"
       assert.ok(balanced);
       balanced.provider = "xenodia";
       balanced.model = "gpt-5.4";
-      balanced.fallbackModel = "gpt-5.4-mini";
 
       const worker = settings.profiles.find(
         (profile) => profile.name === "worker",

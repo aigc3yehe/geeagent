@@ -4,6 +4,7 @@ import {
   loadChatReadiness,
   loadChatRoutingSettings,
   loadXenodiaGatewayBackend,
+  loadXenodiaMediaBackend,
   persistChatRoutingSettings,
   type ChatRoutingSettings,
 } from "./chat-runtime.js";
@@ -74,6 +75,11 @@ async function main(): Promise<void> {
       writeOutput(`${JSON.stringify(backend)}\n`, args.outputPath);
       return;
     }
+    case "get-xenodia-media-backend": {
+      const backend = await loadXenodiaMediaBackend(args.configDir);
+      writeOutput(`${JSON.stringify(backend)}\n`, args.outputPath);
+      return;
+    }
     case "save-chat-routing-settings": {
       if (!args.configDir) {
         throw new Error("save-chat-routing-settings requires --config-dir");
@@ -86,7 +92,7 @@ async function main(): Promise<void> {
     }
     default:
       throw new Error(
-        "usage: chat-runtime-cli <get-chat-routing-settings|get-chat-readiness|get-xenodia-gateway-backend|save-chat-routing-settings> [--config-dir <path>]",
+        "usage: chat-runtime-cli <get-chat-routing-settings|get-chat-readiness|get-xenodia-gateway-backend|get-xenodia-media-backend|save-chat-routing-settings> [--config-dir <path>]",
       );
   }
 }

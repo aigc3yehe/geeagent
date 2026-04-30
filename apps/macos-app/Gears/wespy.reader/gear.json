@@ -1,0 +1,86 @@
+{
+  "schema": "gee.gear.v1",
+  "id": "wespy.reader",
+  "name": "WeSpy Reader",
+  "description": "Article and WeChat album reader powered by the WeSpy Python package, saving Markdown-first captures into a local task database.",
+  "developer": "Gee",
+  "version": "0.1.0",
+  "category": "Knowledge",
+  "kind": "atmosphere",
+  "display_mode": "full_canvas",
+  "entry": {
+    "type": "native",
+    "native_id": "wespy.reader"
+  },
+  "permissions": [
+    "network.web",
+    "process.spawn",
+    "filesystem.write.gear_storage"
+  ],
+  "dependencies": {
+    "install_strategy": "on_open",
+    "items": [
+      {
+        "id": "python3",
+        "kind": "runtime",
+        "scope": "global",
+        "required": true,
+        "detect": {
+          "command": "python3",
+          "args": ["--version"],
+          "min_version": "3.6.0"
+        },
+        "installer": {
+          "type": "recipe",
+          "id": "brew.install.python"
+        }
+      },
+      {
+        "id": "wespy-python",
+        "kind": "runtime",
+        "scope": "global",
+        "required": true,
+        "detect": {
+          "command": "python3",
+          "args": ["-c", "import wespy, requests, bs4"]
+        },
+        "installer": {
+          "type": "recipe",
+          "id": "python3.install.user.wespy"
+        }
+      }
+    ]
+  },
+  "agent": {
+    "enabled": true,
+    "capabilities": [
+      {
+        "id": "wespy.fetch_article",
+        "title": "Fetch article as Markdown",
+        "description": "Fetch a WeChat public-account article or general web article URL and save Markdown, with optional HTML and JSON outputs.",
+        "examples": [
+          "Use WeSpy to turn this WeChat article into Markdown",
+          "Fetch this article URL and save Markdown plus JSON"
+        ]
+      },
+      {
+        "id": "wespy.list_album",
+        "title": "List WeChat album articles",
+        "description": "Fetch the article list for a WeChat public-account album URL without downloading each article body.",
+        "examples": [
+          "List the first 20 articles from this WeChat album",
+          "Get the article URLs in this mp.weixin album"
+        ]
+      },
+      {
+        "id": "wespy.fetch_album",
+        "title": "Fetch WeChat album articles",
+        "description": "Batch fetch articles from a WeChat public-account album URL and save Markdown-first article files.",
+        "examples": [
+          "Download the first 10 articles from this WeChat album as Markdown",
+          "Fetch this album and also save HTML and JSON"
+        ]
+      }
+    ]
+  }
+}

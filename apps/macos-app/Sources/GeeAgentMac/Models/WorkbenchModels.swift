@@ -62,14 +62,12 @@ struct ChatRoutingSettings: Codable, Hashable {
             next.defaultRouteClass = next.routeClasses[index].name
             next.routeClasses[index].provider = trimmedProvider
             next.routeClasses[index].model = trimmedModel
-            next.routeClasses[index].fallbackModel = trimmedModel
         } else {
             let route = RouteClassSetting(
                 name: "default",
                 provider: trimmedProvider,
                 model: trimmedModel,
-                reasoningEffort: "medium",
-                fallbackModel: trimmedModel
+                reasoningEffort: "medium"
             )
             next.defaultRouteClass = route.name
             next.routeClasses = [route]
@@ -90,7 +88,6 @@ struct RouteClassSetting: Codable, Hashable, Identifiable {
     var provider: String
     var model: String
     var reasoningEffort: String
-    var fallbackModel: String
 }
 
 struct ProfileRouteSetting: Codable, Hashable, Identifiable {
@@ -346,6 +343,7 @@ struct ContextBudgetRecord: Hashable {
         case idle
         case watching
         case scheduled
+        case projecting
         case summarizing
         case summarized
         case failed
@@ -356,6 +354,7 @@ struct ContextBudgetRecord: Hashable {
             case .idle: "Idle"
             case .watching: "Watching"
             case .scheduled: "Summary soon"
+            case .projecting: "Projecting"
             case .summarizing: "Summarizing"
             case .summarized: "Summarized"
             case .failed: "Summary failed"
@@ -373,6 +372,12 @@ struct ContextBudgetRecord: Hashable {
     var lastSummarizedAt: String?
     var nextSummaryAtRatio: Double
     var compactedMessagesCount: Int
+    var projectionMode: String
+    var rawHistoryTokens: Int
+    var projectedHistoryTokens: Int
+    var recentTokens: Int
+    var summaryTokens: Int
+    var latestRequestTokens: Int
 
     static let empty = ContextBudgetRecord(
         maxTokens: 256_000,
@@ -383,7 +388,13 @@ struct ContextBudgetRecord: Hashable {
         summaryState: .idle,
         lastSummarizedAt: nil,
         nextSummaryAtRatio: 0.95,
-        compactedMessagesCount: 0
+        compactedMessagesCount: 0,
+        projectionMode: "latest_only",
+        rawHistoryTokens: 0,
+        projectedHistoryTokens: 0,
+        recentTokens: 0,
+        summaryTokens: 0,
+        latestRequestTokens: 0
     )
 
     var percentageLabel: String {

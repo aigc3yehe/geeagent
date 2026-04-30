@@ -2,7 +2,6 @@ version = 1
 request_timeout_seconds = 45
 temperature = 0.35
 max_completion_tokens = 700
-fallback_provider_order = ["xenodia", "openai"]
 
 [providers.openai]
 enabled = true
@@ -17,5 +16,7 @@ enabled = true
 api_key_env = "XENODIA_API_KEY"
 chat_completions_url = "https://api.xenodia.xyz/v1/chat/completions"
 model_discovery_url = "https://api.xenodia.xyz/v1/models"
+image_generations_url = "https://api.xenodia.xyz/v1/images/generations"
+task_retrieval_url = "https://api.xenodia.xyz/v1/tasks"
 model_override_env = "GEEAGENT_XENODIA_MODEL"
 default_model = "gpt-5.4"

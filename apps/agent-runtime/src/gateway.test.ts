@@ -1,7 +1,48 @@
 import assert from "node:assert/strict";
+import http, {
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, it } from "node:test";
 
-import { __gatewayTestHooks } from "./gateway.js";
+import { __gatewayTestHooks, startAnthropicGateway } from "./gateway.js";
+
+async function readRequestBody(request: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function listen(server: http.Server): Promise<number> {
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address() as AddressInfo | null;
+  assert.ok(address);
+  return address.port;
+}
+
+async function closeServer(server: http.Server): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+function writeJsonResponse(
+  response: ServerResponse,
+  statusCode: number,
+  payload: unknown,
+): void {
+  response.writeHead(statusCode, { "Content-Type": "application/json" });
+  response.end(JSON.stringify(payload));
+}
 
 describe("gateway protocol conversion", () => {
   it("maps Anthropic messages, tools, and tool choices into the Xenodia request shape", () => {
@@ -161,6 +202,69 @@ describe("gateway protocol conversion", () => {
     ]);
   });
 
+  it("normalizes tool-call input at provider ingress before it reaches the SDK", () => {
+    const message = __gatewayTestHooks.buildAnthropicMessageFromXenodia(
+      {
+        model: "claude-sonnet-4-6",
+        messages: [{ role: "user", content: "read the skill" }],
+      },
+      {
+        id: "chatcmpl_read_pages",
+        choices: [
+          {
+            message: {
+              content: null,
+              tool_calls: [
+                {
+                  id: "call_empty_pages",
+                  type: "function",
+                  function: {
+                    name: "Read",
+                    arguments:
+                      "{\"file_path\":\"/tmp/SKILL.md\",\"limit\":2500,\"offset\":0,\"pages\":\"\"}",
+                  },
+                },
+                {
+                  id: "call_valid_pages",
+                  type: "function",
+                  function: {
+                    name: "Read",
+                    arguments:
+                      "{\"file_path\":\"/tmp/doc.pdf\",\"pages\":\"1-3\"}",
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    );
+
+    assert.deepEqual(message.content, [
+      {
+        type: "tool_use",
+        id: "call_empty_pages",
+        name: "Read",
+        input: {
+          file_path: "/tmp/SKILL.md",
+          limit: 2500,
+          offset: 0,
+        },
+        caller: "direct",
+      },
+      {
+        type: "tool_use",
+        id: "call_valid_pages",
+        name: "Read",
+        input: {
+          file_path: "/tmp/doc.pdf",
+          pages: "1-3",
+        },
+        caller: "direct",
+      },
+    ]);
+  });
+
   it("keeps non-Claude model names unless an explicit override is configured", () => {
     assert.equal(
       __gatewayTestHooks.resolveBackendModel("gpt-5.4", undefined),
@@ -170,6 +274,23 @@ describe("gateway protocol conversion", () => {
       __gatewayTestHooks.resolveBackendModel("sonnet", "gpt-5.4-mini"),
       "gpt-5.4-mini",
     );
+  });
+
+  it("uses runtime token and temperature defaults when the SDK request omits them", () => {
+    const request = __gatewayTestHooks.toOpenAIChatCompletionRequest(
+      {
+        model: "sonnet",
+        messages: [{ role: "user", content: "hello" }],
+      },
+      {
+        xenodiaApiKey: "test-key",
+        maxCompletionTokens: 700,
+        temperature: 0.35,
+      },
+    );
+
+    assert.equal(request.max_completion_tokens, 700);
+    assert.equal(request.temperature, 0.35);
   });
 
   it("uses a bounded upstream timeout for the local Xenodia gateway", () => {
@@ -184,5 +305,57 @@ describe("gateway protocol conversion", () => {
       }),
       12_200,
     );
+  });
+
+  it("surfaces the primary upstream failure instead of retrying another model", async () => {
+    const seenModels: string[] = [];
+    const upstream = http.createServer(
+      (request: IncomingMessage, response: ServerResponse) => {
+        void readRequestBody(request).then((raw) => {
+          const payload = JSON.parse(raw) as { model?: string };
+          if (payload.model) {
+            seenModels.push(payload.model);
+          }
+          if (seenModels.length === 1) {
+            writeJsonResponse(response, 500, {
+              error: { message: "primary unavailable" },
+            });
+            return;
+          }
+          writeJsonResponse(response, 200, { id: "unexpected_retry", choices: [] });
+        });
+      },
+    );
+    const port = await listen(upstream);
+    const gateway = await startAnthropicGateway({
+      xenodiaApiKey: "test-key",
+      backendUrl: `http://127.0.0.1:${port}/v1/chat/completions`,
+      modelOverride: "primary-model",
+      requestTimeoutSeconds: 1,
+      maxCompletionTokens: 700,
+    });
+
+    try {
+      const response = await fetch(`${gateway.baseUrl}/v1/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": gateway.apiKey,
+        },
+        body: JSON.stringify({
+          model: "sonnet",
+          messages: [{ role: "user", content: "hello" }],
+          stream: false,
+        }),
+      });
+
+      assert.equal(response.status, 500);
+      const body = (await response.json()) as { error?: { message?: string } };
+      assert.match(body.error?.message ?? "", /primary unavailable/);
+      assert.deepEqual(seenModels, ["primary-model"]);
+    } finally {
+      await gateway.close();
+      await closeServer(upstream);
+    }
   });
 });

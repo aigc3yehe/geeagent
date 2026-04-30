@@ -6,6 +6,7 @@ struct Live2DInteractionSurface: NSViewRepresentable {
     var catalog: Live2DActionCatalog
     var activePosePath: String?
     var activeExpressionPath: String?
+    var excludedRects: [CGRect] = []
     var onPrimaryClick: () -> Void
     var onSelectPose: (Live2DMotionRecord?) -> Void
     var onSelectExpression: (Live2DExpressionRecord?) -> Void
@@ -22,6 +23,7 @@ struct Live2DInteractionSurface: NSViewRepresentable {
             catalog: catalog,
             activePosePath: activePosePath,
             activeExpressionPath: activeExpressionPath,
+            excludedRects: excludedRects,
             onPrimaryClick: onPrimaryClick,
             onSelectPose: onSelectPose,
             onSelectExpression: onSelectExpression,
@@ -40,6 +42,7 @@ struct Live2DInteractionSurface: NSViewRepresentable {
             catalog: catalog,
             activePosePath: activePosePath,
             activeExpressionPath: activeExpressionPath,
+            excludedRects: excludedRects,
             onPrimaryClick: onPrimaryClick,
             onSelectPose: onSelectPose,
             onSelectExpression: onSelectExpression,
@@ -57,6 +60,7 @@ final class InteractionView: NSView {
     private var catalog: Live2DActionCatalog = .empty
     private var activePosePath: String?
     private var activeExpressionPath: String?
+    private var excludedRects: [CGRect] = []
     private var onPrimaryClick: (() -> Void)?
     private var onSelectPose: ((Live2DMotionRecord?) -> Void)?
     private var onSelectExpression: ((Live2DExpressionRecord?) -> Void)?
@@ -75,7 +79,8 @@ final class InteractionView: NSView {
     override var acceptsFirstResponder: Bool { true }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        return interactionPath.contains(point) ? self : nil
+        guard interactionPath.contains(point) else { return nil }
+        return Self.contains(point, inExcludedRects: excludedRects) ? nil : self
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
@@ -139,6 +144,7 @@ final class InteractionView: NSView {
         catalog: Live2DActionCatalog,
         activePosePath: String?,
         activeExpressionPath: String?,
+        excludedRects: [CGRect],
         onPrimaryClick: @escaping () -> Void,
         onSelectPose: @escaping (Live2DMotionRecord?) -> Void,
         onSelectExpression: @escaping (Live2DExpressionRecord?) -> Void,
@@ -152,6 +158,7 @@ final class InteractionView: NSView {
         self.catalog = catalog
         self.activePosePath = activePosePath
         self.activeExpressionPath = activeExpressionPath
+        self.excludedRects = excludedRects
         self.onPrimaryClick = onPrimaryClick
         self.onSelectPose = onSelectPose
         self.onSelectExpression = onSelectExpression
@@ -163,18 +170,46 @@ final class InteractionView: NSView {
         needsDisplay = true
     }
 
+    nonisolated static func contains(_ point: CGPoint, inExcludedRects excludedRects: [CGRect]) -> Bool {
+        excludedRects.contains { rect in
+            rect.insetBy(dx: -4, dy: -4).contains(point)
+        }
+    }
+
     private var interactionPath: NSBezierPath {
-        let bounds = self.bounds
-        let scaleFactor = sqrt(max(viewportState.scale, 0.65))
-        let width = max(bounds.width * 0.34, bounds.width * 0.52 * scaleFactor)
-        let height = max(bounds.height * 0.56, bounds.height * 0.9 * scaleFactor)
-        let rect = CGRect(
-            x: bounds.midX - width / 2 + viewportState.offsetX,
-            y: bounds.midY - height / 2 + (bounds.height * 0.02) + viewportState.offsetY,
+        let rect = Self.interactionRect(in: bounds, viewportState: viewportState)
+        return NSBezierPath(
+            roundedRect: rect,
+            xRadius: min(rect.width * 0.38, 96),
+            yRadius: min(rect.height * 0.24, 96)
+        )
+    }
+
+    nonisolated static func interactionRect(in bounds: CGRect, viewportState: Live2DViewportState) -> CGRect {
+        guard bounds.width > 0, bounds.height > 0 else { return .zero }
+
+        let scale = min(max(viewportState.scale, 0.65), 1.8)
+        let scaleFactor = sqrt(scale)
+        let width = min(max(bounds.width * 0.24 * scaleFactor, 240), bounds.width * 0.42)
+        let height = min(max(bounds.height * 0.56 * scaleFactor, 340), bounds.height * 0.74)
+
+        let centerX = bounds.midX + viewportState.offsetX * 0.14
+        let centerY = bounds.midY + bounds.height * 0.12 - viewportState.offsetY * 0.08
+        let proposedX = centerX - width / 2
+        let proposedY = centerY - height / 2
+
+        let horizontalInset = min(bounds.width * 0.04, 32)
+        let bottomReserved = bounds.height * 0.18
+        let topReserved = bounds.height * 0.06
+        let maxX = max(bounds.minX + horizontalInset, bounds.maxX - horizontalInset - width)
+        let maxY = max(bounds.minY + bottomReserved, bounds.maxY - topReserved - height)
+
+        return CGRect(
+            x: min(max(proposedX, bounds.minX + horizontalInset), maxX),
+            y: min(max(proposedY, bounds.minY + bottomReserved), maxY),
             width: width,
             height: height
         )
-        return NSBezierPath(roundedRect: rect, xRadius: 72, yRadius: 72)
     }
 
     private func buildMenu() -> NSMenu {

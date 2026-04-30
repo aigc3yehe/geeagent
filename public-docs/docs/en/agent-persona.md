@@ -126,7 +126,7 @@ The global background priority is video first, then image.
 
 If a Live2D persona does not declare `global_background`, GeeAgent renders Live2D over the default abstract home background.
 
-Live2D personas can expose poses, actions, expressions, viewport position, and scale through the local UI.
+Live2D personas can expose poses, actions, expressions, viewport position, and scale through the local UI. On the Home surface, clicking the visible character can trigger available actions or expression changes, and the local interaction layer remains aligned after viewport position or scale adjustments.
 
 ## Runtime Influence
 

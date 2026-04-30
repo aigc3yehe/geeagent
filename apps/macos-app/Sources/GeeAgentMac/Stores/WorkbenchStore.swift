@@ -22,6 +22,7 @@ final class WorkbenchStore {
         let conversationID: ConversationThread.ID
         let content: String
         let createdAt: Date
+        let previousMessageIDs: Set<ConversationMessage.ID>
 
         var userMessageID: String {
             "pending-user-\(id)"
@@ -248,9 +249,15 @@ final class WorkbenchStore {
         }
 
         var updated = conversation
-        let hasPendingUser = updated.messages.contains { message in
+        let hasRuntimeUser = updated.messages.contains { message in
+            message.id != pendingChatTurn.userMessageID
+                && !pendingChatTurn.previousMessageIDs.contains(message.id)
+                && message.role == .user
+                && message.kind == .chat
+                && message.content == pendingChatTurn.content
+        }
+        let hasPendingUser = hasRuntimeUser || updated.messages.contains { message in
             message.id == pendingChatTurn.userMessageID
-                || (message.role == .user && message.kind == .chat && message.content == pendingChatTurn.content)
         }
 
         if !hasPendingUser {
@@ -265,7 +272,8 @@ final class WorkbenchStore {
             )
         }
 
-        if !updated.messages.contains(where: { $0.id == pendingChatTurn.thinkingMessageID }) {
+        if !hasRuntimeUser,
+           !updated.messages.contains(where: { $0.id == pendingChatTurn.thinkingMessageID }) {
             updated.messages.append(
                 ConversationMessage(
                     id: pendingChatTurn.thinkingMessageID,
@@ -702,7 +710,12 @@ final class WorkbenchStore {
     ) {
         lastToolOutcome = outcome
         switch outcome {
-        case .completed:
+        case let .completed(_, payload):
+            if (payload["status"] as? String)?.lowercased() == "failed" {
+                lastErrorMessage = payload["error"] as? String
+            } else {
+                lastErrorMessage = nil
+            }
             if let intent = outcome.navigationIntent {
                 applyNavigationIntent(intent)
             }
@@ -896,6 +909,18 @@ final class WorkbenchStore {
             if let tweetCount = payload["tweet_count"] {
                 parts.append("tweets: \(tweetCount)")
             }
+            if let articleCount = payload["article_count"] {
+                parts.append("articles: \(articleCount)")
+            }
+            if let articleLinks = articleLinkSummary(payload["articles"]) {
+                parts.append("article links: \(articleLinks)")
+            }
+            if let files = payload["files"] as? [String] {
+                parts.append("files: \(files.count)")
+            }
+            if let outputDirectory = payload["output_dir"] as? String {
+                parts.append("output: \(outputDirectory)")
+            }
             if let taskPath = payload["task_path"] as? String {
                 parts.append("task path: \(taskPath)")
             }
@@ -918,6 +943,32 @@ final class WorkbenchStore {
         }
 
         return "\(intent.toolID) completed."
+    }
+
+    private static func articleLinkSummary(_ value: Any?) -> String? {
+        guard let articles = value as? [[String: Any]], !articles.isEmpty else {
+            return nil
+        }
+        let links = articles.prefix(3).compactMap { article -> String? in
+            let title = (article["title"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let url = (article["url"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let title, !title.isEmpty, let url, !url.isEmpty {
+                return "\(title) \(url)"
+            }
+            if let url, !url.isEmpty {
+                return url
+            }
+            if let title, !title.isEmpty {
+                return title
+            }
+            return nil
+        }
+        guard !links.isEmpty else {
+            return nil
+        }
+        return links.joined(separator: " | ")
     }
 
     private static func hostActionResultJSON(from payload: [String: Any]) -> String? {
@@ -1931,11 +1982,18 @@ final class WorkbenchStore {
     }
 
     private func beginPendingChatTurn(message: String, conversationID: ConversationThread.ID) {
+        let previousMessageIDs = Set(
+            conversations
+                .first(where: { $0.id == conversationID })?
+                .visibleMessages
+                .map(\.id) ?? []
+        )
         pendingChatTurn = PendingChatTurn(
             id: UUID().uuidString,
             conversationID: conversationID,
             content: message,
-            createdAt: Date()
+            createdAt: Date(),
+            previousMessageIDs: previousMessageIDs
         )
         selectedConversationID = conversationID
     }

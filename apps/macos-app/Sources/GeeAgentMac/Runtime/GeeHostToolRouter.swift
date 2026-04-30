@@ -74,19 +74,42 @@ enum GeeHostToolRouter {
             guard let capabilities = grouped[gearID], let first = capabilities.first else {
                 return nil
             }
+            let sortedCapabilities = capabilities.sorted { $0.capabilityID < $1.capabilityID }
             return [
                 "gear_id": gearID,
                 "gear_name": first.gearName,
                 "capability_count": capabilities.count,
-                "capability_ids": capabilities.map(\.capabilityID).sorted()
+                "capability_ids": sortedCapabilities.map(\.capabilityID),
+                "capabilities": sortedCapabilities.map(compactCapabilitySummary)
             ]
         }
         return [
             "disclosure_level": "summary",
             "tool": "gee.gear.listCapabilities",
-            "next_step": "Call with detail=capabilities and one gear_id before invoking a capability.",
+            "next_step": "If the compact capability summary includes the needed capability and required_args are satisfied, call gee.gear.invoke directly. Request detail=schema only when optional argument types are unclear.",
             "gears": gears
         ]
+    }
+
+    private static func compactCapabilitySummary(_ capability: GearCapabilityRecord) -> [String: Any] {
+        var payload: [String: Any] = [
+            "capability_id": capability.capabilityID,
+            "title": capability.title,
+            "description": capability.description
+        ]
+        if !capability.examples.isEmpty {
+            payload["examples"] = capability.examples
+        }
+        if let schema = argsSchema(gearID: capability.gearID, capabilityID: capability.capabilityID) {
+            let requiredArgs = schema["required"] as? [String] ?? []
+            payload["required_args"] = requiredArgs
+            if let properties = schema["properties"] as? [String: Any] {
+                payload["optional_args"] = properties.keys
+                    .filter { !requiredArgs.contains($0) }
+                    .sorted()
+            }
+        }
+        return payload
     }
 
     private static func capabilitiesPayload(
@@ -108,14 +131,10 @@ enum GeeHostToolRouter {
                 "disclosure_level": "capabilities",
                 "gear_id": gearID,
                 "gear_name": first.gearName,
-                "next_step": "Call with detail=schema, this gear_id, and one capability_id before invoking.",
-                "capabilities": capabilities.map { capability in
-                    [
-                        "capability_id": capability.capabilityID,
-                        "title": capability.title,
-                        "description": capability.description
-                    ]
-                }
+                "next_step": "Invoke directly when required_args are available; request detail=schema only when exact optional argument types are needed.",
+                "capabilities": capabilities
+                    .sorted { $0.capabilityID < $1.capabilityID }
+                    .map(compactCapabilitySummary)
             ]
         )
     }
@@ -165,7 +184,14 @@ enum GeeHostToolRouter {
         guard let capabilityID = payload["capability_id"] as? String, !capabilityID.isEmpty else {
             return .error(toolID: toolID, code: "gear.args.capability_id", message: "`capability_id` is required.")
         }
-        let args = payload["args"] as? [String: Any] ?? [:]
+        let args = normalizedGearInvokeArgs(from: payload)
+        guard GearHost.enabledCapabilityRecord(gearID: gearID, capabilityID: capabilityID) != nil else {
+            return .error(
+                toolID: toolID,
+                code: "gear.capability_unavailable",
+                message: "`\(gearID)` does not expose enabled and prepared capability `\(capabilityID)`."
+            )
+        }
 
         switch gearID {
         case MediaLibraryGearDescriptor.gearID:
@@ -176,11 +202,59 @@ enum GeeHostToolRouter {
             return await invokeTwitterCapture(toolID: toolID, capabilityID: capabilityID, args: args)
         case BookmarkVaultGearDescriptor.gearID:
             return await invokeBookmarkVault(toolID: toolID, capabilityID: capabilityID, args: args)
+        case WeSpyReaderGearDescriptor.gearID:
+            return await invokeWeSpyReader(toolID: toolID, capabilityID: capabilityID, args: args)
+        case MediaGeneratorGearDescriptor.gearID:
+            return await invokeMediaGenerator(toolID: toolID, capabilityID: capabilityID, args: args)
         default:
             return .error(
                 toolID: toolID,
                 code: "gear.invoke.unsupported",
                 message: "`\(gearID)` is not connected to the Gee host invocation bridge yet."
+            )
+        }
+    }
+
+    static func normalizedGearInvokeArgs(from payload: [String: Any]) -> [String: Any] {
+        var args = payload["args"] as? [String: Any] ?? [:]
+        if let input = payload["input"] as? [String: Any] {
+            for (key, value) in input where args[key] == nil {
+                args[key] = value
+            }
+        }
+        let envelopeKeys = Set(["intent", "gear_id", "capability_id", "args", "input"])
+        for (key, value) in payload where !envelopeKeys.contains(key) && args[key] == nil {
+            args[key] = value
+        }
+        return args
+    }
+
+    private static func invokeMediaGenerator(
+        toolID: String,
+        capabilityID: String,
+        args: [String: Any]
+    ) async -> WorkbenchToolOutcome {
+        switch capabilityID {
+        case "media_generator.list_models":
+            return .completed(toolID: toolID, payload: MediaGeneratorGearStore.shared.modelPayload())
+        case "media_generator.create_task":
+            guard let prompt = stringArg(args, "prompt"), !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return .error(toolID: toolID, code: "gear.args.prompt", message: "`prompt` is required.")
+            }
+            var normalizedArgs = args
+            normalizedArgs["prompt"] = prompt
+            let payload = await MediaGeneratorGearStore.shared.createAgentTask(args: normalizedArgs)
+            return .completed(toolID: toolID, payload: payload)
+        case "media_generator.get_task":
+            return .completed(
+                toolID: toolID,
+                payload: MediaGeneratorGearStore.shared.taskPayload(taskID: stringArg(args, "task_id"))
+            )
+        default:
+            return .error(
+                toolID: toolID,
+                code: "gear.media_generator.capability_unsupported",
+                message: "media.generator does not support `\(capabilityID)` yet."
             )
         }
     }
@@ -206,6 +280,28 @@ enum GeeHostToolRouter {
         let payload = await BookmarkVaultGearStore.shared.saveAgentBookmark(
             content: content,
             localMediaPaths: stringArrayArg(args, "local_media_paths")
+        )
+        return .completed(toolID: toolID, payload: payload)
+    }
+
+    private static func invokeWeSpyReader(
+        toolID: String,
+        capabilityID: String,
+        args: [String: Any]
+    ) async -> WorkbenchToolOutcome {
+        guard ["wespy.fetch_article", "wespy.list_album", "wespy.fetch_album"].contains(capabilityID) else {
+            return .error(
+                toolID: toolID,
+                code: "gear.wespy.capability_unsupported",
+                message: "wespy.reader does not support `\(capabilityID)` yet."
+            )
+        }
+        guard stringArg(args, "url") ?? stringArg(args, "article_url") ?? stringArg(args, "album_url") != nil else {
+            return .error(toolID: toolID, code: "gear.args.url", message: "`url` is required.")
+        }
+        let payload = await WeSpyReaderGearStore.shared.runAgentAction(
+            capabilityID: capabilityID,
+            args: args
         )
         return .completed(toolID: toolID, payload: payload)
     }
@@ -661,6 +757,40 @@ enum GeeHostToolRouter {
                     "cookie_file": ["type": "string"]
                 ]
             ]
+        case (WeSpyReaderGearDescriptor.gearID, "wespy.fetch_article"):
+            return [
+                "type": "object",
+                "required": ["url"],
+                "additionalProperties": false,
+                "properties": [
+                    "url": ["type": "string", "format": "uri"],
+                    "save_html": ["type": "boolean"],
+                    "save_json": ["type": "boolean"]
+                ]
+            ]
+        case (WeSpyReaderGearDescriptor.gearID, "wespy.list_album"):
+            return [
+                "type": "object",
+                "required": ["url"],
+                "additionalProperties": false,
+                "properties": [
+                    "url": ["type": "string", "format": "uri"],
+                    "max_articles": ["type": "integer", "minimum": 1, "maximum": 200]
+                ]
+            ]
+        case (WeSpyReaderGearDescriptor.gearID, "wespy.fetch_album"):
+            return [
+                "type": "object",
+                "required": ["url"],
+                "additionalProperties": false,
+                "properties": [
+                    "url": ["type": "string", "format": "uri"],
+                    "max_articles": ["type": "integer", "minimum": 1, "maximum": 200],
+                    "save_html": ["type": "boolean"],
+                    "save_json": ["type": "boolean"],
+                    "export_markdown": ["type": "boolean"]
+                ]
+            ]
         case (BookmarkVaultGearDescriptor.gearID, "bookmark.save"):
             return [
                 "type": "object",
@@ -676,6 +806,77 @@ enum GeeHostToolRouter {
                         "items": ["type": "string"],
                         "description": "Optional local media paths associated with this bookmark, usually imported Media Library item paths."
                     ]
+                ]
+            ]
+        case (MediaGeneratorGearDescriptor.gearID, "media_generator.list_models"):
+            return [
+                "type": "object",
+                "additionalProperties": false,
+                "properties": [:]
+            ]
+        case (MediaGeneratorGearDescriptor.gearID, "media_generator.create_task"):
+            return [
+                "type": "object",
+                "required": ["prompt"],
+                "additionalProperties": false,
+                "properties": [
+                    "prompt": ["type": "string"],
+                    "category": ["type": "string", "enum": ["image", "video", "audio"]],
+                    "model": ["type": "string", "enum": ["nano-banana-pro", "gpt-image-2"]],
+                    "n": [
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1,
+                        "description": "Xenodia image generation currently supports only 1 image per request."
+                    ],
+                    "async": [
+                        "type": "boolean",
+                        "description": "When true, create an async Xenodia task and poll the task endpoint. Gee defaults this to true."
+                    ],
+                    "response_format": [
+                        "type": "string",
+                        "enum": ["url"],
+                        "description": "Only URL responses are currently supported."
+                    ],
+                    "aspect_ratio": [
+                        "type": "string",
+                        "enum": ["auto", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"],
+                        "description": "Supported by both Nano Banana Pro and GPT Image-2. Defaults to 1:1 for Nano and auto for GPT Image-2."
+                    ],
+                    "resolution": [
+                        "type": "string",
+                        "enum": ["1K", "2K", "4K"],
+                        "description": "Nano Banana Pro only."
+                    ],
+                    "output_format": [
+                        "type": "string",
+                        "enum": ["png", "jpg"],
+                        "description": "Nano Banana Pro only."
+                    ],
+                    "nsfw_checker": [
+                        "type": "boolean",
+                        "description": "GPT Image-2 only."
+                    ],
+                    "reference_urls": [
+                        "type": "array",
+                        "maxItems": 8,
+                        "items": ["type": "string"],
+                        "description": "Remote reference image URLs passed as Xenodia image_input."
+                    ],
+                    "reference_paths": [
+                        "type": "array",
+                        "maxItems": 8,
+                        "items": ["type": "string"],
+                        "description": "Optional local JPEG, PNG, or WebP image paths, up to 30MB each. The Gear sends them through the global Xenodia channel instead of Qiniu."
+                    ]
+                ]
+            ]
+        case (MediaGeneratorGearDescriptor.gearID, "media_generator.get_task"):
+            return [
+                "type": "object",
+                "additionalProperties": false,
+                "properties": [
+                    "task_id": ["type": "string"]
                 ]
             ]
         case (MediaLibraryGearDescriptor.gearID, "media.import_files"):

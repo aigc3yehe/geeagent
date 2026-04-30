@@ -7,6 +7,8 @@ enum GearHost {
     static let smartYTMediaWindowID = "smartyt-media"
     static let twitterCaptureWindowID = "twitter-capture"
     static let bookmarkVaultWindowID = "bookmark-vault"
+    static let weSpyReaderWindowID = "wespy-reader"
+    static let mediaGeneratorWindowID = "media-generator"
     static let mediaLibraryWindowDescriptor = GearNativeWindowDescriptor(
         gearID: MediaLibraryGearDescriptor.gearID,
         windowID: mediaLibraryWindowID,
@@ -42,12 +44,28 @@ enum GearHost {
         defaultWidth: 1180,
         defaultHeight: 760
     )
+    static let weSpyReaderWindowDescriptor = GearNativeWindowDescriptor(
+        gearID: WeSpyReaderGearDescriptor.gearID,
+        windowID: weSpyReaderWindowID,
+        title: "WeSpy Reader",
+        defaultWidth: 1180,
+        defaultHeight: 760
+    )
+    static let mediaGeneratorWindowDescriptor = GearNativeWindowDescriptor(
+        gearID: MediaGeneratorGearDescriptor.gearID,
+        windowID: mediaGeneratorWindowID,
+        title: "Media Generator",
+        defaultWidth: 1180,
+        defaultHeight: 760
+    )
     static let nativeWindowDescriptors: [GearNativeWindowDescriptor] = [
         mediaLibraryWindowDescriptor,
         hyperframesStudioWindowDescriptor,
         smartYTMediaWindowDescriptor,
         twitterCaptureWindowDescriptor,
-        bookmarkVaultWindowDescriptor
+        bookmarkVaultWindowDescriptor,
+        weSpyReaderWindowDescriptor,
+        mediaGeneratorWindowDescriptor
     ]
 
     private static let manifestFileName = "gear.json"
@@ -82,6 +100,16 @@ enum GearHost {
                     )
                 }
             }
+    }
+
+    static func enabledCapabilityRecord(
+        gearID: String,
+        capabilityID: String,
+        preparationStore: GearPreparationStore = GearPreparationStore()
+    ) -> GearCapabilityRecord? {
+        enabledCapabilityRecords(preparationStore: preparationStore).first {
+            $0.gearID == gearID && $0.capabilityID == capabilityID
+        }
     }
 
     static func mergedWithGears(_ apps: [InstalledAppRecord]) -> [InstalledAppRecord] {
@@ -136,6 +164,10 @@ enum GearHost {
             return AnyView(TwitterCaptureGearModuleView())
         case BookmarkVaultGearDescriptor.gearID:
             return AnyView(BookmarkVaultGearModuleView())
+        case WeSpyReaderGearDescriptor.gearID:
+            return AnyView(WeSpyReaderGearModuleView())
+        case MediaGeneratorGearDescriptor.gearID:
+            return AnyView(MediaGeneratorGearModuleView())
         default:
             return nil
         }
@@ -157,6 +189,10 @@ enum GearHost {
             return AnyView(TwitterCaptureGearWindow())
         case BookmarkVaultGearDescriptor.gearID:
             return AnyView(BookmarkVaultGearWindow())
+        case WeSpyReaderGearDescriptor.gearID:
+            return AnyView(WeSpyReaderGearWindow())
+        case MediaGeneratorGearDescriptor.gearID:
+            return AnyView(MediaGeneratorGearWindow())
         default:
             return AnyView(GearUnavailableWindowView(title: displayTitle(for: gearID)))
         }
@@ -343,6 +379,14 @@ enum TwitterCaptureGearDescriptor {
 
 enum BookmarkVaultGearDescriptor {
     static let gearID = "bookmark.vault"
+}
+
+enum WeSpyReaderGearDescriptor {
+    static let gearID = "wespy.reader"
+}
+
+enum MediaGeneratorGearDescriptor {
+    static let gearID = "media.generator"
 }
 
 struct GearWindowRequest: Equatable, Identifiable {

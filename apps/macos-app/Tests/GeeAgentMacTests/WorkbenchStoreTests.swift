@@ -737,6 +737,40 @@ final class WorkbenchStoreTests: XCTestCase {
         XCTAssertFalse(store.isSendingMessage)
     }
 
+    func testPendingChatTurnIgnoresOlderDuplicateUserMessages() throws {
+        let repeatedMessage = "Please repeat the same request."
+        var snapshot = PreviewWorkbenchRuntimeClient().loadSnapshot()
+        var conversation = try XCTUnwrap(snapshot.conversations.first)
+        conversation.messages.append(
+            ConversationMessage(
+                id: "existing-duplicate-user-message",
+                role: .user,
+                content: repeatedMessage,
+                timestampLabel: "Earlier"
+            )
+        )
+        conversation.isActive = true
+        snapshot.conversations = [conversation]
+        snapshot.preferredSection = .chat
+        let store = WorkbenchStore(runtimeClient: DelayedSendMessageRuntimeClient(snapshot: snapshot))
+
+        store.sendMessage(repeatedMessage, openSection: false)
+
+        let displayConversation = try XCTUnwrap(store.selectedDisplayConversation)
+        XCTAssertTrue(
+            displayConversation.messages.contains {
+                $0.id.hasPrefix("pending-user-") && $0.content == repeatedMessage
+            },
+            "An older equal-content user message must not hide the newly submitted local message."
+        )
+        XCTAssertTrue(
+            displayConversation.messages.contains {
+                $0.id.hasPrefix("pending-thinking-") && $0.statusLabel == "waiting for first event"
+            },
+            "The first-event waiting state should stay visible until this specific runtime turn arrives."
+        )
+    }
+
     func testSendMessageAppliesRuntimeHostActionIntentsToGear() async throws {
         let mediaStore = MediaLibraryModuleStore.shared
         let originalLibrary = mediaStore.library
@@ -1112,6 +1146,77 @@ private struct DelayedQuickInputRuntimeClient: WorkbenchRuntimeClient {
         try await Task.sleep(nanoseconds: 500_000_000)
         return snapshot
     }
+    func completeHostActionTurn(
+        _ completions: [WorkbenchHostActionCompletion],
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func invokeTool(_ invocation: ToolInvocation) async throws -> WorkbenchToolOutcome {
+        .completed(toolID: invocation.toolID, payload: [:])
+    }
+}
+
+private struct DelayedSendMessageRuntimeClient: WorkbenchRuntimeClient {
+    var snapshot: WorkbenchSnapshot
+
+    func loadSnapshot() -> WorkbenchSnapshot { snapshot }
+    func createConversation(in snapshot: WorkbenchSnapshot) async throws -> WorkbenchSnapshot { snapshot }
+    func activateConversation(
+        _ conversationID: ConversationThread.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func deleteConversation(
+        _ conversationID: ConversationThread.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func sendMessage(
+        _ message: String,
+        in snapshot: WorkbenchSnapshot,
+        conversationID: ConversationThread.ID,
+        allowAutoRouting: Bool
+    ) async throws -> WorkbenchSnapshot {
+        try await Task.sleep(nanoseconds: 500_000_000)
+        return snapshot
+    }
+    func performTaskAction(
+        _ action: WorkbenchTaskAction,
+        in snapshot: WorkbenchSnapshot,
+        taskID: WorkbenchTaskRecord.ID
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func setActiveAgentProfile(
+        _ profileID: AgentProfileRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func installAgentPack(
+        at packPath: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func reloadAgentProfile(
+        _ profileID: AgentProfileRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func deleteAgentProfile(
+        _ profileID: AgentProfileRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func deleteTerminalPermissionRule(
+        _ ruleID: TerminalPermissionRuleRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func setHighestAuthorizationEnabled(
+        _ enabled: Bool,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func loadChatRoutingSettings() async throws -> ChatRoutingSettings {
+        try await PreviewWorkbenchRuntimeClient().loadChatRoutingSettings()
+    }
+    func saveChatRoutingSettings(
+        _ settings: ChatRoutingSettings,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func submitQuickPrompt(
+        _ prompt: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
     func completeHostActionTurn(
         _ completions: [WorkbenchHostActionCompletion],
         in snapshot: WorkbenchSnapshot

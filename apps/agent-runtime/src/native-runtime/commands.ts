@@ -1,5 +1,6 @@
 import {
   loadChatRoutingSettings,
+  loadXenodiaMediaBackend,
   persistChatRoutingSettings,
   type ChatRoutingSettings,
 } from "../chat-runtime.js";
@@ -101,6 +102,9 @@ export async function handleNativeRuntimeCommand(
     case "get-chat-routing-settings":
       assertArgCount(command, args, 0);
       return stringify(await loadChatRoutingSettings(configDir));
+    case "get-xenodia-media-backend":
+      assertArgCount(command, args, 0);
+      return stringify(await loadXenodiaMediaBackend(configDir));
     case "save-chat-routing-settings":
       assertArgCount(command, args, 1);
       await persistChatRoutingSettings(configDir, parseSettings(args[0]));

@@ -38,8 +38,14 @@ export function defaultRuntimeStore(now = currentTimestamp()): RuntimeStore {
       usage_ratio: 0.00013671875,
       estimate_source: "estimated",
       summary_state: "watching",
-      next_summary_at_ratio: 0.95,
+      next_summary_at_ratio: 0.7,
       compacted_messages_count: 0,
+      projection_mode: "latest_only",
+      raw_history_tokens: 0,
+      projected_history_tokens: 0,
+      recent_tokens: 0,
+      summary_tokens: 0,
+      latest_request_tokens: 0,
     },
     agent_profiles: [profile],
     active_agent_profile_id: profile.id,
@@ -98,5 +104,6 @@ export function defaultRuntimeStore(now = currentTimestamp()): RuntimeStore {
       agent_skins: [{ skin_id: "default.operator", display_name: "Default Operator" }],
     },
     host_action_intents: [],
+    host_action_runs: [],
   };
 }

@@ -116,4 +116,46 @@ final class TwitterCaptureGearTests: XCTestCase {
         XCTAssertEqual(loaded.tweets.first?.text, "Hello from a test tweet.")
         XCTAssertTrue(FileManager.default.fileExists(atPath: try database.taskFileURL(task.id).path))
     }
+
+    func testTwitterCaptureFileDatabaseDeletesAllTaskRecords() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("twitter-capture-delete-all-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = TwitterCaptureFileDatabase(rootURL: root)
+        let now = Date()
+
+        for id in ["twitter-one", "twitter-two"] {
+            try database.save(TwitterCaptureTaskRecord(
+                id: id,
+                kind: .tweet,
+                target: "https://x.com/openai/status/178",
+                normalizedTarget: "178",
+                limit: 1,
+                status: .completed,
+                title: "Tweet Capture",
+                createdAt: now,
+                updatedAt: now,
+                cookieFilePath: "/tmp/cookies.json",
+                taskDirectoryPath: try database.taskDirectory(id).path,
+                tweets: [],
+                nextCursor: nil,
+                log: "Completed",
+                errorMessage: nil
+            ))
+        }
+
+        XCTAssertEqual(database.loadTasks().count, 2)
+
+        try database.deleteAllTasks()
+
+        XCTAssertTrue(database.loadTasks().isEmpty)
+    }
+
+    func testTwitterCaptureFormatsTaskCreatedAtAsLocalTime() {
+        let display = TwitterCaptureLocalTimeFormatter.localDisplay(from: Date(timeIntervalSince1970: 1_774_000_000))
+
+        XCTAssertEqual(display.count, 16)
+        XCTAssertEqual(display[display.index(display.startIndex, offsetBy: 4)], "-")
+        XCTAssertEqual(display[display.index(display.startIndex, offsetBy: 13)], ":")
+    }
 }
