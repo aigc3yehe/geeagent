@@ -27,6 +27,7 @@ enum SmartYTMediaAction: String, Codable, CaseIterable, Identifiable {
 
 enum SmartYTDownloadKind: String, Codable, CaseIterable, Identifiable {
     case audio
+    case image
     case video
     case both
 
@@ -35,6 +36,7 @@ enum SmartYTDownloadKind: String, Codable, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .audio: "Audio"
+        case .image: "Image"
         case .video: "Video"
         case .both: "Both"
         }
@@ -296,10 +298,13 @@ final class SmartYTMediaGearStore: ObservableObject {
             ]
         }
 
+        let actionDefaultKind = action == .transcribe
+            ? SmartYTDownloadKind.audio
+            : Self.defaultDownloadKind(for: cleanURL)
         let job = enqueue(
             action: action,
             url: cleanURL,
-            downloadKind: downloadKind ?? .audio,
+            downloadKind: downloadKind ?? actionDefaultKind,
             language: language?.nilIfBlank,
             outputDirectory: outputDirectory
         )
@@ -331,7 +336,7 @@ final class SmartYTMediaGearStore: ObservableObject {
             ]
         }
 
-        let kind = downloadKind ?? .video
+        let kind = downloadKind ?? Self.defaultDownloadKind(for: cleanURL)
         if outputDirectory == nil,
            let existing = reusableCompletedDownload(for: cleanURL, kind: kind)
         {
@@ -522,6 +527,8 @@ final class SmartYTMediaGearStore: ObservableObject {
         switch kind {
         case .audio:
             return existingPaths.filter { Self.isAudioPath($0) }
+        case .image:
+            return existingPaths.filter { Self.isImagePath($0) }
         case .video:
             return existingPaths.filter { Self.isVideoPath($0) }
         case .both:
@@ -531,6 +538,18 @@ final class SmartYTMediaGearStore: ObservableObject {
 
     private static func isAudioPath(_ path: String) -> Bool {
         ["mp3", "m4a", "wav", "aac", "opus"].contains(URL(fileURLWithPath: path).pathExtension.lowercased())
+    }
+
+    static func isDirectImageURL(_ raw: String) -> Bool {
+        imageExtension(for: raw) != nil
+    }
+
+    static func defaultDownloadKind(for raw: String) -> SmartYTDownloadKind {
+        isDirectImageURL(raw) ? .image : .video
+    }
+
+    private static func isImagePath(_ path: String) -> Bool {
+        imageExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased())
     }
 
     private static func isVideoPath(_ path: String) -> Bool {
@@ -618,10 +637,20 @@ final class SmartYTMediaGearStore: ObservableObject {
     }
 
     private func download(url: String, kind: SmartYTDownloadKind, into directory: URL) async throws -> [URL] {
+        if Self.isDirectImageURL(url) {
+            switch kind {
+            case .audio:
+                throw SmartYTMediaError.missingArtifact("Image URL cannot be downloaded as audio.")
+            case .image, .video, .both:
+                return [try await downloadImage(url: url, into: directory)]
+            }
+        }
         var outputs: [URL] = []
         switch kind {
         case .audio:
             outputs.append(try await downloadAudio(url: url, into: directory))
+        case .image:
+            outputs.append(try await downloadImage(url: url, into: directory))
         case .video:
             outputs.append(try await downloadVideo(url: url, into: directory))
         case .both:
@@ -783,6 +812,25 @@ final class SmartYTMediaGearStore: ObservableObject {
         return output
     }
 
+    private func downloadImage(url: String, into directory: URL) async throws -> URL {
+        guard let sourceURL = URL(string: url) else {
+            throw SmartYTMediaError.invalidURL
+        }
+        var request = URLRequest(url: sourceURL)
+        request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw SmartYTMediaError.commandFailed(
+                command: "image download",
+                detail: "HTTP \(http.statusCode)"
+            )
+        }
+        let ext = Self.imageExtension(for: url) ?? "jpg"
+        let output = directory.appendingPathComponent("image.\(ext)")
+        try data.write(to: output, options: .atomic)
+        return output
+    }
+
     private func findWhisperCommand() async -> String? {
         for command in ["whisper", "whisper-cli"] {
             let result = await runner.run("command", arguments: ["-v", command], timeoutSeconds: 8)
@@ -915,6 +963,28 @@ final class SmartYTMediaGearStore: ObservableObject {
         }
         return trimmed
     }
+
+    private static func imageExtension(for raw: String) -> String? {
+        if let url = URL(string: raw) {
+            let pathExtension = url.pathExtension.lowercased()
+            if imageExtensions.contains(pathExtension) {
+                return pathExtension
+            }
+        }
+        guard let components = URLComponents(string: raw) else {
+            return nil
+        }
+        let format = components.queryItems?
+            .first { $0.name.lowercased() == "format" }?
+            .value?
+            .lowercased()
+        guard let format, imageExtensions.contains(format) else {
+            return nil
+        }
+        return format
+    }
+
+    private static let imageExtensions = ["jpg", "jpeg", "png", "webp", "gif"]
 
     private func updateJob(_ id: String, mutate: (inout SmartYTMediaJob) -> Void) {
         guard let index = jobs.firstIndex(where: { $0.id == id }) else {

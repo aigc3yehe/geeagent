@@ -20,6 +20,10 @@ import { defaultRuntimeStore } from "./native-runtime/store/defaults.js";
 import {
   appendAssistantDeltaForActiveConversation,
   appendAssistantMessageForActiveConversation,
+  appendCapabilityFocusForSession,
+  appendRunPlanForSession,
+  appendStageConclusionForSession,
+  appendStageStartedForSession,
   appendToolEvents,
   appendToolResultForHostBridgeCompletion,
   beginTurnReplay,
@@ -34,6 +38,16 @@ import {
   requiresGeeGearBridgeFirst,
   routeLocalGearIntent,
 } from "./native-runtime/turns/gear-intents.js";
+import {
+  buildRuntimeRunPlan,
+  capabilityFocusArgsForPlan,
+  capabilityFocusForStage,
+  nextRuntimeRunPlan,
+} from "./native-runtime/turns/planning.js";
+import {
+  advanceRunPlanAfterHostCompletions,
+  terminalRunPlanBlocker,
+} from "./native-runtime/turns/stage-advancer.js";
 
 type ServerEnvelope = {
   id: string;
@@ -1170,6 +1184,36 @@ describe("native runtime command modules", () => {
       },
     });
 
+    const focusedListRaw = await handleNativeRuntimeCommand(
+      "invoke-tool",
+      [
+        JSON.stringify({
+          tool_id: "gee.gear.listCapabilities",
+          arguments: {
+            detail: "summary",
+            run_plan_id: "run_plan_demo",
+            stage_id: "stage_fetch_tweet",
+            focus_gear_ids: ["twitter.capture", "bookmark.vault"],
+            focus_capability_ids: ["twitter.fetch_tweet", "bookmark.save"],
+          },
+        }),
+      ],
+      { configDir },
+    );
+    const focusedList = JSON.parse(focusedListRaw);
+    assert.deepEqual(focusedList, {
+      kind: "completed",
+      tool_id: "gee.gear.listCapabilities",
+      payload: {
+        intent: "gear.list_capabilities",
+        detail: "summary",
+        run_plan_id: "run_plan_demo",
+        stage_id: "stage_fetch_tweet",
+        focus_gear_ids: ["twitter.capture", "bookmark.vault"],
+        focus_capability_ids: ["twitter.fetch_tweet", "bookmark.save"],
+      },
+    });
+
     const invokeRaw = await handleNativeRuntimeCommand(
       "invoke-tool",
       [
@@ -1639,6 +1683,324 @@ describe("native runtime command modules", () => {
     assert.match(prompt, /\[Original Turn Prompt\]/);
   });
 
+  it("builds a focused Phase 3.6 plan for Twitter bookmark media requests", () => {
+    const plan = buildRuntimeRunPlan(
+      "save this tweet to bookmarks and import the tweet media into the media browser https://x.com/0xbisc/status/2049100073481716076?s=20",
+      "gear_first",
+    );
+
+    assert.ok(plan);
+    assert.equal(plan.phase, "phase3.6");
+    assert.equal(plan.current_stage_id, "stage_fetch_tweet");
+    assert.deepEqual(plan.focus.focus_gear_ids, ["twitter.capture"]);
+    assert.deepEqual(plan.focus.focus_capability_ids, ["twitter.fetch_tweet"]);
+    assert.deepEqual(
+      plan.stages[0]?.capability_args?.["twitter.capture/twitter.fetch_tweet"],
+      { url: "https://x.com/0xbisc/status/2049100073481716076?s=20" },
+    );
+    assert.deepEqual(capabilityFocusForStage(plan, "stage_download_media"), {
+      stage_id: "stage_download_media",
+      focus_gear_ids: ["smartyt.media"],
+      focus_capability_ids: ["smartyt.download_now"],
+      disclosure_level: "summary",
+    });
+    assert.deepEqual(capabilityFocusForStage(plan, "stage_import_media"), {
+      stage_id: "stage_import_media",
+      focus_gear_ids: ["media.library"],
+      focus_capability_ids: ["media.import_files"],
+      disclosure_level: "summary",
+    });
+    assert.ok(plan.stages.some((stage) => stage.stage_id === "stage_import_media"));
+    assert.ok(plan.success_criteria.some((item) => /Bookmark Vault/.test(item)));
+  });
+
+  it("adds research and synthesis stages for cross-domain Twitter requests", () => {
+    const plan = buildRuntimeRunPlan(
+      "save this tweet to bookmarks https://x.com/YaReYaRu30Life/status/2049545035176362120?s=20, download its media into the media library gear, then search related information and explain the technologies involved.",
+      "gear_first",
+    );
+
+    assert.ok(plan);
+    assert.deepEqual(
+      plan.stages.map((stage) => stage.stage_id),
+      [
+        "stage_fetch_tweet",
+        "stage_download_media",
+        "stage_import_media",
+        "stage_save_bookmark",
+        "stage_research_technologies",
+        "stage_synthesize_explanation",
+        "stage_verify",
+      ],
+    );
+    assert.ok(plan.success_criteria.some((item) => /current public information/.test(item)));
+    assert.equal(
+      capabilityFocusForStage(plan, "stage_research_technologies").focus_capability_ids.length,
+      0,
+    );
+    assert.deepEqual(
+      __sdkTurnRunnerTestHooks.normalizeSdkGearInvokeInput(
+        "mcp__gee__gear_invoke",
+        {
+          gear_id: "twitter.capture",
+          capability_id: "twitter.fetch_tweet",
+          args: {},
+        },
+        plan,
+      ),
+      {
+        gear_id: "twitter.capture",
+        capability_id: "twitter.fetch_tweet",
+        args: {
+          url: "https://x.com/YaReYaRu30Life/status/2049545035176362120?s=20",
+        },
+      },
+    );
+  });
+
+  it("renders Gear-first prompts with a locked capability focus set", () => {
+    const plan = buildRuntimeRunPlan(
+      "save this tweet to bookmarks and import its media into the media browser https://x.com/0xbisc/status/2049100073481716076?s=20",
+      "gear_first",
+    );
+    const prompt = __sdkTurnRunnerTestHooks.gearFirstTurnPrompt("original prompt", plan);
+
+    assert.match(prompt, /focus_gear_ids/);
+    assert.match(prompt, /twitter\.fetch_tweet/);
+    assert.match(prompt, /smartyt\.download_now/);
+    assert.match(prompt, /capability_args/);
+    assert.match(prompt, /pass those fields inside the direct Gear `args` object/);
+    assert.match(prompt, /Do not request an unscoped full capability summary/);
+    assert.deepEqual(capabilityFocusArgsForPlan(plan), {
+      detail: "summary",
+      run_plan_id: plan?.plan_id,
+      stage_id: "stage_fetch_tweet",
+      focus_gear_ids: ["twitter.capture"],
+      focus_capability_ids: ["twitter.fetch_tweet"],
+    });
+    assert.deepEqual(capabilityFocusArgsForPlan(plan, "stage_save_bookmark"), {
+      detail: "summary",
+      run_plan_id: plan?.plan_id,
+      stage_id: "stage_save_bookmark",
+      focus_gear_ids: ["bookmark.vault"],
+      focus_capability_ids: ["bookmark.save"],
+    });
+  });
+
+  it("rejects unscoped Gear capability summary calls when a focus set is locked", () => {
+    const plan = buildRuntimeRunPlan(
+      "save this tweet to bookmarks and import its media into the media browser https://x.com/0xbisc/status/2049100073481716076?s=20",
+      "gear_first",
+    );
+    assert.ok(plan);
+
+    assert.match(
+      __sdkTurnRunnerTestHooks.gearFirstCapabilityFocusViolationReason(
+        "gear_first",
+        "mcp__gee__gear_list_capabilities",
+        { detail: "summary" },
+        plan,
+        true,
+      ) ?? "",
+      /must include the runtime plan focus/,
+    );
+    assert.equal(
+      __sdkTurnRunnerTestHooks.gearFirstCapabilityFocusViolationReason(
+        "gear_first",
+        "mcp__gee__gear_list_capabilities",
+        capabilityFocusArgsForPlan(plan),
+        plan,
+        true,
+      ),
+      null,
+    );
+    assert.match(
+      __sdkTurnRunnerTestHooks.gearFirstCapabilityFocusViolationReason(
+        "gear_first",
+        "mcp__gee__gear_list_capabilities",
+        capabilityFocusArgsForPlan(plan, "stage_download_media"),
+        plan,
+        true,
+      ) ?? "",
+      /must include the runtime plan focus/,
+    );
+    assert.equal(
+      __sdkTurnRunnerTestHooks.gearFirstCapabilityFocusViolationReason(
+        "gear_first",
+        "mcp__gee__gear_list_capabilities",
+        capabilityFocusArgsForPlan(plan, "stage_download_media"),
+        plan,
+        false,
+      ),
+      null,
+    );
+    assert.match(
+      __sdkTurnRunnerTestHooks.gearFirstCapabilityFocusViolationReason(
+        "gear_first",
+        "mcp__gee__gear_list_capabilities",
+        {
+          ...capabilityFocusArgsForPlan(plan),
+          stage_id: "stage_unknown",
+        },
+        plan,
+        false,
+      ) ?? "",
+      /blocked an unscoped full capability summary/,
+    );
+    assert.match(
+      __sdkTurnRunnerTestHooks.gearFirstCapabilityFocusViolationReason(
+        "gear_first",
+        "mcp__gee__gear_list_capabilities",
+        { detail: "summary" },
+        plan,
+        false,
+      ) ?? "",
+      /blocked an unscoped full capability summary/,
+    );
+    assert.equal(
+      __sdkTurnRunnerTestHooks.gearFirstCapabilityFocusViolationReason(
+        "gear_first",
+        "mcp__gee__gear_list_capabilities",
+        { detail: "capabilities", gear_id: "twitter.capture" },
+        plan,
+        false,
+      ),
+      null,
+    );
+  });
+
+  it("records Phase 3.6 plan, focus, stage start, and stage conclusion events", () => {
+    const store = defaultRuntimeStore("2026-04-30T00:00:00.000Z");
+    const sessionId = executionSessionIdForConversation(store.active_conversation_id);
+    const plan = buildRuntimeRunPlan(
+      "save this tweet to bookmarks and import its media into the media browser https://x.com/0xbisc/status/2049100073481716076?s=20",
+      "gear_first",
+    );
+    assert.ok(plan);
+
+    appendRunPlanForSession(store, sessionId, plan);
+    appendCapabilityFocusForSession(store, sessionId, plan);
+    appendStageStartedForSession(store, sessionId, plan);
+    appendStageConclusionForSession(
+      store,
+      sessionId,
+      plan,
+      "completed",
+      "Stage completed by test.",
+    );
+
+    const kinds = store.transcript_events.map((event) => event.payload.kind);
+    assert.deepEqual(kinds, [
+      "run_plan_created",
+      "capability_focus_locked",
+      "stage_started",
+      "stage_concluded",
+    ]);
+    const focusEvent = store.transcript_events[1]?.payload;
+    assert.deepEqual(focusEvent.focus_capability_ids, ["twitter.fetch_tweet"]);
+    const conclusion = store.transcript_events[3]?.payload;
+    assert.equal(conclusion.stage_id, "stage_fetch_tweet");
+    assert.equal(conclusion.status, "completed");
+  });
+
+  it("advances Phase 3.6 stages from structured Gear completion results", () => {
+    const plan = buildRuntimeRunPlan(
+      "save this tweet to bookmarks and import its media into the media browser https://x.com/0xbisc/status/2049100073481716076?s=20",
+      "gear_first",
+    );
+    assert.ok(plan);
+
+    const decision = advanceRunPlanAfterHostCompletions(plan, [
+      {
+        host_action_id: "host_action_fetch",
+        tool_id: "gee.gear.invoke",
+        status: "succeeded",
+        summary: "twitter.capture twitter.fetch_tweet completed",
+        result_json: JSON.stringify({
+          gear_id: "twitter.capture",
+          capability_id: "twitter.fetch_tweet",
+          tweet_count: 1,
+        }),
+      },
+    ]);
+
+    assert.equal(decision.concluded, true);
+    assert.equal(decision.status, "completed");
+    assert.equal(decision.nextPlan?.current_stage_id, "stage_download_media");
+    assert.match(terminalRunPlanBlocker(decision.nextPlan!) ?? "", /smartyt\.media\/smartyt\.download_now/);
+  });
+
+  it("does not advance Phase 3.6 stages from summary-only Gear completion prose", () => {
+    const plan = buildRuntimeRunPlan(
+      "save this tweet to bookmarks and import its media into the media browser https://x.com/0xbisc/status/2049100073481716076?s=20",
+      "gear_first",
+    );
+    assert.ok(plan);
+
+    const decision = advanceRunPlanAfterHostCompletions(plan, [
+      {
+        host_action_id: "host_action_fetch",
+        tool_id: "gee.gear.invoke",
+        status: "succeeded",
+        summary: "twitter.capture twitter.fetch_tweet completed",
+      },
+    ]);
+
+    assert.equal(decision.concluded, false);
+    assert.match(terminalRunPlanBlocker(plan) ?? "", /twitter\.capture\/twitter\.fetch_tweet/);
+  });
+
+  it("does not advance Phase 3.6 stages from Gear schema disclosure", () => {
+    const plan = buildRuntimeRunPlan(
+      "save this tweet to bookmarks and import its media into the media browser https://x.com/YaReYaRu30Life/status/2049545035176362120?s=20",
+      "gear_first",
+    );
+    assert.ok(plan);
+
+    const decision = advanceRunPlanAfterHostCompletions(plan, [
+      {
+        host_action_id: "host_action_schema",
+        tool_id: "gee.gear.listCapabilities",
+        status: "succeeded",
+        summary: "twitter.capture twitter.fetch_tweet completed",
+        result_json: JSON.stringify({
+          disclosure_level: "schema",
+          gear_id: "twitter.capture",
+          capability_id: "twitter.fetch_tweet",
+          args_schema: {
+            type: "object",
+            required: ["url"],
+          },
+        }),
+      },
+    ]);
+
+    assert.equal(decision.concluded, false);
+    assert.match(terminalRunPlanBlocker(plan) ?? "", /twitter\.capture\/twitter\.fetch_tweet/);
+  });
+
+  it("blocks Phase 3.6 stages from failed Gear completion results", () => {
+    const plan = buildRuntimeRunPlan(
+      "save this tweet to bookmarks and import its media into the media browser https://x.com/0xbisc/status/2049100073481716076?s=20",
+      "gear_first",
+    );
+    assert.ok(plan);
+
+    const decision = advanceRunPlanAfterHostCompletions(plan, [
+      {
+        host_action_id: "host_action_fetch",
+        tool_id: "gee.gear.invoke",
+        status: "failed",
+        error: "twitter.capture is unauthorized",
+      },
+    ]);
+
+    assert.equal(decision.concluded, true);
+    assert.equal(decision.status, "blocked");
+    assert.equal(decision.nextPlan, null);
+    assert.match(decision.summary ?? "", /unauthorized/);
+  });
+
   it("rejects non-Gee tool events inside Gear-bridge-first turns", async () => {
     const turn: SdkTurnResult = {
       assistant_chunks: [],
@@ -1681,6 +2043,518 @@ describe("native runtime command modules", () => {
     assert.equal(closed, true);
     assert.match(turn.failed_reason ?? "", /Gear-first runtime boundary rejected `Bash`/);
     assert.equal(turn.tool_events.length, 0);
+  });
+
+  it("allows non-Gee tools after a Gear-first plan reaches a model-only stage", () => {
+    let plan = buildRuntimeRunPlan(
+      "save this tweet to bookmarks https://x.com/YaReYaRu30Life/status/2049545035176362120?s=20, download its media into the media library gear, then search related information and explain the technologies involved.",
+      "gear_first",
+    );
+    assert.ok(plan);
+    while (plan.current_stage_id !== "stage_research_technologies") {
+      const nextPlan = nextRuntimeRunPlan(plan);
+      assert.ok(nextPlan);
+      plan = nextPlan;
+    }
+
+    assert.equal(
+      __sdkTurnRunnerTestHooks.gearFirstBoundaryViolationReason("gear_first", "Bash", plan),
+      null,
+    );
+  });
+
+  it("accepts Gear-first final results after the plan reaches a model-only stage", async () => {
+    let plan = buildRuntimeRunPlan(
+      "save this tweet to bookmarks https://x.com/YaReYaRu30Life/status/2049545035176362120?s=20, download its media into the media library gear, then search related information and explain the technologies involved.",
+      "gear_first",
+    );
+    assert.ok(plan);
+    while (plan.current_stage_id !== "stage_research_technologies") {
+      const nextPlan = nextRuntimeRunPlan(plan);
+      assert.ok(nextPlan);
+      plan = nextPlan;
+    }
+
+    const turn: SdkTurnResult = {
+      assistant_chunks: [],
+      tool_events: [],
+      auto_approved_tools: 0,
+    };
+    let closed = false;
+    const managed = {
+      events: [
+        {
+          type: "session.tool_use",
+          sessionId: "session_test",
+          toolUseId: "toolu_research",
+          toolName: "Bash",
+          input: { command: "curl https://example.com" },
+          raw: {},
+        },
+        {
+          type: "session.tool_result",
+          sessionId: "session_test",
+          toolUseId: "toolu_research",
+          status: "succeeded",
+          summary: "research evidence",
+          raw: {},
+        },
+        {
+          type: "session.assistant_text",
+          sessionId: "session_test",
+          text: "Saved and explained.",
+          raw: {},
+        },
+        {
+          type: "session.result",
+          sessionId: "session_test",
+          subtype: "success",
+          durationMs: 1000,
+          totalCostUsd: 0,
+          result: "Saved and explained.",
+          raw: {},
+        },
+      ],
+      waiters: [],
+      session: {
+        close() {
+          closed = true;
+        },
+      },
+      toolBoundaryMode: "gear_first",
+      runPlan: plan,
+      toolInvocationCount: 4,
+    };
+
+    await __sdkTurnRunnerTestHooks.collectEventsUntilPauseOrResult(
+      undefined,
+      managed as never,
+      "session_test",
+      [],
+      turn,
+      undefined,
+      undefined,
+      5_000,
+      "gear_first",
+      plan,
+    );
+
+    assert.equal(turn.failed_reason, undefined);
+    assert.equal(turn.final_result, "Saved and explained.");
+    assert.equal(turn.assistant_chunks.at(-1), "Saved and explained.");
+    assert.equal(closed, false);
+  });
+
+  it("concludes model-only research, synthesis, and verification stages from SDK evidence", () => {
+    let plan = buildRuntimeRunPlan(
+      "save this tweet to bookmarks https://x.com/YaReYaRu30Life/status/2049545035176362120?s=20, download its media into the media library gear, then search related information and explain the technologies involved.",
+      "gear_first",
+    );
+    assert.ok(plan);
+    while (plan.current_stage_id !== "stage_research_technologies") {
+      const nextPlan = nextRuntimeRunPlan(plan);
+      assert.ok(nextPlan);
+      plan = nextPlan;
+    }
+    const store = defaultRuntimeStore();
+    const turn: SdkTurnResult = {
+      assistant_chunks: ["Saved and explained."],
+      auto_approved_tools: 1,
+      tool_events: [
+        {
+          kind: "invocation",
+          invocation_id: "toolu_research",
+          tool_name: "Bash",
+          input_summary: "curl search",
+        },
+        {
+          kind: "result",
+          invocation_id: "toolu_research",
+          status: "succeeded",
+          summary: "research evidence",
+        },
+      ],
+    };
+
+    const finalPlan = __turnTestHooks.applyModelOnlyStageConclusionsForTurn(
+      store,
+      "session_research",
+      plan,
+      turn,
+    );
+
+    assert.equal(finalPlan, null);
+    assert.deepEqual(
+      store.transcript_events
+        .map((event) => (event as { payload?: { kind?: string; stage_id?: string; status?: string } }).payload)
+        .filter((payload) => payload?.kind === "stage_concluded")
+        .map((payload) => [payload?.stage_id, payload?.status]),
+      [
+        ["stage_research_technologies", "completed"],
+        ["stage_synthesize_explanation", "completed"],
+        ["stage_verify", "completed"],
+      ],
+    );
+  });
+
+  it("rejects Gear-first runs that invoke before focused capability discovery", async () => {
+    const turn: SdkTurnResult = {
+      assistant_chunks: [],
+      tool_events: [],
+      auto_approved_tools: 0,
+    };
+    let closed = false;
+    const managed = {
+      events: [
+        {
+          type: "session.tool_use",
+          sessionId: "session_test",
+          toolUseId: "toolu_invoke_first",
+          toolName: "mcp__gee__gear_invoke",
+          input: {
+            gear_id: "twitter.capture",
+            capability_id: "twitter.fetch_tweet",
+            args: { url: "https://x.com/openai/status/123" },
+          },
+          raw: {},
+        },
+      ],
+      waiters: [],
+      session: {
+        close() {
+          closed = true;
+        },
+      },
+      toolBoundaryMode: "gear_first",
+    };
+
+    await __sdkTurnRunnerTestHooks.collectEventsUntilPauseOrResult(
+      undefined,
+      managed as never,
+      "session_test",
+      [],
+      turn,
+      undefined,
+      undefined,
+      5_000,
+      "gear_first",
+    );
+
+    assert.equal(closed, true);
+    assert.match(turn.failed_reason ?? "", /first Gear-first action must be focused capability discovery/i);
+    assert.equal(turn.tool_events.length, 0);
+  });
+
+  it("rejects focused Gear-first runs that start with an unscoped summary", async () => {
+    const plan = buildRuntimeRunPlan(
+      "save this tweet to bookmarks and import its media into the media browser https://x.com/0xbisc/status/2049100073481716076?s=20",
+      "gear_first",
+    );
+    assert.ok(plan);
+    const turn: SdkTurnResult = {
+      assistant_chunks: [],
+      tool_events: [],
+      auto_approved_tools: 0,
+    };
+    let closed = false;
+    const managed = {
+      events: [
+        {
+          type: "session.tool_use",
+          sessionId: "session_test",
+          toolUseId: "toolu_unscoped",
+          toolName: "mcp__gee__gear_list_capabilities",
+          input: { detail: "summary" },
+          raw: {},
+        },
+      ],
+      waiters: [],
+      session: {
+        close() {
+          closed = true;
+        },
+      },
+      toolBoundaryMode: "gear_first",
+      runPlan: plan,
+    };
+
+    await __sdkTurnRunnerTestHooks.collectEventsUntilPauseOrResult(
+      undefined,
+      managed as never,
+      "session_test",
+      [],
+      turn,
+      undefined,
+      undefined,
+      5_000,
+      "gear_first",
+      plan,
+    );
+
+    assert.equal(closed, true);
+    assert.match(turn.failed_reason ?? "", /must include the runtime plan focus/);
+    assert.equal(turn.tool_events.length, 0);
+  });
+
+  it("allows Gear-first invokes for the current runtime plan stage", async () => {
+    const plan = buildRuntimeRunPlan(
+      "save this tweet to bookmarks and import its media into the media browser https://x.com/0xbisc/status/2049100073481716076?s=20",
+      "gear_first",
+    );
+    assert.ok(plan);
+    const turn: SdkTurnResult = {
+      assistant_chunks: [],
+      tool_events: [],
+      auto_approved_tools: 0,
+    };
+    let closed = false;
+    const managed = {
+      events: [
+        {
+          type: "session.tool_use",
+          sessionId: "session_test",
+          toolUseId: "toolu_fetch",
+          toolName: "mcp__gee__gear_invoke",
+          input: {
+            gear_id: "twitter.capture",
+            capability_id: "twitter.fetch_tweet",
+            args: { url: "https://x.com/0xbisc/status/2049100073481716076?s=20" },
+          },
+          raw: {},
+        },
+        {
+          type: "session.host_action_requested",
+          sessionId: "session_test",
+          hostAction: {
+            host_action_id: "host_action_fetch",
+            tool_id: "gee.gear.invoke",
+            arguments: {
+              gear_id: "twitter.capture",
+              capability_id: "twitter.fetch_tweet",
+              args: { url: "https://x.com/0xbisc/status/2049100073481716076?s=20" },
+            },
+          },
+        },
+      ],
+      waiters: [],
+      session: {
+        close() {
+          closed = true;
+        },
+      },
+      toolBoundaryMode: "gear_first",
+      runPlan: plan,
+      toolInvocationCount: 1,
+    };
+
+    await __sdkTurnRunnerTestHooks.collectEventsUntilPauseOrResult(
+      undefined,
+      managed as never,
+      "session_test",
+      [],
+      turn,
+      undefined,
+      undefined,
+      5_000,
+      "gear_first",
+      plan,
+    );
+
+    assert.equal(closed, false);
+    assert.equal(turn.failed_reason, undefined);
+    assert.equal(turn.pending_host_actions?.[0]?.host_action_id, "host_action_fetch");
+  });
+
+  it("rejects Gear-first invokes outside the current runtime plan stage", async () => {
+    const plan = buildRuntimeRunPlan(
+      "save this tweet to bookmarks and import its media into the media browser https://x.com/0xbisc/status/2049100073481716076?s=20",
+      "gear_first",
+    );
+    assert.ok(plan);
+    const turn: SdkTurnResult = {
+      assistant_chunks: [],
+      tool_events: [],
+      auto_approved_tools: 0,
+    };
+    let closed = false;
+    const managed = {
+      events: [
+        {
+          type: "session.tool_use",
+          sessionId: "session_test",
+          toolUseId: "toolu_out_of_stage",
+          toolName: "mcp__gee__gear_invoke",
+          input: {
+            gear_id: "bookmark.vault",
+            capability_id: "bookmark.save",
+            args: { url: "https://x.com/0xbisc/status/2049100073481716076?s=20" },
+          },
+          raw: {},
+        },
+      ],
+      waiters: [],
+      session: {
+        close() {
+          closed = true;
+        },
+      },
+      toolBoundaryMode: "gear_first",
+      runPlan: plan,
+      toolInvocationCount: 1,
+    };
+
+    await __sdkTurnRunnerTestHooks.collectEventsUntilPauseOrResult(
+      undefined,
+      managed as never,
+      "session_test",
+      [],
+      turn,
+      undefined,
+      undefined,
+      5_000,
+      "gear_first",
+      plan,
+    );
+
+    assert.equal(closed, true);
+    assert.match(turn.failed_reason ?? "", /current stage only allows required capability/);
+    assert.equal(turn.tool_events.length, 0);
+  });
+
+  it("does not treat a resumed Gear-first tool call as the first tool of the whole run", async () => {
+    const plan = buildRuntimeRunPlan(
+      "save this tweet to bookmarks and import its media into the media browser https://x.com/0xbisc/status/2049100073481716076?s=20",
+      "gear_first",
+    );
+    assert.ok(plan);
+    let closed = false;
+    const managed = {
+      events: [
+        {
+          type: "session.tool_use",
+          sessionId: "session_test",
+          toolUseId: "toolu_first_focus",
+          toolName: "mcp__gee__gear_list_capabilities",
+          input: capabilityFocusArgsForPlan(plan),
+          raw: {},
+        },
+        {
+          type: "session.host_action_requested",
+          sessionId: "session_test",
+          hostAction: {
+            host_action_id: "host_action_first_focus",
+            tool_id: "gee.gear.listCapabilities",
+            arguments: capabilityFocusArgsForPlan(plan),
+          },
+        },
+      ],
+      waiters: [],
+      session: {
+        close() {
+          closed = true;
+        },
+      },
+      toolBoundaryMode: "gear_first",
+      runPlan: plan,
+      toolInvocationCount: 0,
+    };
+    const firstTurn: SdkTurnResult = {
+      assistant_chunks: [],
+      tool_events: [],
+      auto_approved_tools: 0,
+    };
+
+    await __sdkTurnRunnerTestHooks.collectEventsUntilPauseOrResult(
+      undefined,
+      managed as never,
+      "session_test",
+      [],
+      firstTurn,
+      undefined,
+      undefined,
+      5_000,
+      "gear_first",
+      plan,
+    );
+
+    assert.equal(firstTurn.failed_reason, undefined);
+    assert.equal(firstTurn.pending_host_actions?.[0]?.host_action_id, "host_action_first_focus");
+    assert.equal(managed.toolInvocationCount, 1);
+
+    managed.events = [
+      {
+        type: "session.tool_use",
+        sessionId: "session_test",
+        toolUseId: "toolu_second_focus",
+        toolName: "mcp__gee__gear_list_capabilities",
+        input: capabilityFocusArgsForPlan(plan, "stage_download_media"),
+        raw: {},
+      },
+      {
+        type: "session.host_action_requested",
+        sessionId: "session_test",
+        hostAction: {
+          host_action_id: "host_action_second_focus",
+          tool_id: "gee.gear.listCapabilities",
+          arguments: capabilityFocusArgsForPlan(plan, "stage_download_media"),
+        },
+      },
+    ];
+    const secondTurn: SdkTurnResult = {
+      assistant_chunks: [],
+      tool_events: [],
+      auto_approved_tools: 0,
+    };
+
+    await __sdkTurnRunnerTestHooks.collectEventsUntilPauseOrResult(
+      undefined,
+      managed as never,
+      "session_test",
+      [],
+      secondTurn,
+      undefined,
+      undefined,
+      5_000,
+      "gear_first",
+      plan,
+    );
+
+    assert.equal(closed, false);
+    assert.equal(secondTurn.failed_reason, undefined);
+    assert.equal(secondTurn.pending_host_actions?.[0]?.host_action_id, "host_action_second_focus");
+    assert.equal(managed.toolInvocationCount, 2);
+
+    managed.events = [
+      {
+        type: "session.tool_use",
+        sessionId: "session_test",
+        toolUseId: "toolu_bash_after_resume",
+        toolName: "Bash",
+        input: { command: "cat /tmp/result.json" },
+        raw: {},
+      },
+    ];
+    const thirdTurn: SdkTurnResult = {
+      assistant_chunks: [],
+      tool_events: [],
+      auto_approved_tools: 0,
+    };
+
+    await __sdkTurnRunnerTestHooks.collectEventsUntilPauseOrResult(
+      undefined,
+      managed as never,
+      "session_test",
+      [],
+      thirdTurn,
+      undefined,
+      undefined,
+      5_000,
+      "gear_first",
+      plan,
+    );
+
+    assert.equal(closed, true);
+    assert.match(thirdTurn.failed_reason ?? "", /rejected `Bash`/);
   });
 
   it("marks Gear-bridge-first text-only turns failed instead of complete", async () => {
@@ -2480,6 +3354,19 @@ api_key = "saved-xenodia-key"
     assert.match(reply, /user objective is not confirmed complete/);
     assert.match(reply, /wespy\.reader wespy\.fetch_article completed/);
     assert.match(reply, /Bash: -rw-r--r-- \/Users\/davidzhang\/Desktop\/article\.md/);
+  });
+
+  it("marks SDK turns without assistant text as failed instead of fake completed", () => {
+    const turn: SdkTurnResult = {
+      assistant_chunks: [],
+      auto_approved_tools: 0,
+      tool_events: [],
+    };
+
+    __turnTestHooks.markMissingAssistantReplyAsFailure(turn, "without a final assistant reply");
+
+    assert.match(turn.failed_reason ?? "", /without a final assistant reply/);
+    assert.match(turn.failed_reason ?? "", /instead of presenting a fake completion/);
   });
 
   it("keeps SDK event waits below the native client timeout", () => {

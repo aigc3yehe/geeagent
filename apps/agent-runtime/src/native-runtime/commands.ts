@@ -4,6 +4,12 @@ import {
   persistChatRoutingSettings,
   type ChatRoutingSettings,
 } from "../chat-runtime.js";
+import {
+  codexExportStatus,
+  describeCodexExportCapability,
+  listCodexExportCapabilities,
+  parseCodexExportOptions,
+} from "./codex-export.js";
 import { resolveConfigDir } from "./paths.js";
 import {
   deleteAgentProfile,
@@ -173,6 +179,15 @@ export async function handleNativeRuntimeCommand(
       }
       return stringify(await invokeTool(request));
     }
+    case "codex-export-status":
+      assertArgCount(command, args, 0);
+      return stringify(codexExportStatus());
+    case "codex-export-list-capabilities":
+      assertArgCount(command, args, 1);
+      return stringify(await listCodexExportCapabilities(parseCodexExportOptions(args[0])));
+    case "codex-export-describe-capability":
+      assertArgCount(command, args, 1);
+      return stringify(await describeCodexExportCapability(parseCodexExportOptions(args[0])));
     default:
       throw new Error("unsupported command or wrong argument count");
   }

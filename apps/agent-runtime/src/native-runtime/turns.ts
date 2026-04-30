@@ -19,8 +19,10 @@ import {
   type StageSummaryStatus,
 } from "./context/stage-summary.js";
 import {
+  closeSdkRuntimeSession,
   resumeSdkRuntimeHostActions,
   runSdkRuntimeTurn,
+  updateSdkRuntimeRunPlan,
   type SdkToolEvent,
   type SdkTurnResult,
   type TurnRoute,
@@ -42,13 +44,19 @@ import {
 import {
   appendAssistantDeltaForActiveConversation,
   appendAssistantMessageForActiveConversation,
+  appendCapabilityFocusForSession,
+  appendRunPlanForSession,
+  appendRunPlanUpdatedForSession,
   appendSessionStateForSession,
+  appendStageConclusionForSession,
+  appendStageStartedForSession,
   appendToolEvents,
   appendToolResultForHostBridgeCompletion,
   appendToolResultForExistingInvocation,
   beginTurnReplay,
   executionSessionIdForConversation,
   finalizeTurnReplay,
+  latestRunPlanForSession,
 } from "./turns/events.js";
 import {
   assistantReplyFromTurn,
@@ -69,6 +77,17 @@ import {
 } from "./turns/state.js";
 import type { PreparedTurnContext, TurnReplayCursor } from "./turns/types.js";
 import { requiresGeeGearBridgeFirst } from "./turns/gear-intents.js";
+import {
+  buildRuntimeRunPlan,
+  currentRuntimePlanStage,
+  nextRuntimeRunPlan,
+  type RuntimeRunPlan,
+} from "./turns/planning.js";
+import {
+  advanceRunPlanAfterHostCompletions,
+  terminalRunPlanBlocker,
+  type RuntimeStageAdvanceDecision,
+} from "./turns/stage-advancer.js";
 
 const GEAR_COMPLETION_SDK_IDLE_TIMEOUT_MS = 75_000;
 
@@ -202,6 +221,11 @@ export async function completeHostActionTurn(
     );
   }
   markHostActionRunsCompleted(store, completions);
+  const stageProgress = applyStageAdvancerForHostCompletions(
+    store,
+    runtimeSessionId,
+    completions,
+  );
 
   const resumedTurn = await resumeSdkRuntimeHostActions(
     configDir,
@@ -217,6 +241,7 @@ export async function completeHostActionTurn(
       runtimeSessionId,
       resumedTurn,
       completions,
+      stageProgress,
     );
     return snapshotFromStore(store, configDir);
   }
@@ -237,11 +262,38 @@ async function applyResumedSdkHostActionTurn(
   runtimeSessionId: string,
   sdkTurn: SdkTurnResult,
   completions: RuntimeHostActionCompletion[],
+  stageProgress: {
+    activePlan: RuntimeRunPlan | null;
+    decision: RuntimeStageAdvanceDecision | null;
+    blocker: string | null;
+  },
 ): Promise<void> {
   const originatingMessageId = lastUserMessageId(store) ?? "host-action-user";
   appendToolEvents(store, runtimeSessionId, originatingMessageId, sdkTurn.tool_events);
 
-  if (sdkTurn.pending_host_actions && sdkTurn.pending_host_actions.length > 0) {
+  if (stageProgress.blocker) {
+    sdkTurn.failed_reason = stageProgress.blocker;
+  }
+  if (sdkTurn.pending_terminal_approval) {
+    sdkTurn.failed_reason =
+      "The agent requested terminal access while continuing a Gear host-action run. This bridge currently supports same-run Gear continuation only.";
+  }
+  if (sdkTurn.terminal_access_denied_reason) {
+    sdkTurn.failed_reason = sdkTurn.terminal_access_denied_reason;
+  }
+  if (
+    sdkTurn.failed_reason &&
+    ((sdkTurn.pending_host_actions && sdkTurn.pending_host_actions.length > 0) ||
+      sdkTurn.pending_terminal_approval)
+  ) {
+    closeSdkRuntimeSession(runtimeSessionId);
+  }
+
+  if (
+    !sdkTurn.failed_reason &&
+    sdkTurn.pending_host_actions &&
+    sdkTurn.pending_host_actions.length > 0
+  ) {
     appendSessionStateForSession(
       store,
       runtimeSessionId,
@@ -273,13 +325,25 @@ async function applyResumedSdkHostActionTurn(
     return;
   }
 
-  if (sdkTurn.pending_terminal_approval) {
-    sdkTurn.failed_reason =
-      "The agent requested terminal access while continuing a Gear host-action run. This bridge currently supports same-run Gear continuation only.";
+  if (!sdkTurn.failed_reason && stageProgress.activePlan) {
+    stageProgress.activePlan = applyModelOnlyStageConclusionsForTurn(
+      store,
+      runtimeSessionId,
+      stageProgress.activePlan,
+      sdkTurn,
+    );
   }
-  if (sdkTurn.terminal_access_denied_reason) {
-    sdkTurn.failed_reason = sdkTurn.terminal_access_denied_reason;
+
+  if (!sdkTurn.failed_reason && stageProgress.activePlan) {
+    const blocker = terminalRunPlanBlocker(stageProgress.activePlan);
+    if (blocker) {
+      sdkTurn.failed_reason = blocker;
+    }
   }
+  markMissingAssistantReplyAsFailure(
+    sdkTurn,
+    "after Gear host-action continuation without a final assistant reply",
+  );
   const completionFailureReason = sdkTurn.failed_reason;
   if (completionFailureReason) {
     sdkTurn.assistant_chunks = [
@@ -294,7 +358,7 @@ async function applyResumedSdkHostActionTurn(
 
   const assistantReply = assistantReplyFromTurn(
     sdkTurn,
-    "The Gear action completed, but the agent did not produce a text summary.",
+    "The SDK runtime ended without a final assistant reply.",
   );
   appendAssistantMessageForActiveConversation(store, runtimeSessionId, assistantReply);
   appendSessionStateForSession(
@@ -357,6 +421,17 @@ async function applyUnresumableHostActionCompletions(
     legacyFallback,
   );
 
+  const runPlan = latestRunPlanForSession(store, runtimeSessionId);
+  if (runPlan) {
+    appendStageConclusionForSession(
+      store,
+      runtimeSessionId,
+      runPlan,
+      "blocked",
+      `Stage blocked because Gear host action results could not continue inside the active SDK run: ${failureReason}`,
+    );
+  }
+
   appendAssistantMessageForActiveConversation(store, runtimeSessionId, assistantReply);
   appendSessionStateForSession(
     store,
@@ -393,6 +468,159 @@ async function applyUnresumableHostActionCompletions(
   await persistRuntimeStore(configDir, store);
 }
 
+function applyStageAdvancerForHostCompletions(
+  store: RuntimeStore,
+  runtimeSessionId: string,
+  completions: RuntimeHostActionCompletion[],
+): {
+  activePlan: RuntimeRunPlan | null;
+  decision: RuntimeStageAdvanceDecision | null;
+  blocker: string | null;
+} {
+  const runPlan = latestRunPlanForSession(store, runtimeSessionId);
+  if (!runPlan) {
+    return { activePlan: null, decision: null, blocker: null };
+  }
+
+  const decision = advanceRunPlanAfterHostCompletions(runPlan, completions);
+  if (!decision.concluded) {
+    return { activePlan: runPlan, decision, blocker: null };
+  }
+
+  appendStageConclusionForSession(
+    store,
+    runtimeSessionId,
+    runPlan,
+    decision.status ?? "partial",
+    decision.summary ?? "Stage reached a runtime boundary.",
+  );
+
+  if (decision.status === "blocked") {
+    return {
+      activePlan: runPlan,
+      decision,
+      blocker: decision.summary ?? "Current run stage is blocked.",
+    };
+  }
+
+  if (!decision.nextPlan) {
+    return { activePlan: runPlan, decision, blocker: null };
+  }
+
+  appendRunPlanUpdatedForSession(
+    store,
+    runtimeSessionId,
+    decision.nextPlan,
+    `Run plan advanced to ${decision.nextPlan.current_stage_id}.`,
+  );
+  updateSdkRuntimeRunPlan(runtimeSessionId, decision.nextPlan);
+  appendCapabilityFocusForSession(store, runtimeSessionId, decision.nextPlan);
+  appendStageStartedForSession(store, runtimeSessionId, decision.nextPlan);
+  return { activePlan: decision.nextPlan, decision, blocker: null };
+}
+
+function applyModelOnlyStageConclusionsForTurn(
+  store: RuntimeStore,
+  runtimeSessionId: string,
+  plan: RuntimeRunPlan,
+  sdkTurn: SdkTurnResult,
+): RuntimeRunPlan | null {
+  let cursor: RuntimeRunPlan | null = plan;
+  while (cursor) {
+    const stage = currentRuntimePlanStage(cursor);
+    if (!stage || stage.required_capabilities.length > 0) {
+      return cursor;
+    }
+
+    const summary = modelOnlyStageCompletionSummary(stage.stage_id, stage.title, sdkTurn);
+    if (!summary) {
+      return cursor;
+    }
+
+    appendStageConclusionForSession(store, runtimeSessionId, cursor, "completed", summary);
+    const nextPlan = nextRuntimeRunPlan(cursor);
+    if (!nextPlan) {
+      updateSdkRuntimeRunPlan(runtimeSessionId, cursor);
+      return null;
+    }
+
+    appendRunPlanUpdatedForSession(
+      store,
+      runtimeSessionId,
+      nextPlan,
+      `Run plan advanced to ${nextPlan.current_stage_id}.`,
+    );
+    updateSdkRuntimeRunPlan(runtimeSessionId, nextPlan);
+    appendCapabilityFocusForSession(store, runtimeSessionId, nextPlan);
+    appendStageStartedForSession(store, runtimeSessionId, nextPlan);
+    cursor = nextPlan;
+  }
+  return cursor;
+}
+
+function modelOnlyStageCompletionSummary(
+  stageID: string,
+  title: string,
+  sdkTurn: SdkTurnResult,
+): string | null {
+  if (stageID === "stage_research_technologies") {
+    return hasSucceededNonGeeToolResult(sdkTurn)
+      ? `Stage completed: ${title}. Research evidence was collected through approved SDK tool results.`
+      : null;
+  }
+  if (stageID === "stage_synthesize_explanation") {
+    return hasAssistantReplyText(sdkTurn)
+      ? `Stage completed: ${title}. The active SDK run produced the user-facing explanation.`
+      : null;
+  }
+  if (stageID === "stage_verify") {
+    return hasAssistantReplyText(sdkTurn)
+      ? `Stage completed: ${title}. Final verification was satisfied by the active SDK reply.`
+      : null;
+  }
+  if (hasSucceededNonGeeToolResult(sdkTurn)) {
+    return `Stage completed: ${title}. The active SDK run produced structured tool evidence.`;
+  }
+  if (hasAssistantReplyText(sdkTurn)) {
+    return `Stage completed: ${title}. The active SDK run produced a final response.`;
+  }
+  return null;
+}
+
+function hasSucceededNonGeeToolResult(sdkTurn: SdkTurnResult): boolean {
+  const toolNamesById = new Map<string, string>();
+  for (const event of sdkTurn.tool_events) {
+    if (event.kind === "invocation") {
+      toolNamesById.set(event.invocation_id, event.tool_name);
+    }
+  }
+  return sdkTurn.tool_events.some((event) => {
+    if (event.kind !== "result" || event.status !== "succeeded") {
+      return false;
+    }
+    const toolName = toolNamesById.get(event.invocation_id) ?? "";
+    return !toolName.startsWith("mcp__gee__");
+  });
+}
+
+function markMissingAssistantReplyAsFailure(
+  sdkTurn: SdkTurnResult,
+  context: string,
+): void {
+  if (sdkTurn.failed_reason || hasAssistantReplyText(sdkTurn)) {
+    return;
+  }
+  sdkTurn.failed_reason =
+    `The SDK runtime finished ${context}. GeeAgent marked the turn failed instead of presenting a fake completion.`;
+}
+
+function hasAssistantReplyText(sdkTurn: SdkTurnResult): boolean {
+  if (sdkTurn.assistant_chunks.some((chunk) => chunk.trim().length > 0)) {
+    return true;
+  }
+  return Boolean(sdkTurn.final_result?.trim());
+}
+
 async function applyClaudeSdkTurn(
   store: RuntimeStore,
   configDir: string,
@@ -413,6 +641,16 @@ async function applyClaudeSdkTurn(
 
   const runtimeSessionId = executionSessionIdForConversation(store.active_conversation_id);
   const cursor = beginTurnReplay(store, route.surface, text);
+  const gearBridgeFirst = requiresGeeGearBridgeFirst(text);
+  const runPlan = buildRuntimeRunPlan(
+    text,
+    gearBridgeFirst ? "gear_first" : "default",
+  );
+  if (runPlan) {
+    appendRunPlanForSession(store, cursor.sessionId, runPlan);
+    appendCapabilityFocusForSession(store, cursor.sessionId, runPlan);
+    appendStageStartedForSession(store, cursor.sessionId, runPlan);
+  }
   appendSessionStateForSession(
     store,
     cursor.sessionId,
@@ -440,7 +678,6 @@ async function applyClaudeSdkTurn(
 
   let sdkTurn: SdkTurnResult;
   try {
-    const gearBridgeFirst = requiresGeeGearBridgeFirst(text);
     sdkTurn = await runSdkRuntimeTurn(
       configDir,
       runtimeSessionId,
@@ -459,6 +696,7 @@ async function applyClaudeSdkTurn(
             cursor.assistantMessageId,
           ),
         toolBoundaryMode: gearBridgeFirst ? "gear_first" : "default",
+        runPlan,
       },
     );
   } catch (error) {
@@ -487,13 +725,20 @@ async function applyClaudeSdkTurn(
     });
     return;
   }
+  if (runPlan && !sdkTurn.failed_reason) {
+    const blocker = terminalRunPlanBlocker(runPlan);
+    if (blocker) {
+      sdkTurn.failed_reason = blocker;
+    }
+  }
+  markMissingAssistantReplyAsFailure(sdkTurn, "without a final assistant reply");
   if (sdkTurn.failed_reason) {
     sdkTurn.assistant_chunks = [
       claudeSdkFailureAssistantReply(sdkTurn.failed_reason),
     ];
   }
 
-  const assistantReply = recordLiveClaudeSdkTurnCompletion(store, cursor, sdkTurn);
+  const assistantReply = recordLiveClaudeSdkTurnCompletion(store, cursor, sdkTurn, runPlan);
   const quickReply = sdkTurn.failed_reason
     ? claudeSdkFailedQuickReply(sdkTurn.failed_reason)
     : claudeSdkQuickReply(assistantReply, toolStepCount(sdkTurn));
@@ -937,6 +1182,7 @@ async function applyTransientClaudeSdkQuickTurn(
     return;
   }
 
+  markMissingAssistantReplyAsFailure(sdkTurn, "during the transient quick reply");
   if (sdkTurn.failed_reason) {
     sdkTurn.assistant_chunks = [
       claudeSdkFailureAssistantReply(sdkTurn.failed_reason),
@@ -944,7 +1190,7 @@ async function applyTransientClaudeSdkQuickTurn(
   }
   const assistantReply = assistantReplyFromTurn(
     sdkTurn,
-    "GeeAgent completed the transient quick reply.",
+    "The SDK runtime ended without a final assistant reply.",
   );
   const quickReply = sdkTurn.failed_reason
     ? claudeSdkFailedQuickReply(sdkTurn.failed_reason)
@@ -972,6 +1218,7 @@ function recordClaudeSdkTurn(
   userContent: string,
   sdkTurn: SdkTurnResult,
 ): string {
+  markMissingAssistantReplyAsFailure(sdkTurn, "without a final assistant reply");
   const cursor = beginTurnReplay(store, route.surface, userContent);
   appendSessionStateForSession(
     store,
@@ -991,7 +1238,7 @@ function recordClaudeSdkTurn(
 
   const assistantReply = assistantReplyFromTurn(
     sdkTurn,
-    "The SDK completed the turn without a text summary.",
+    "The SDK runtime ended without a final assistant reply.",
   );
   appendAssistantMessageForActiveConversation(
     store,
@@ -1015,7 +1262,9 @@ function recordLiveClaudeSdkTurnCompletion(
   store: RuntimeStore,
   cursor: TurnReplayCursor,
   sdkTurn: SdkTurnResult,
+  runPlan?: RuntimeRunPlan | null,
 ): string {
+  markMissingAssistantReplyAsFailure(sdkTurn, "without a final assistant reply");
   if (sdkTurn.auto_approved_tools > 0) {
     appendSessionStateForSession(
       store,
@@ -1024,9 +1273,21 @@ function recordLiveClaudeSdkTurnCompletion(
     );
   }
 
+  if (runPlan) {
+    appendStageConclusionForSession(
+      store,
+      cursor.sessionId,
+      runPlan,
+      sdkTurn.failed_reason ? "blocked" : "completed",
+      sdkTurn.failed_reason
+        ? `Stage blocked by runtime failure: ${sdkTurn.failed_reason}`
+        : "Stage completed by the active SDK run.",
+    );
+  }
+
   const assistantReply = assistantReplyFromTurn(
     sdkTurn,
-    "The SDK completed the turn without a text summary.",
+    "The SDK runtime ended without a final assistant reply.",
   );
   appendAssistantMessageForActiveConversation(
     store,
@@ -1034,7 +1295,13 @@ function recordLiveClaudeSdkTurnCompletion(
     assistantReply,
     cursor.assistantMessageId,
   );
-  const stageCapsule = stageSummaryCapsuleForTurn(store, cursor, sdkTurn, assistantReply);
+  const stageCapsule = stageSummaryCapsuleForTurn(
+    store,
+    cursor,
+    sdkTurn,
+    assistantReply,
+    runPlan,
+  );
   finalizeTurnReplay(
     store,
     cursor,
@@ -1051,15 +1318,17 @@ function stageSummaryCapsuleForTurn(
   cursor: TurnReplayCursor,
   sdkTurn: SdkTurnResult,
   assistantReply: string,
+  runPlan?: RuntimeRunPlan | null,
 ): string {
   const status: StageSummaryStatus = sdkTurn.failed_reason ? "failed" : "succeeded";
   const latestUserRequest = userMessageContentForCursor(store, cursor) ?? "";
   const capsule = buildStageSummaryCapsule({
-    stage_id: cursor.sessionId,
-    run_id: cursor.sessionId,
+    stage_id: runPlan?.current_stage_id ?? cursor.sessionId,
+    run_id: runPlan?.plan_id ?? cursor.sessionId,
     session_id: cursor.sessionId,
     status,
-    objective: summarizePrompt(latestUserRequest, 240),
+    objective: runPlan?.stages.find((stage) => stage.stage_id === runPlan.current_stage_id)?.objective ??
+      summarizePrompt(latestUserRequest, 240),
     latest_user_request: latestUserRequest,
     completed_steps: status === "succeeded" ? [assistantReply] : [],
     blockers: sdkTurn.failed_reason ? [sdkTurn.failed_reason] : [],
@@ -1132,9 +1401,11 @@ function userMessageContentForCursor(
 }
 
 export const __turnTestHooks = {
+  applyModelOnlyStageConclusionsForTurn,
   composeClaudeSdkTurnPrompt,
   gearCompletionFailureReply,
   isTransientQuickPrompt,
+  markMissingAssistantReplyAsFailure,
   prepareTurnContext,
   routeQuickPromptToBestConversation,
   stageSummaryCapsuleForTurn,

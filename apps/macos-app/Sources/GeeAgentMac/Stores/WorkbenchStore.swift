@@ -1766,9 +1766,6 @@ final class WorkbenchStore {
                 return profile.appearance
             }
         case .abstract:
-            guard profile.appearance.kind == .abstract else {
-                return profile.appearance
-            }
             return .abstract
         }
         return profile.appearance

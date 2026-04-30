@@ -47,6 +47,17 @@ struct MediaLibraryItem: Identifiable, Hashable, Sendable {
     }
 }
 
+struct MediaLibraryImportReport: Sendable {
+    var importedItems: [MediaLibraryItem]
+    var existingItems: [MediaLibraryItem]
+    var duplicatePaths: [String]
+    var unsupportedPaths: [String]
+
+    var availableItems: [MediaLibraryItem] {
+        importedItems + existingItems
+    }
+}
+
 enum MediaLibraryMediaKind: String, CaseIterable, Identifiable, Hashable, Sendable {
     case all
     case image
@@ -157,24 +168,35 @@ final class MediaLibraryService {
     }
 
     func importFiles(_ fileURLs: [URL], into libraryURL: URL) async throws -> [MediaLibraryItem] {
+        try await importFilesWithReport(fileURLs, into: libraryURL).importedItems
+    }
+
+    func importFilesWithReport(_ fileURLs: [URL], into libraryURL: URL) async throws -> MediaLibraryImportReport {
         let supportedExtensions = Self.imageExtensions.union(Self.videoExtensions)
-        var existingSignatures = Set(
-            (try? loadItems(from: libraryURL)).map { items in
-                items.map { Self.itemSignature(fileName: $0.fileURL.lastPathComponent, size: $0.size) }
-            } ?? []
+        let existingItems = try loadItems(from: libraryURL)
+        var existingItemsBySignature = Dictionary(
+            uniqueKeysWithValues: existingItems.map { item in
+                (Self.itemSignature(fileName: item.fileURL.lastPathComponent, size: item.size), item)
+            }
         )
         var imported: [MediaLibraryItem] = []
+        var existing: [MediaLibraryItem] = []
+        var duplicatePaths: [String] = []
+        var unsupportedPaths: [String] = []
 
         for fileURL in fileURLs {
             let ext = fileURL.pathExtension.lowercased()
             guard supportedExtensions.contains(ext) else {
+                unsupportedPaths.append(fileURL.path)
                 continue
             }
 
             let attributes = try fileManager.attributesOfItem(atPath: fileURL.path)
             let size = int64(attributes[.size]) ?? 0
             let signature = Self.itemSignature(fileName: fileURL.lastPathComponent, size: size)
-            guard !existingSignatures.contains(signature) else {
+            if let existingItem = existingItemsBySignature[signature] {
+                existing.append(existingItem)
+                duplicatePaths.append(fileURL.path)
                 continue
             }
 
@@ -219,11 +241,16 @@ final class MediaLibraryService {
 
             if let item = try loadItem(itemURL: itemURL, metadata: metadata) {
                 imported.append(item)
-                existingSignatures.insert(signature)
+                existingItemsBySignature[signature] = item
             }
         }
 
-        return imported
+        return MediaLibraryImportReport(
+            importedItems: imported,
+            existingItems: existing,
+            duplicatePaths: duplicatePaths,
+            unsupportedPaths: unsupportedPaths
+        )
     }
 
     func deleteItem(id: String, from libraryURL: URL) throws {

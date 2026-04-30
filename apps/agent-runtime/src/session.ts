@@ -25,6 +25,11 @@ import {
 } from "./native-runtime/capabilities/gear-validation.js";
 import { prepareHostActionCompletionsForModel } from "./native-runtime/context/host-action-results.js";
 import {
+  mergeDeterministicArgsForCapability,
+  type RuntimeRunPlan,
+} from "./native-runtime/turns/planning.js";
+import {
+  normalizeGeeGearInvokeInput,
   normalizeToolBoundaryInput,
   normalizeToolInput,
   preToolUseBoundaryOutput,
@@ -49,6 +54,7 @@ type SessionConfig = {
   gatewayBaseUrl: string;
   gatewayApiKey: string;
   toolBoundaryMode?: "default" | "gear_first";
+  runPlan?: RuntimeRunPlan | null;
   sdkSessionFactory?: RuntimeSdkSessionFactory;
 };
 
@@ -269,14 +275,14 @@ function buildSystemPrompt(
         "- If those MCP tools are not visible in this SDK session, report the missing Gee host bridge as a runtime failure. Do not emit text control directives, do not inspect source code as a substitute, and do not claim the task is complete.",
       );
       lines.push(
-        "- Use progressive Gear disclosure: first call `mcp__gee__gear_list_capabilities` with `detail: \"summary\"`, then inspect specific capabilities only when the summary is insufficient. When the summary already contains the needed capability id and required args, invoke the capability directly instead of re-reading every schema.",
+        "- Use progressive Gear disclosure: first call `mcp__gee__gear_list_capabilities` with `detail: \"summary\"` plus any runtime-provided `focus_gear_ids`, `focus_capability_ids`, `run_plan_id`, and `stage_id`; then inspect specific capabilities only when the focused summary is insufficient. When the summary already contains the needed capability id and required args, invoke the capability directly instead of re-reading every schema.",
       );
       lines.push(
         "- Never call `gee.gear.invoke` with guessed or empty required arguments. If required arguments are not known from the latest user request, recent assistant result, or a specific Gear schema, read the schema or report the missing argument as a real blockage.",
       );
       lines.push(renderGearCapabilityContractHints());
       lines.push(
-        '- For `gee.gear.invoke`, always place gear-specific parameters inside `arguments.args`, for example `{"tool_id":"gee.gear.invoke","arguments":{"gear_id":"wespy.reader","capability_id":"wespy.fetch_article","args":{"url":"https://mp.weixin.qq.com/s/..."}}}`. Do not use `payload`, `input`, or top-level gear parameters outside `args`.',
+        '- For direct `mcp__gee__gear_invoke` tool calls, pass `gear_id`, `capability_id`, and `args` directly, for example `{"gear_id":"wespy.reader","capability_id":"wespy.fetch_article","args":{"url":"https://mp.weixin.qq.com/s/..."}}`. Only raw host-action directives use a `tool_id` plus `arguments` envelope.',
       );
       lines.push(
         "- Treat a user Gear request as complete only when the user's full objective is complete, not when one atomic Gear call succeeds. If a Gear result reveals that another Gear step is required, continue the same task with another Gee host-action directive.",
@@ -333,14 +339,25 @@ function runtimeUserMessage(content: string, runtimePrompt?: string): string {
 function sanitizeToolInput(
   toolName: string,
   input: unknown,
+  runPlan?: RuntimeRunPlan | null,
 ): Record<string, unknown> {
-  return normalizeToolBoundaryInput(toolName, input);
+  const normalized = normalizeToolBoundaryInput(toolName, input);
+  return mergeDeterministicGearInvokeInput(toolName, normalized, runPlan);
 }
 
 function compactRecord(record: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(record).filter(([, value]) => value !== undefined),
   );
+}
+
+function shallowRecordEqual(left: Record<string, unknown>, right: Record<string, unknown>): boolean {
+  const leftEntries = Object.entries(left);
+  const rightEntries = Object.entries(right);
+  if (leftEntries.length !== rightEntries.length) {
+    return false;
+  }
+  return leftEntries.every(([key, value]) => Object.is(value, right[key]));
 }
 
 function hostActionId(toolID: string): string {
@@ -373,6 +390,68 @@ function gearCapabilityValidationToolResult(
       },
     ],
     isError: true,
+  };
+}
+
+function gearInvokeArgumentErrorToolResult(input: {
+  gearID: string;
+  capabilityID: string;
+  args: Record<string, unknown>;
+  code: string;
+  message: string;
+}) {
+  const payload = {
+    tool_id: "gee.gear.invoke",
+    status: "failed",
+    code: input.code,
+    error: input.message,
+    gear_id: input.gearID,
+    capability_id: input.capabilityID,
+    args: input.args,
+    retry_hint:
+      "Use the current runtime plan's deterministic capability_args or provide a non-conflicting value inside args.",
+  };
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: JSON.stringify(payload, null, 2),
+      },
+    ],
+    isError: true,
+  };
+}
+
+function mergeDeterministicGearInvokeInput(
+  toolName: string,
+  input: Record<string, unknown>,
+  runPlan?: RuntimeRunPlan | null,
+): Record<string, unknown> {
+  if (
+    toolName !== "mcp__gee__gear_invoke" &&
+    toolName !== "gear_invoke" &&
+    toolName !== "gee.gear.invoke"
+  ) {
+    return input;
+  }
+  const gearID = typeof input.gear_id === "string" ? input.gear_id : "";
+  const capabilityID = typeof input.capability_id === "string" ? input.capability_id : "";
+  const args =
+    input.args && typeof input.args === "object" && !Array.isArray(input.args)
+      ? (input.args as Record<string, unknown>)
+      : {};
+  const merged = mergeDeterministicArgsForCapability(
+    runPlan,
+    gearID,
+    capabilityID,
+    args,
+  );
+  if (!merged.ok) {
+    return input;
+  }
+  return {
+    ...input,
+    args: merged.args,
   };
 }
 
@@ -417,6 +496,7 @@ export class ClaudeRuntimeSession {
 
   private readonly emit: (event: RuntimeEvent) => void;
   private readonly config: SessionConfig;
+  private runPlan: RuntimeRunPlan | null;
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly pendingHostActions = new Map<string, PendingHostAction>();
   private readonly queuedMessages: QueuedRuntimeMessage[] = [];
@@ -429,6 +509,7 @@ export class ClaudeRuntimeSession {
   constructor(config: SessionConfig, emit: (event: RuntimeEvent) => void) {
     this.sessionId = config.sessionId;
     this.config = config;
+    this.runPlan = config.runPlan ?? null;
     this.emit = emit;
     const availableTools = config.availableTools ?? DEFAULT_SDK_AVAILABLE_TOOLS;
     const sdkOptions = {
@@ -443,7 +524,7 @@ export class ClaudeRuntimeSession {
       disallowedTools: config.disallowedTools,
       env: sanitizedSdkEnvironment(config),
       canUseTool: async (toolName: string, input: unknown) => {
-        const normalizedInput = sanitizeToolInput(toolName, input);
+        const normalizedInput = sanitizeToolInput(toolName, input, this.runPlan);
         const boundaryDenial = this.toolBoundaryDenial(toolName);
         if (boundaryDenial) {
           return {
@@ -484,11 +565,11 @@ export class ClaudeRuntimeSession {
           message: decision.message ?? "GeeAgent host denied this tool request.",
         };
       },
-      hooks: {
+	      hooks: {
         PreToolUse: [
           {
             hooks: [
-              async (input) => preToolUseBoundaryOutput(input) ?? { continue: true },
+              async (input) => this.preToolUseBoundaryOutput(input) ?? { continue: true },
             ],
           },
         ],
@@ -510,6 +591,10 @@ export class ClaudeRuntimeSession {
     if (!this.listening) {
       void this.startListening();
     }
+  }
+
+  updateRunPlan(runPlan: RuntimeRunPlan | null): void {
+    this.runPlan = runPlan;
   }
 
   resolveApproval(
@@ -598,11 +683,15 @@ export class ClaudeRuntimeSession {
         ),
         tool(
           "gear_list_capabilities",
-          "List enabled Gee Gear capabilities. Use detail='summary' first; invoke directly when the summary contains the needed capability and required args. Request detail='schema' only when optional arguments or exact types are unclear.",
+          "List enabled Gee Gear capabilities. Use detail='summary' first, scoped by runtime-provided focus_gear_ids/focus_capability_ids when available. Invoke directly when the focused summary contains the needed capability and required args. Request detail='schema' only when optional arguments or exact types are unclear.",
           {
             detail: z.enum(["summary", "capabilities", "schema"]).optional(),
             gear_id: z.string().optional(),
             capability_id: z.string().optional(),
+            focus_gear_ids: z.array(z.string()).optional(),
+            focus_capability_ids: z.array(z.string()).optional(),
+            run_plan_id: z.string().optional(),
+            stage_id: z.string().optional(),
           },
           async (args) => this.callGeeHostAction("gee.gear.listCapabilities", compactRecord(args)),
         ),
@@ -613,27 +702,63 @@ export class ClaudeRuntimeSession {
             gear_id: z.string(),
             capability_id: z.string(),
             args: z.record(z.string(), z.unknown()).optional(),
+            arguments: z
+              .object({
+                gear_id: z.string().optional(),
+                capability_id: z.string().optional(),
+                args: z.record(z.string(), z.unknown()).optional(),
+              })
+              .passthrough()
+              .optional(),
           },
           async (args) => {
-            const gearArgs = args.args ?? {};
-            const validation = validateGearCapabilityArgs(
-              args.gear_id,
-              args.capability_id,
+            const normalized = mergeDeterministicGearInvokeInput(
+              "gear_invoke",
+              normalizeGeeGearInvokeInput(compactRecord(args)),
+              this.runPlan,
+            );
+            const gearID = typeof normalized.gear_id === "string" ? normalized.gear_id : "";
+            const capabilityID =
+              typeof normalized.capability_id === "string" ? normalized.capability_id : "";
+            const gearArgs =
+              normalized.args &&
+              typeof normalized.args === "object" &&
+              !Array.isArray(normalized.args)
+                ? (normalized.args as Record<string, unknown>)
+                : {};
+            const merged = mergeDeterministicArgsForCapability(
+              this.runPlan,
+              gearID,
+              capabilityID,
               gearArgs,
+            );
+            if (!merged.ok) {
+              return gearInvokeArgumentErrorToolResult({
+                gearID,
+                capabilityID,
+                args: gearArgs,
+                code: merged.code,
+                message: merged.message,
+              });
+            }
+            const validation = validateGearCapabilityArgs(
+              gearID,
+              capabilityID,
+              merged.args,
             );
             if (!validation.ok) {
               return gearCapabilityValidationToolResult(
                 "gee.gear.invoke",
-                args.gear_id,
-                args.capability_id,
-                gearArgs,
+                gearID,
+                capabilityID,
+                merged.args,
                 validation,
               );
             }
             return this.callGeeHostAction("gee.gear.invoke", {
-              gear_id: args.gear_id,
-              capability_id: args.capability_id,
-              args: gearArgs,
+              gear_id: gearID,
+              capability_id: capabilityID,
+              args: merged.args,
             });
           },
         ),
@@ -669,6 +794,30 @@ export class ClaudeRuntimeSession {
         },
       ],
       isError: completion.status === "failed",
+    };
+  }
+
+  private preToolUseBoundaryOutput(input: unknown): ReturnType<typeof preToolUseBoundaryOutput> {
+    const output = preToolUseBoundaryOutput(input);
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      return output;
+    }
+    const record = input as Record<string, unknown>;
+    if (record.hook_event_name !== "PreToolUse") {
+      return output;
+    }
+    const toolName = typeof record.tool_name === "string" ? record.tool_name : "";
+    const originalInput = normalizeToolInput(record.tool_input);
+    const normalizedInput = sanitizeToolInput(toolName, originalInput, this.runPlan);
+    if (shallowRecordEqual(originalInput, normalizedInput)) {
+      return output;
+    }
+    return {
+      continue: true,
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        updatedInput: normalizedInput,
+      },
     };
   }
 
@@ -796,7 +945,7 @@ export class ClaudeRuntimeSession {
             sessionId: this.sessionId,
             toolUseId: block.id,
             toolName: block.name,
-            input: sanitizeToolInput(block.name, block.input),
+            input: sanitizeToolInput(block.name, block.input, this.runPlan),
             raw: block,
           });
         }

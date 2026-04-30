@@ -163,6 +163,123 @@ final class MediaLibraryAgentImportTests: XCTestCase {
     }
 
     @MainActor
+    func testAgentImportRouterReportsDuplicateFilesAsIdempotentSuccess() async throws {
+        let store = MediaLibraryModuleStore.shared
+        let originalLibrary = store.library
+        let originalItems = store.items
+        let originalFolders = store.folders
+        let originalSelectedFolderID = store.selectedFolderID
+        let originalFilter = store.filter
+        let originalSelectedItemIDs = store.selectedItemIDs
+        let originalFocusedItemID = store.focusedItemID
+        defer {
+            store.library = originalLibrary
+            store.items = originalItems
+            store.folders = originalFolders
+            store.selectedFolderID = originalSelectedFolderID
+            store.filter = originalFilter
+            store.selectedItemIDs = originalSelectedItemIDs
+            store.focusedItemID = originalFocusedItemID
+        }
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-agent-router-duplicate-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let source = root.appendingPathComponent("sample.png")
+        try makePNGData().write(to: source)
+
+        let library = try MediaLibraryService().createLibrary(parentURL: root, name: "AgentRouterDuplicate.library")
+        store.library = library
+        store.folders = library.folders
+        store.items = []
+        store.selectedFolderID = nil
+        store.selectedItemIDs = []
+        store.focusedItemID = nil
+
+        let outcome = WorkbenchToolOutcome.completed(
+            toolID: "gee.gear.invoke",
+            payload: [
+                "intent": "gear.invoke",
+                "gear_id": "media.library",
+                "capability_id": "media.import_files",
+                "args": ["paths": [source.path]]
+            ]
+        )
+
+        _ = await GeeHostToolRouter.resolveCompletedIntent(outcome)
+        guard case let .completed(_, payload)? = await GeeHostToolRouter.resolveCompletedIntent(outcome) else {
+            return XCTFail("Expected completed duplicate media import outcome.")
+        }
+
+        XCTAssertEqual(payload["status"] as? String, "succeeded")
+        XCTAssertEqual(payload["action"] as? String, "import_noop")
+        XCTAssertEqual(payload["reason"] as? String, "all_duplicates")
+        XCTAssertEqual(payload["imported_count"] as? Int, 0)
+        XCTAssertEqual(payload["existing_count"] as? Int, 1)
+        XCTAssertEqual(payload["available_count"] as? Int, 1)
+        XCTAssertEqual(payload["duplicate_paths"] as? [String], [source.path])
+    }
+
+    @MainActor
+    func testAgentImportRouterReportsUnsupportedOnlyInputAsStructuredFailure() async throws {
+        let store = MediaLibraryModuleStore.shared
+        let originalLibrary = store.library
+        let originalItems = store.items
+        let originalFolders = store.folders
+        let originalSelectedFolderID = store.selectedFolderID
+        let originalFilter = store.filter
+        let originalSelectedItemIDs = store.selectedItemIDs
+        let originalFocusedItemID = store.focusedItemID
+        defer {
+            store.library = originalLibrary
+            store.items = originalItems
+            store.folders = originalFolders
+            store.selectedFolderID = originalSelectedFolderID
+            store.filter = originalFilter
+            store.selectedItemIDs = originalSelectedItemIDs
+            store.focusedItemID = originalFocusedItemID
+        }
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-agent-router-unsupported-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let source = root.appendingPathComponent("notes.txt")
+        try Data("not media".utf8).write(to: source)
+
+        let library = try MediaLibraryService().createLibrary(parentURL: root, name: "AgentRouterUnsupported.library")
+        store.library = library
+        store.folders = library.folders
+        store.items = []
+        store.selectedFolderID = nil
+        store.selectedItemIDs = []
+        store.focusedItemID = nil
+
+        let outcome = WorkbenchToolOutcome.completed(
+            toolID: "gee.gear.invoke",
+            payload: [
+                "intent": "gear.invoke",
+                "gear_id": "media.library",
+                "capability_id": "media.import_files",
+                "args": ["paths": [source.path]]
+            ]
+        )
+
+        guard case let .completed(_, payload)? = await GeeHostToolRouter.resolveCompletedIntent(outcome) else {
+            return XCTFail("Expected completed structured unsupported media outcome.")
+        }
+
+        XCTAssertEqual(payload["status"] as? String, "failed")
+        XCTAssertEqual(payload["code"] as? String, "gear.media.no_supported_files")
+        XCTAssertEqual(payload["action"] as? String, "import_skipped")
+        XCTAssertEqual(payload["unsupported_paths"] as? [String], [source.path])
+        XCTAssertEqual(payload["available_count"] as? Int, 0)
+    }
+
+    @MainActor
     func testAgentImportRouterRequestsAuthorizationWhenLibraryCannotBeRestored() async throws {
         let store = MediaLibraryModuleStore.shared
         let originalLibrary = store.library

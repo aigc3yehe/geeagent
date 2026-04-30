@@ -5,6 +5,7 @@ import { runtimeProjectPath } from "../paths.js";
 import type { SdkToolArtifactRef, SdkToolEvent, TurnRoute } from "../sdk-turn-runner.js";
 import { isRecord, summarizePrompt } from "./state.js";
 import type { JsonRecord, TurnReplayCursor } from "./types.js";
+import type { RuntimeRunPlan } from "./planning.js";
 
 const ITERATIVE_TURN_MAX_STEPS = 8;
 
@@ -102,6 +103,102 @@ export function appendSessionStateForSession(
     kind: "session_state_changed",
     summary,
   });
+}
+
+export function appendRunPlanForSession(
+  store: RuntimeStore,
+  sessionId: string,
+  plan: RuntimeRunPlan,
+): void {
+  appendTranscriptEvent(store, sessionId, {
+    kind: "run_plan_created",
+    run_plan: plan as unknown as JsonRecord,
+    summary: `Run plan created with ${plan.stages.length} stage(s).`,
+  });
+}
+
+export function appendRunPlanUpdatedForSession(
+  store: RuntimeStore,
+  sessionId: string,
+  plan: RuntimeRunPlan,
+  summary: string,
+): void {
+  appendTranscriptEvent(store, sessionId, {
+    kind: "run_plan_updated",
+    run_plan: plan as unknown as JsonRecord,
+    run_plan_id: plan.plan_id,
+    current_stage_id: plan.current_stage_id,
+    summary,
+  });
+}
+
+export function appendCapabilityFocusForSession(
+  store: RuntimeStore,
+  sessionId: string,
+  plan: RuntimeRunPlan,
+): void {
+  appendTranscriptEvent(store, sessionId, {
+    kind: "capability_focus_locked",
+    run_plan_id: plan.plan_id,
+    stage_id: plan.focus.stage_id,
+    focus_gear_ids: plan.focus.focus_gear_ids,
+    focus_capability_ids: plan.focus.focus_capability_ids,
+    summary:
+      plan.focus.focus_capability_ids.length > 0
+        ? `Capability focus locked to ${plan.focus.focus_capability_ids.join(", ")}.`
+        : "Capability focus has no preselected capability ids; discovery remains scoped by the active plan.",
+  });
+}
+
+export function appendStageStartedForSession(
+  store: RuntimeStore,
+  sessionId: string,
+  plan: RuntimeRunPlan,
+): void {
+  const stage = plan.stages.find((candidate) => candidate.stage_id === plan.current_stage_id);
+  appendTranscriptEvent(store, sessionId, {
+    kind: "stage_started",
+    run_plan_id: plan.plan_id,
+    stage_id: plan.current_stage_id,
+    title: stage?.title ?? plan.current_stage_id,
+    objective: stage?.objective ?? null,
+    required_capabilities: stage?.required_capabilities ?? [],
+    summary: stage
+      ? `Stage started: ${stage.title}. ${stage.objective}`
+      : `Stage started: ${plan.current_stage_id}.`,
+  });
+}
+
+export function appendStageConclusionForSession(
+  store: RuntimeStore,
+  sessionId: string,
+  plan: RuntimeRunPlan,
+  status: "completed" | "partial" | "blocked" | "plan_changed" | "needs_user_input",
+  summary: string,
+): void {
+  const stage = plan.stages.find((candidate) => candidate.stage_id === plan.current_stage_id);
+  appendTranscriptEvent(store, sessionId, {
+    kind: "stage_concluded",
+    run_plan_id: plan.plan_id,
+    stage_id: plan.current_stage_id,
+    title: stage?.title ?? plan.current_stage_id,
+    status,
+    summary,
+  });
+}
+
+export function latestRunPlanForSession(
+  store: RuntimeStore,
+  sessionId: string,
+): RuntimeRunPlan | null {
+  const plans = store.transcript_events
+    .filter((event) => isRecord(event) && event.session_id === sessionId)
+    .map((event) => (isRecord(event) ? event.payload : null))
+    .filter((payload): payload is Record<string, unknown> => isRecord(payload))
+    .filter((payload) => payload.kind === "run_plan_created" || payload.kind === "run_plan_updated")
+    .map((payload) => payload.run_plan)
+    .filter(isRuntimeRunPlan);
+  return plans.at(-1) ?? null;
 }
 
 export function appendTurnStep(
@@ -367,6 +464,17 @@ function userMessageId(conversation: RuntimeConversation): string {
 
 function assistantMessageId(conversation: RuntimeConversation): string {
   return `msg_assistant_${String(conversation.messages.length + 2).padStart(2, "0")}`;
+}
+
+function isRuntimeRunPlan(value: unknown): value is RuntimeRunPlan {
+  return (
+    isRecord(value) &&
+    typeof value.plan_id === "string" &&
+    value.phase === "phase3.6" &&
+    typeof value.current_stage_id === "string" &&
+    Array.isArray(value.stages) &&
+    isRecord(value.focus)
+  );
 }
 
 export function quickTaskId(store: RuntimeStore): string {

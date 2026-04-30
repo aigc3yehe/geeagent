@@ -35,11 +35,20 @@ import {
   type ToolArtifactRef,
 } from "./context/tool-artifacts.js";
 import { prepareHostActionCompletionsForModel } from "./context/host-action-results.js";
+import { normalizeGearInvokeArgumentsEnvelope } from "./tools/args.js";
 import {
   gearCapabilityContracts,
   validateGearCapabilityArgs,
   type GearCapabilityValidationResult,
 } from "./capabilities/gear-validation.js";
+import {
+  capabilityFocusArgsForPlan,
+  capabilityFocusForStage,
+  currentRuntimePlanStage,
+  mergeDeterministicArgsForCapability,
+  renderRuntimeRunPlanForPrompt,
+  type RuntimeRunPlan,
+} from "./turns/planning.js";
 
 export type TurnRoute = {
   mode: "quick_prompt" | "workspace_message";
@@ -98,6 +107,8 @@ type ManagedSession = {
   events: RuntimeEvent[];
   waiters: Array<(event: RuntimeEvent) => void>;
   toolBoundaryMode: "default" | "gear_first";
+  runPlan?: RuntimeRunPlan | null;
+  toolInvocationCount?: number;
   pendingHostActionMode?: "mcp" | "directive";
 };
 
@@ -108,6 +119,7 @@ type RuntimeTurnOptions = {
   enableGeeHostTools?: boolean;
   eventIdleTimeoutMs?: number;
   toolBoundaryMode?: "default" | "gear_first";
+  runPlan?: RuntimeRunPlan | null;
   onAssistantText?: (delta: string) => void | Promise<void>;
   onToolEvent?: (event: SdkToolEvent) => void | Promise<void>;
 };
@@ -129,10 +141,12 @@ export async function runSdkRuntimeTurn(
   options: RuntimeTurnOptions = {},
 ): Promise<SdkTurnResult> {
   const managed = await ensureSession(configDir, runtimeSessionId, route, activeProfile, options);
+  managed.runPlan = options.runPlan ?? managed.runPlan ?? null;
+  managed.session.updateRunPlan(managed.runPlan);
   const turn = emptyTurnResult();
   managed.session.send(
     options.toolBoundaryMode === "gear_first"
-      ? gearFirstTurnPrompt(prompt)
+      ? gearFirstTurnPrompt(prompt, options.runPlan ?? null)
       : prompt,
   );
   try {
@@ -146,6 +160,7 @@ export async function runSdkRuntimeTurn(
       options.onAssistantText,
       options.eventIdleTimeoutMs,
       options.toolBoundaryMode ?? "default",
+      options.runPlan ?? null,
     );
     closeUnfinishedToolEventsOnFailure(turn);
     rememberPendingHostActionMode(managed, turn);
@@ -186,6 +201,7 @@ export async function resumeSdkRuntimeApproval(
       undefined,
       undefined,
       managed.toolBoundaryMode,
+      managed.runPlan ?? null,
     );
     closeUnfinishedToolEventsOnFailure(turn);
     rememberPendingHostActionMode(managed, turn);
@@ -230,7 +246,8 @@ export async function resumeSdkRuntimeHostActions(
       undefined,
       onAssistantText,
       eventIdleTimeoutMs,
-      "default",
+      managed.toolBoundaryMode,
+      managed.runPlan ?? null,
     );
     closeUnfinishedToolEventsOnFailure(turn);
     rememberPendingHostActionMode(managed, turn);
@@ -239,6 +256,24 @@ export async function resumeSdkRuntimeHostActions(
     await recycleGatewayAfterFailedTurn(turn);
   }
   return turn;
+}
+
+export function updateSdkRuntimeRunPlan(
+  runtimeSessionId: string,
+  runPlan: RuntimeRunPlan,
+): void {
+  const managed = sessions.get(runtimeSessionId);
+  if (managed) {
+    managed.runPlan = runPlan;
+    managed.session.updateRunPlan(runPlan);
+  }
+}
+
+export function closeSdkRuntimeSession(runtimeSessionId: string): void {
+  const managed = sessions.get(runtimeSessionId);
+  if (managed) {
+    closeManagedSession(runtimeSessionId, managed);
+  }
 }
 
 export async function shutdownSdkRuntime(): Promise<void> {
@@ -262,15 +297,20 @@ function emptyTurnResult(): SdkTurnResult {
   };
 }
 
-function gearFirstTurnPrompt(prompt: string): string {
+function gearFirstTurnPrompt(prompt: string, runPlan: RuntimeRunPlan | null = null): string {
+  const discoveryArgs = JSON.stringify(capabilityFocusArgsForPlan(runPlan));
   return [
     "[GeeAgent Gear-First Execution Boundary]",
     "This turn has been classified as a Gee Gear or built-in app task.",
-    "Your first assistant action in this turn must be a direct tool call to `mcp__gee__gear_list_capabilities` with arguments `{ \"detail\": \"summary\" }`.",
+    `Your first assistant action in this turn must be a direct tool call to \`mcp__gee__gear_list_capabilities\` with arguments \`${discoveryArgs}\`.`,
     "Do not write prose before that first Gee MCP tool call.",
     "Do not infer Gee bridge availability from previous transcript messages, previous failures, or local files. The current SDK session must test the current bridge by calling the Gee MCP tool.",
-    "After the summary returns, continue with the smallest necessary Gee MCP Gear calls to complete the user's full objective.",
+    "After the focused summary returns, continue with the smallest necessary Gee MCP Gear calls to complete the current plan stage and then the user's full objective.",
+    "When the active runtime plan later advances to a stage with no Gear focus or required Gear capability, continue that planned stage with the normal approved SDK tools such as Bash for inspectable local or web research.",
+    "Do not request an unscoped full capability summary while the plan has a locked focus set. Reopen discovery only for a listed trigger in the runtime plan.",
     "If the Gee MCP tool is unavailable or fails, report that structured runtime failure. Do not use shell, file, source-inspection, web, skill, directive, or other fallback paths before the Gee MCP call.",
+    "",
+    renderRuntimeRunPlanForPrompt(runPlan),
     "",
     "[Original Turn Prompt]",
     prompt,
@@ -288,6 +328,7 @@ async function ensureSession(
   if (existing) {
     const nextToolBoundaryMode = options.toolBoundaryMode ?? "default";
     if (existing.toolBoundaryMode === nextToolBoundaryMode) {
+      existing.runPlan = options.runPlan ?? existing.runPlan ?? null;
       return existing;
     }
     closeManagedSession(sessionId, existing);
@@ -337,6 +378,7 @@ async function ensureSession(
       disallowedTools: options.disallowedTools ?? DEFAULT_SDK_DISALLOWED_TOOLS,
       enableGeeHostTools: options.enableGeeHostTools ?? true,
       toolBoundaryMode: options.toolBoundaryMode ?? "default",
+      runPlan: options.runPlan ?? null,
       artifactRoot: toolArtifactRoot(configDir),
       gatewayBaseUrl: activeGateway.baseUrl,
       gatewayApiKey: activeGateway.apiKey,
@@ -349,6 +391,8 @@ async function ensureSession(
     events: [],
     waiters: [],
     toolBoundaryMode: options.toolBoundaryMode ?? "default",
+    runPlan: options.runPlan ?? null,
+    toolInvocationCount: 0,
   };
   sessions.set(sessionId, managed);
   managed.events.push({
@@ -494,6 +538,7 @@ async function composeHostActionContinuationPrompt(
     "Large native results may be represented as `result_artifact`; read the compact fields first and only use the artifact path if the full payload is needed.",
     "A successful atomic Gear result is not necessarily the completed user objective. If another Gear step is needed, use the Gee MCP Gear bridge tools in this same SDK run. If those tools are unavailable, report the missing bridge as a runtime failure instead of emitting text control directives or claiming completion.",
     "Never call `gee.gear.invoke` with guessed or empty required arguments. Use the local paths, URLs, IDs, or other concrete values returned by the prior structured result; when a required argument is still unknown, inspect the capability schema or report the missing argument as a real blockage.",
+    "If the runtime plan has advanced to a stage with no Gear focus or required Gear capability, use normal approved SDK tools for that planned model/research work; that is not a fallback for a Gear stage.",
     renderGearCapabilityContractHints(),
     "For X/Twitter bookmark requests that include media preservation, continue from tweet capture to `smartyt.media/smartyt.download_now`, then `media.library/media.import_files`, then `bookmark.vault/bookmark.save` with `local_media_paths`; remote media URLs are media candidates, not saved local files.",
     "",
@@ -548,6 +593,7 @@ async function collectEventsUntilPauseOrResult(
   onAssistantText?: (delta: string) => void | Promise<void>,
   eventIdleTimeoutMs?: number,
   toolBoundaryMode: "default" | "gear_first" = "default",
+  runPlan: RuntimeRunPlan | null = null,
 ): Promise<void> {
   const toolInputsById = new Map<string, SeenSdkToolInvocation>();
   const assistantControlFilter = createAssistantControlTextFilter();
@@ -566,6 +612,7 @@ async function collectEventsUntilPauseOrResult(
         const boundaryViolation = gearFirstBoundaryViolationReason(
           toolBoundaryMode,
           toolName,
+          runPlan,
         );
         if (boundaryViolation) {
           turn.failed_reason = boundaryViolation;
@@ -643,26 +690,55 @@ async function collectEventsUntilPauseOrResult(
         turn.pending_host_action_mode = "mcp";
         return;
       case "session.tool_use":
+        let toolInputForEvent: Record<string, unknown>;
         {
+          const input = normalizeSdkGearInvokeInput(
+            event.toolName,
+            normalizeRecord(event.input),
+            runPlan,
+          );
+          toolInputForEvent = input;
           const boundaryViolation = gearFirstBoundaryViolationReason(
             toolBoundaryMode,
             event.toolName,
+            runPlan,
           );
-          if (boundaryViolation) {
-            turn.failed_reason = boundaryViolation;
+          const firstToolViolation = gearFirstFirstToolViolationReason(
+            toolBoundaryMode,
+            event.toolName,
+            (managed.toolInvocationCount ?? 0) === 0,
+          );
+          const focusViolation = gearFirstCapabilityFocusViolationReason(
+            toolBoundaryMode,
+            event.toolName,
+            input,
+            runPlan,
+            (managed.toolInvocationCount ?? 0) === 0,
+          );
+          const invokeViolation = gearFirstInvokeFocusViolationReason(
+            toolBoundaryMode,
+            event.toolName,
+            input,
+            runPlan,
+          );
+          const violation =
+            boundaryViolation ?? firstToolViolation ?? focusViolation ?? invokeViolation;
+          if (violation) {
+            turn.failed_reason = violation;
             closeManagedSession(sessionId, managed);
             return;
           }
+          toolInputsById.set(event.toolUseId, {
+            tool_name: event.toolName,
+            input,
+          });
         }
-        toolInputsById.set(event.toolUseId, {
-          tool_name: event.toolName,
-          input: normalizeRecord(event.input),
-        });
+        managed.toolInvocationCount = (managed.toolInvocationCount ?? 0) + 1;
         const toolEvent: SdkToolEvent = {
           kind: "invocation",
           invocation_id: event.toolUseId,
           tool_name: event.toolName,
-          input_summary: summarizePrompt(JSON.stringify(event.input), 180),
+          input_summary: summarizePrompt(JSON.stringify(toolInputForEvent), 180),
         };
         turn.tool_events.push(toolEvent);
         await onToolEvent?.(toolEvent);
@@ -741,13 +817,15 @@ async function collectEventsUntilPauseOrResult(
             turn.pending_host_action_mode = "directive";
           }
         }
-        if (
-          !turn.failed_reason &&
-          toolBoundaryMode === "gear_first" &&
-          !turnUsedGeeHostBridge(turn)
-        ) {
-          turn.failed_reason =
-            "Gear-first turn ended without requesting any Gee MCP Gear bridge action. GeeAgent marked the run failed instead of treating a text-only response as completion.";
+        if (!turn.failed_reason) {
+          const missingBridgeReason = gearFirstMissingBridgeResultReason(
+            toolBoundaryMode,
+            turn,
+            runPlan,
+          );
+          if (missingBridgeReason) {
+            turn.failed_reason = missingBridgeReason;
+          }
         }
         return;
       case "session.error":
@@ -896,8 +974,12 @@ function unsupportedToolDenialMessage(toolName: string): string {
 function gearFirstBoundaryViolationReason(
   toolBoundaryMode: "default" | "gear_first",
   toolName: string,
+  runPlan: RuntimeRunPlan | null = null,
 ): string | null {
   if (toolBoundaryMode !== "gear_first" || isGeeHostSdkTool(toolName)) {
+    return null;
+  }
+  if (runPlan && !runtimePlanHasLockedFocus(runPlan)) {
     return null;
   }
   return (
@@ -906,12 +988,208 @@ function gearFirstBoundaryViolationReason(
   );
 }
 
+function gearFirstFirstToolViolationReason(
+  toolBoundaryMode: "default" | "gear_first",
+  toolName: string,
+  isFirstToolUse: boolean,
+): string | null {
+  if (
+    toolBoundaryMode !== "gear_first" ||
+    !isFirstToolUse ||
+    isGeeGearListCapabilitiesTool(toolName)
+  ) {
+    return null;
+  }
+  return (
+    `Gear-first runtime boundary rejected \`${toolName}\` as the first tool. ` +
+    "The first Gear-first action must be focused capability discovery through `mcp__gee__gear_list_capabilities`."
+  );
+}
+
+function gearFirstCapabilityFocusViolationReason(
+  toolBoundaryMode: "default" | "gear_first",
+  toolName: string,
+  input: Record<string, unknown>,
+  runPlan: RuntimeRunPlan | null,
+  isFirstToolUse: boolean,
+): string | null {
+  if (
+    toolBoundaryMode !== "gear_first" ||
+    !runPlan ||
+    !runtimePlanHasLockedFocus(runPlan) ||
+    !isGeeGearListCapabilitiesTool(toolName)
+  ) {
+    return null;
+  }
+
+  const detail = (stringField(input, "detail") ?? "summary").trim();
+  if (detail !== "summary") {
+    return null;
+  }
+
+  const hasSpecificScope = Boolean(
+    stringField(input, "gear_id")?.trim() ||
+      stringField(input, "capability_id")?.trim(),
+  );
+  const hasMatchingFocus = listCapabilitiesInputMatchesRunPlanFocus(input, runPlan);
+  const matchesCurrentStage = hasMatchingFocus &&
+    stringField(input, "stage_id") === runPlan.current_stage_id;
+
+  if (isFirstToolUse && !matchesCurrentStage) {
+    return (
+      "Gear-first focused capability discovery must include the runtime plan focus " +
+      "`run_plan_id`, `stage_id`, `focus_gear_ids`, and `focus_capability_ids`."
+    );
+  }
+
+  if (!isFirstToolUse && !hasSpecificScope && !hasMatchingFocus) {
+    return (
+      "Gear-first runtime boundary blocked an unscoped full capability summary after " +
+      "the run plan already locked a focus set. Use the focused arguments from the plan, " +
+      "inspect a specific Gear/capability, or report that the plan must be changed."
+    );
+  }
+
+  return null;
+}
+
+function gearFirstInvokeFocusViolationReason(
+  toolBoundaryMode: "default" | "gear_first",
+  toolName: string,
+  input: Record<string, unknown>,
+  runPlan: RuntimeRunPlan | null,
+): string | null {
+  if (
+    toolBoundaryMode !== "gear_first" ||
+    !runPlan ||
+    !isGeeGearInvokeTool(toolName)
+  ) {
+    return null;
+  }
+  const stage = currentRuntimePlanStage(runPlan);
+  if (!stage || stage.required_capabilities.length === 0) {
+    return null;
+  }
+  const envelope = normalizeGearInvokeArgumentsEnvelope(input);
+  if (!envelope.ok) {
+    return (
+      `Gear-first runtime boundary rejected \`${toolName}\` before execution ` +
+      `because its argument envelope is invalid (${envelope.code}): ${envelope.message}`
+    );
+  }
+  const gearID = envelope.gear_id;
+  const capabilityID = envelope.capability_id;
+  const ref = gearID && capabilityID ? `${gearID}/${capabilityID}` : null;
+  if (ref && stage.required_capabilities.includes(ref)) {
+    return null;
+  }
+  return (
+    `Gear-first runtime boundary rejected \`${toolName}\` for stage ` +
+    `\`${stage.stage_id}\`. The current stage only allows required capability ` +
+    `${stage.required_capabilities.join(", ")}. Advance or replan the runtime stage before invoking another Gear capability.`
+  );
+}
+
+function runtimePlanHasLockedFocus(runPlan: RuntimeRunPlan): boolean {
+  return (
+    runPlan.focus.focus_gear_ids.length > 0 ||
+    runPlan.focus.focus_capability_ids.length > 0
+  );
+}
+
+function listCapabilitiesInputMatchesRunPlanFocus(
+  input: Record<string, unknown>,
+  runPlan: RuntimeRunPlan,
+): boolean {
+  const stageID = stringField(input, "stage_id");
+  if (!stageID) {
+    return false;
+  }
+  if (!runPlan.stages.some((stage) => stage.stage_id === stageID)) {
+    return false;
+  }
+  const stageFocus = capabilityFocusForStage(runPlan, stageID);
+  return (
+    stringField(input, "run_plan_id") === runPlan.plan_id &&
+    stringArrayContainsAll(stringArrayField(input, "focus_gear_ids"), stageFocus.focus_gear_ids) &&
+    stringArrayContainsAll(
+      stringArrayField(input, "focus_capability_ids"),
+      stageFocus.focus_capability_ids,
+    )
+  );
+}
+
+function stringArrayContainsAll(actual: string[], expected: string[]): boolean {
+  if (expected.length === 0) {
+    return true;
+  }
+  const actualSet = new Set(actual);
+  return expected.every((item) => actualSet.has(item));
+}
+
+function isGeeGearListCapabilitiesTool(toolName: string): boolean {
+  return (
+    toolName === "mcp__gee__gear_list_capabilities" ||
+    toolName === "gear_list_capabilities" ||
+    toolName === "gee.gear.listCapabilities"
+  );
+}
+
+function isGeeGearInvokeTool(toolName: string): boolean {
+  return (
+    toolName === "mcp__gee__gear_invoke" ||
+    toolName === "gear_invoke" ||
+    toolName === "gee.gear.invoke"
+  );
+}
+
+function normalizeSdkGearInvokeInput(
+  toolName: string,
+  input: Record<string, unknown>,
+  runPlan: RuntimeRunPlan | null = null,
+): Record<string, unknown> {
+  if (!isGeeGearInvokeTool(toolName)) {
+    return input;
+  }
+  const envelope = normalizeGearInvokeArgumentsEnvelope(input);
+  if (!envelope.ok) {
+    return input;
+  }
+  const merged = mergeDeterministicArgsForCapability(
+    runPlan,
+    envelope.gear_id,
+    envelope.capability_id,
+    envelope.args,
+  );
+  return {
+    ...envelope.arguments,
+    args: merged.ok ? merged.args : envelope.args,
+  };
+}
+
 function turnUsedGeeHostBridge(turn: SdkTurnResult): boolean {
   if (turn.pending_host_actions && turn.pending_host_actions.length > 0) {
     return true;
   }
   return turn.tool_events.some(
     (event) => event.kind === "invocation" && isGeeHostSdkTool(event.tool_name),
+  );
+}
+
+function gearFirstMissingBridgeResultReason(
+  toolBoundaryMode: "default" | "gear_first",
+  turn: SdkTurnResult,
+  runPlan: RuntimeRunPlan | null,
+): string | null {
+  if (toolBoundaryMode !== "gear_first" || turnUsedGeeHostBridge(turn)) {
+    return null;
+  }
+  if (runPlan && !runtimePlanHasLockedFocus(runPlan)) {
+    return null;
+  }
+  return (
+    "Gear-first turn ended without requesting any Gee MCP Gear bridge action. " +
+    "GeeAgent marked the run failed instead of treating a text-only response as completion."
   );
 }
 
@@ -1207,7 +1485,18 @@ function hostActionFromDirective(
     };
   }
   const rawArgs = recordField(value, "arguments") ?? recordField(value, "args") ?? {};
-  const args = normalizeHostActionArguments(toolID, rawArgs);
+  const normalizedArgs = normalizeHostActionArguments(toolID, rawArgs);
+  if (!normalizedArgs.ok) {
+    return {
+      error: {
+        action_index: index,
+        tool_id: toolID,
+        code: normalizedArgs.code,
+        message: normalizedArgs.message,
+      },
+    };
+  }
+  const args = normalizedArgs.args;
   const validation = validateHostActionDirectiveArgs(toolID, args);
   if (validation) {
     return {
@@ -1284,43 +1573,18 @@ function hostActionDirectiveFailureReason(
 function normalizeHostActionArguments(
   toolID: string,
   args: Record<string, unknown>,
-): Record<string, unknown> {
+):
+  | { ok: true; args: Record<string, unknown> }
+  | { ok: false; code: string; message: string } {
   if (toolID !== "gee.gear.invoke") {
-    return args;
+    return { ok: true, args };
   }
 
-  const normalized: Record<string, unknown> = {};
-  const gearID = typeof args.gear_id === "string" ? args.gear_id : undefined;
-  const capabilityID =
-    typeof args.capability_id === "string" ? args.capability_id : undefined;
-  if (gearID) {
-    normalized.gear_id = gearID;
+  const normalized = normalizeGearInvokeArgumentsEnvelope(args);
+  if (!normalized.ok) {
+    return normalized;
   }
-  if (capabilityID) {
-    normalized.capability_id = capabilityID;
-  }
-
-  const nestedArgs = firstRecord(args.args, args.input, args.payload);
-  const invokeArgs: Record<string, unknown> = nestedArgs ? { ...nestedArgs } : {};
-  const envelopeKeys = new Set(["gear_id", "capability_id", "args", "input", "payload"]);
-  for (const [key, value] of Object.entries(args)) {
-    if (!envelopeKeys.has(key) && invokeArgs[key] === undefined) {
-      invokeArgs[key] = value;
-    }
-  }
-  normalized.args = invokeArgs;
-  return normalized;
-}
-
-function firstRecord(
-  ...values: Array<unknown>
-): Record<string, unknown> | undefined {
-  for (const value of values) {
-    if (isRecord(value)) {
-      return value;
-    }
-  }
-  return undefined;
+  return { ok: true, args: normalized.arguments };
 }
 
 function recordField(value: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
@@ -1339,6 +1603,11 @@ function stableHash(value: string): string {
 function stringField(record: Record<string, unknown>, key: string): string | undefined {
   const value = record[key];
   return typeof value === "string" ? value : undefined;
+}
+
+function stringArrayField(record: Record<string, unknown>, key: string): string[] {
+  const value = record[key];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1364,6 +1633,10 @@ export const __sdkTurnRunnerTestHooks = {
   collectEventsUntilPauseOrResult,
   gearFirstTurnPrompt,
   gearFirstBoundaryViolationReason,
+  gearFirstFirstToolViolationReason,
+  gearFirstCapabilityFocusViolationReason,
+  gearFirstMissingBridgeResultReason,
+  normalizeSdkGearInvokeInput,
   turnUsedGeeHostBridge,
   unsupportedToolDenialMessage,
   extractHostActionDirective,

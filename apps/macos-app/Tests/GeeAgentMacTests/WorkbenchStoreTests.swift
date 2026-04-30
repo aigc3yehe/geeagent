@@ -156,7 +156,7 @@ final class WorkbenchStoreTests: XCTestCase {
         XCTAssertEqual(nextStore.activeProfileAppearancePreference.staticImagePath, "/tmp/persisted.png")
     }
 
-    func testLive2DLocalPreferenceDoesNotOverrideLoadedAppearance() throws {
+    func testLive2DPersonaCanSwitchToAbstractBackgroundMode() throws {
         let preview = PreviewWorkbenchRuntimeClient()
         var snapshot = preview.loadSnapshot()
         let live2DProfile = AgentProfileRecord(
@@ -180,9 +180,10 @@ final class WorkbenchStoreTests: XCTestCase {
         XCTAssertEqual(store.activeProfileAppearancePreference.kind, .abstract)
         XCTAssertEqual(
             store.effectiveActiveAppearance,
-            .live2D(bundlePath: "/tmp/manga/model3.json"),
-            "Loaded profile appearance should remain the source of truth for Home rendering"
+            .abstract,
+            "The mountain appearance switch should hide persona media and leave the global background or abstract field visible"
         )
+        XCTAssertEqual(store.effectiveHomeVisualMode, .abstract)
     }
 
     func testNonLive2DPersonaKeepsLive2DDisabledUntilBundleExists() throws {
@@ -461,6 +462,56 @@ final class WorkbenchStoreTests: XCTestCase {
         XCTAssertEqual(mediaGear["capability_count"] as? Int, 3)
         XCTAssertTrue((mediaGear["capability_ids"] as? [String])?.contains("media.import_files") == true)
         XCTAssertNil(mediaGear["description"], "Summary disclosure should not include full capability copy.")
+
+        store.invokeTool(
+            ToolInvocation(
+                toolID: "gee.gear.listCapabilities",
+                arguments: [
+                    "detail": .string("summary"),
+                    "run_plan_id": .string("run_plan_demo"),
+                    "stage_id": .string("stage_fetch_tweet"),
+                    "focus_gear_ids": .stringArray(["media.library", "media.generator"]),
+                    "focus_capability_ids": .stringArray(["media.import_files", "media_generator.create_task"])
+                ]
+            )
+        )
+        try await waitUntil(timeout: 2.0) { !store.isInvokingTool }
+
+        guard case let .completed(_, focusedPayload)? = store.lastToolOutcome else {
+            return XCTFail("Expected focused capability payload, got \(String(describing: store.lastToolOutcome))")
+        }
+        XCTAssertEqual(focusedPayload["disclosure_level"] as? String, "summary")
+        XCTAssertEqual(focusedPayload["focus_applied"] as? Bool, true)
+        XCTAssertEqual(focusedPayload["focus_complete"] as? Bool, true)
+        XCTAssertEqual(focusedPayload["run_plan_id"] as? String, "run_plan_demo")
+        XCTAssertEqual(focusedPayload["missing_focus_gear_ids"] as? [String], [])
+        XCTAssertEqual(focusedPayload["missing_focus_capability_ids"] as? [String], [])
+        let focusedGears = try XCTUnwrap(focusedPayload["gears"] as? [[String: Any]])
+        XCTAssertEqual(Set(focusedGears.compactMap { $0["gear_id"] as? String }), Set(["media.library", "media.generator"]))
+        let focusedCapabilityIDs = Set(
+            focusedGears.flatMap { ($0["capability_ids"] as? [String]) ?? [] }
+        )
+        XCTAssertEqual(focusedCapabilityIDs, Set(["media.import_files", "media_generator.create_task"]))
+
+        store.invokeTool(
+            ToolInvocation(
+                toolID: "gee.gear.listCapabilities",
+                arguments: [
+                    "detail": .string("summary"),
+                    "run_plan_id": .string("run_plan_missing"),
+                    "stage_id": .string("stage_missing"),
+                    "focus_gear_ids": .stringArray(["missing.gear"]),
+                    "focus_capability_ids": .stringArray(["missing.capability"])
+                ]
+            )
+        )
+        try await waitUntil(timeout: 2.0) { !store.isInvokingTool }
+
+        guard case let .error(_, code, message)? = store.lastToolOutcome else {
+            return XCTFail("Expected focused capability failure, got \(String(describing: store.lastToolOutcome))")
+        }
+        XCTAssertEqual(code, "gear.focus_unavailable")
+        XCTAssertTrue(message.contains("focused runtime plan"))
 
         store.invokeTool(
             ToolInvocation(

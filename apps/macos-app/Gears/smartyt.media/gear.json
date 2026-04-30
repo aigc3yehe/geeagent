@@ -2,7 +2,7 @@
   "schema": "gee.gear.v1",
   "id": "smartyt.media",
   "name": "SmartYT Media",
-  "description": "URL media sniffer for downloading video or audio and extracting transcript text through subtitles or local speech tooling.",
+  "description": "URL media sniffer for downloading video, audio, or direct image artifacts and extracting transcript text through subtitles or local speech tooling.",
   "developer": "Gee",
   "version": "0.1.0",
   "category": "Media",
@@ -74,7 +74,7 @@
       {
         "id": "smartyt.download",
         "title": "Download URL media",
-        "description": "Queue a video, audio, or combined media download for a URL using yt-dlp and ffmpeg.",
+        "description": "Queue a video, audio, direct image, or combined media download for a URL using yt-dlp, native image fetch, and ffmpeg.",
         "examples": [
           "Download audio from this URL",
           "Download the video from this link"
@@ -83,7 +83,7 @@
       {
         "id": "smartyt.download_now",
         "title": "Download media and return files",
-        "description": "Download URL media immediately for multi-Gear workflows and return completed local artifact paths.",
+        "description": "Download URL media, including direct image URLs, immediately for multi-Gear workflows and return completed local artifact paths.",
         "examples": [
           "Download this video and give me the local file path",
           "Fetch this media file now so it can be imported into the media library"

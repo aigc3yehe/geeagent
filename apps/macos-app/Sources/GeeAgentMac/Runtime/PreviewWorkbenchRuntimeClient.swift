@@ -900,6 +900,18 @@ struct PreviewWorkbenchRuntimeClient: WorkbenchRuntimeClient {
             if let capabilityID = stringArgument("capability_id", in: invocation) {
                 payload["capability_id"] = capabilityID
             }
+            if let focusGearIDs = stringArrayArgument("focus_gear_ids", in: invocation) {
+                payload["focus_gear_ids"] = focusGearIDs
+            }
+            if let focusCapabilityIDs = stringArrayArgument("focus_capability_ids", in: invocation) {
+                payload["focus_capability_ids"] = focusCapabilityIDs
+            }
+            if let runPlanID = stringArgument("run_plan_id", in: invocation) {
+                payload["run_plan_id"] = runPlanID
+            }
+            if let stageID = stringArgument("stage_id", in: invocation) {
+                payload["stage_id"] = stageID
+            }
             return .completed(toolID: invocation.toolID, payload: payload)
         case "gee.gear.invoke":
             guard let gearID = stringArgument("gear_id", in: invocation),
@@ -954,6 +966,13 @@ struct PreviewWorkbenchRuntimeClient: WorkbenchRuntimeClient {
             return nil
         }
         return WorkbenchToolArgumentCodec.encode(object)
+    }
+
+    private func stringArrayArgument(_ key: String, in invocation: ToolInvocation) -> [String]? {
+        guard case let .stringArray(value)? = invocation.arguments[key] else {
+            return nil
+        }
+        return value
     }
 
     private func previewAssistantReply(for message: String) -> String {

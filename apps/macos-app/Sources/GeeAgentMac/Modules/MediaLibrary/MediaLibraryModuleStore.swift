@@ -218,6 +218,10 @@ final class MediaLibraryModuleStore {
     }
 
     func importMediaForAgent(paths: [String]) async throws -> [MediaLibraryItem] {
+        try await importMediaForAgentReport(paths: paths).importedItems
+    }
+
+    func importMediaForAgentReport(paths: [String]) async throws -> MediaLibraryImportReport {
         let urls = paths
             .map { NSString(string: $0).expandingTildeInPath }
             .map { URL(fileURLWithPath: $0) }
@@ -234,17 +238,17 @@ final class MediaLibraryModuleStore {
 
         do {
             let importService = MediaLibraryService()
-            let imported = try await importService.importFiles(urls, into: library.url)
+            let report = try await importService.importFilesWithReport(urls, into: library.url)
             try reloadLibraryContents()
-            if let firstImported = imported.first {
-                focusedItemID = firstImported.id
-                selectedItemIDs = [firstImported.id]
+            if let firstAvailable = report.availableItems.first {
+                focusedItemID = firstAvailable.id
+                selectedItemIDs = [firstAvailable.id]
             }
-            if imported.isEmpty {
+            if report.availableItems.isEmpty {
                 errorMessage = "No new supported media files were imported."
             }
             pendingAgentImportPaths = []
-            return imported
+            return report
         } catch {
             errorMessage = error.localizedDescription
             throw error

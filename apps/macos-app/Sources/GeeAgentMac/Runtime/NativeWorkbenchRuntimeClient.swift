@@ -306,10 +306,58 @@ private struct RuntimeToolInvocationDTO: Decodable {
     let updatedAt: String
 }
 
+private struct RuntimeRunPlanStageDTO: Decodable {
+    let stageId: String?
+    let title: String?
+    let objective: String?
+    let requiredCapabilities: [String]?
+    let inputContract: [String]?
+    let completionSignal: String?
+    let blockedSignal: String?
+}
+
+private struct RuntimeRunPlanDTO: Decodable {
+    let planId: String?
+    let userGoal: String?
+    let successCriteria: [String]?
+    let stages: [RuntimeRunPlanStageDTO]?
+    let currentStageId: String?
+    let reopenCapabilityDiscoveryWhen: [String]?
+}
+
 private enum RuntimeTranscriptEventPayloadDTO: Decodable {
     case userMessage(messageId: String, content: String)
     case assistantMessage(messageId: String, content: String)
     case assistantMessageDelta(messageId: String, delta: String)
+    case runPlanCreated(runPlan: RuntimeRunPlanDTO?, summary: String?)
+    case runPlanUpdated(
+        runPlan: RuntimeRunPlanDTO?,
+        runPlanId: String?,
+        currentStageId: String?,
+        summary: String?
+    )
+    case capabilityFocusLocked(
+        runPlanId: String?,
+        stageId: String?,
+        focusGearIds: [String],
+        focusCapabilityIds: [String],
+        summary: String?
+    )
+    case stageStarted(
+        runPlanId: String?,
+        stageId: String?,
+        title: String?,
+        objective: String?,
+        requiredCapabilities: [String],
+        summary: String?
+    )
+    case stageConcluded(
+        runPlanId: String?,
+        stageId: String?,
+        title: String?,
+        status: String,
+        summary: String?
+    )
     case toolInvocation(invocation: RuntimeToolInvocationDTO)
     case toolResult(
         invocationId: String,
@@ -325,6 +373,15 @@ private enum RuntimeTranscriptEventPayloadDTO: Decodable {
         case messageId
         case content
         case delta
+        case runPlan
+        case runPlanId
+        case currentStageId
+        case stageId
+        case title
+        case objective
+        case requiredCapabilities
+        case focusGearIds
+        case focusCapabilityIds
         case invocation
         case invocationId
         case status
@@ -350,6 +407,43 @@ private enum RuntimeTranscriptEventPayloadDTO: Decodable {
             self = .assistantMessageDelta(
                 messageId: try container.decode(String.self, forKey: .messageId),
                 delta: try container.decode(String.self, forKey: .delta)
+            )
+        case "run_plan_created":
+            self = .runPlanCreated(
+                runPlan: try container.decodeIfPresent(RuntimeRunPlanDTO.self, forKey: .runPlan),
+                summary: try container.decodeIfPresent(String.self, forKey: .summary)
+            )
+        case "run_plan_updated":
+            self = .runPlanUpdated(
+                runPlan: try container.decodeIfPresent(RuntimeRunPlanDTO.self, forKey: .runPlan),
+                runPlanId: try container.decodeIfPresent(String.self, forKey: .runPlanId),
+                currentStageId: try container.decodeIfPresent(String.self, forKey: .currentStageId),
+                summary: try container.decodeIfPresent(String.self, forKey: .summary)
+            )
+        case "capability_focus_locked":
+            self = .capabilityFocusLocked(
+                runPlanId: try container.decodeIfPresent(String.self, forKey: .runPlanId),
+                stageId: try container.decodeIfPresent(String.self, forKey: .stageId),
+                focusGearIds: try container.decodeIfPresent([String].self, forKey: .focusGearIds) ?? [],
+                focusCapabilityIds: try container.decodeIfPresent([String].self, forKey: .focusCapabilityIds) ?? [],
+                summary: try container.decodeIfPresent(String.self, forKey: .summary)
+            )
+        case "stage_started":
+            self = .stageStarted(
+                runPlanId: try container.decodeIfPresent(String.self, forKey: .runPlanId),
+                stageId: try container.decodeIfPresent(String.self, forKey: .stageId),
+                title: try container.decodeIfPresent(String.self, forKey: .title),
+                objective: try container.decodeIfPresent(String.self, forKey: .objective),
+                requiredCapabilities: try container.decodeIfPresent([String].self, forKey: .requiredCapabilities) ?? [],
+                summary: try container.decodeIfPresent(String.self, forKey: .summary)
+            )
+        case "stage_concluded":
+            self = .stageConcluded(
+                runPlanId: try container.decodeIfPresent(String.self, forKey: .runPlanId),
+                stageId: try container.decodeIfPresent(String.self, forKey: .stageId),
+                title: try container.decodeIfPresent(String.self, forKey: .title),
+                status: try container.decodeIfPresent(String.self, forKey: .status) ?? "completed",
+                summary: try container.decodeIfPresent(String.self, forKey: .summary)
             )
         case "tool_invocation":
             self = .toolInvocation(
@@ -1315,6 +1409,13 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
     private let rawSnapshotLock = NSLock()
     private var rawSnapshot: RuntimeSnapshotDTO?
 
+    static func projectSnapshotForTesting(from data: Data) throws -> WorkbenchSnapshot {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let snapshot = try decoder.decode(RuntimeSnapshotDTO.self, from: data)
+        return NativeWorkbenchRuntimeClient().map(snapshot)
+    }
+
     func shutdown() {
         runtime.shutdown()
     }
@@ -2064,6 +2165,58 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
                     timestampLabel: formattedConversationTimestamp(event.createdAt),
                     messages: &projectedMessages
                 )
+            case let .runPlanCreated(runPlan, summary):
+                projectedMessages.append(
+                    mapRunPlanCreatedMessage(
+                        event: event,
+                        runPlan: runPlan,
+                        summary: summary
+                    )
+                )
+            case let .runPlanUpdated(runPlan, runPlanId, currentStageId, summary):
+                projectedMessages.append(
+                    mapRunPlanUpdatedMessage(
+                        event: event,
+                        runPlan: runPlan,
+                        runPlanId: runPlanId,
+                        currentStageId: currentStageId,
+                        summary: summary
+                    )
+                )
+            case let .capabilityFocusLocked(runPlanId, stageId, focusGearIds, focusCapabilityIds, summary):
+                projectedMessages.append(
+                    mapCapabilityFocusMessage(
+                        event: event,
+                        runPlanId: runPlanId,
+                        stageId: stageId,
+                        focusGearIds: focusGearIds,
+                        focusCapabilityIds: focusCapabilityIds,
+                        summary: summary
+                    )
+                )
+            case let .stageStarted(runPlanId, stageId, title, objective, requiredCapabilities, summary):
+                projectedMessages.append(
+                    mapStageStartedMessage(
+                        event: event,
+                        runPlanId: runPlanId,
+                        stageId: stageId,
+                        title: title,
+                        objective: objective,
+                        requiredCapabilities: requiredCapabilities,
+                        summary: summary
+                    )
+                )
+            case let .stageConcluded(runPlanId, stageId, title, status, summary):
+                projectedMessages.append(
+                    mapStageConcludedMessage(
+                        event: event,
+                        runPlanId: runPlanId,
+                        stageId: stageId,
+                        title: title,
+                        status: status,
+                        summary: summary
+                    )
+                )
             case let .toolInvocation(invocation):
                 projectedMessages.append(mapActionInvocationMessage(invocation, createdAt: event.createdAt))
                 if
@@ -2085,17 +2238,19 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
                     )
                 )
             case let .sessionStateChanged(summary):
-                projectedMessages.append(
-                    ConversationMessage(
-                        id: event.eventId,
-                        role: .assistant,
-                        kind: .thinking,
-                        headerTitle: "Thinking",
-                        content: summary,
-                        timestampLabel: formattedConversationTimestamp(event.createdAt),
-                        tone: .neutral
+                if shouldProjectSessionStateSummary(summary) {
+                    projectedMessages.append(
+                        ConversationMessage(
+                            id: event.eventId,
+                            role: .assistant,
+                            kind: .thinking,
+                            headerTitle: "Thinking",
+                            content: summary,
+                            timestampLabel: formattedConversationTimestamp(event.createdAt),
+                            tone: .neutral
+                        )
                     )
-                )
+                }
             }
         }
 
@@ -2103,6 +2258,34 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
             .filter { !transcriptMessageIDs.contains($0.messageId) }
             .map(mapConversationMessage)
         return projectedMessages + legacyMessages
+    }
+
+    private func shouldProjectSessionStateSummary(_ summary: String) -> Bool {
+        let normalized = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            return false
+        }
+
+        let lowSignalFragments = [
+            "Turn setup complete.",
+            "delegating this turn into the SDK loop",
+            "the agent inspected the Gear result and requested another native Gear host action inside the same SDK run",
+            "the agent requested native Gear host action(s)",
+            "GeeAgent paused the same SDK run until the macOS host returns structured results",
+            "the SDK runtime is waiting on native Gear host action results",
+            "native Gear actions completed; returning structured host results to the SDK runtime",
+            "the SDK runtime continued after Gear host results and completed the active user turn",
+            "Turn finalized after",
+            "the SDK runtime completed",
+            "completed the active turn",
+            "completed the active user turn",
+            "committed the resulting tool trace",
+            "committed that failed turn",
+        ]
+
+        return !lowSignalFragments.contains { fragment in
+            normalized.localizedCaseInsensitiveContains(fragment)
+        }
     }
 
     private func upsertAssistantMessage(
@@ -2184,9 +2367,155 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
              let .assistantMessage(messageId, _),
              let .assistantMessageDelta(messageId, _):
             return messageId
-        case .toolInvocation, .toolResult, .sessionStateChanged:
+        case .runPlanCreated,
+             .runPlanUpdated,
+             .capabilityFocusLocked,
+             .stageStarted,
+             .stageConcluded,
+             .toolInvocation,
+             .toolResult,
+             .sessionStateChanged:
             return nil
         }
+    }
+
+    private func mapRunPlanCreatedMessage(
+        event: RuntimeTranscriptEventDTO,
+        runPlan: RuntimeRunPlanDTO?,
+        summary: String?
+    ) -> ConversationMessage {
+        var detailItems = [ConversationMessageDetailItem]()
+        appendDetail("Plan", value: runPlan?.planId, to: &detailItems)
+        appendDetail("Current stage", value: runPlan?.currentStageId.map(humanize), to: &detailItems)
+        appendDetail("Success criteria", value: compactList(runPlan?.successCriteria ?? []), to: &detailItems)
+
+        let stageCount = runPlan?.stages?.count ?? 0
+        return ConversationMessage(
+            id: "phase3-\(event.eventId)",
+            role: .system,
+            kind: .action,
+            headerTitle: "Plan created",
+            content: firstNonEmpty(runPlan?.userGoal, summary, "Run plan created.") ?? "Run plan created.",
+            timestampLabel: formattedConversationTimestamp(event.createdAt),
+            statusLabel: stageCount > 0 ? pluralizedStageCount(stageCount) : "Plan ready",
+            systemImage: "list.bullet",
+            detailItems: detailItems,
+            sourceReferenceID: event.eventId,
+            tone: .info
+        )
+    }
+
+    private func mapRunPlanUpdatedMessage(
+        event: RuntimeTranscriptEventDTO,
+        runPlan: RuntimeRunPlanDTO?,
+        runPlanId: String?,
+        currentStageId: String?,
+        summary: String?
+    ) -> ConversationMessage {
+        var detailItems = [ConversationMessageDetailItem]()
+        appendDetail("Plan", value: firstNonEmpty(runPlanId, runPlan?.planId), to: &detailItems)
+        appendDetail("Current stage", value: firstNonEmpty(currentStageId, runPlan?.currentStageId).map(humanize), to: &detailItems)
+        appendDetail("Success criteria", value: compactList(runPlan?.successCriteria ?? []), to: &detailItems)
+
+        return ConversationMessage(
+            id: "phase3-\(event.eventId)",
+            role: .system,
+            kind: .action,
+            headerTitle: "Plan updated",
+            content: firstNonEmpty(summary, runPlan?.userGoal, "Run plan updated.") ?? "Run plan updated.",
+            timestampLabel: formattedConversationTimestamp(event.createdAt),
+            statusLabel: "Updated",
+            systemImage: "arrow.triangle.2.circlepath",
+            detailItems: detailItems,
+            sourceReferenceID: event.eventId,
+            tone: .info
+        )
+    }
+
+    private func mapCapabilityFocusMessage(
+        event: RuntimeTranscriptEventDTO,
+        runPlanId: String?,
+        stageId: String?,
+        focusGearIds: [String],
+        focusCapabilityIds: [String],
+        summary: String?
+    ) -> ConversationMessage {
+        var detailItems = [ConversationMessageDetailItem]()
+        appendDetail("Plan", value: runPlanId, to: &detailItems)
+        appendDetail("Stage", value: stageId.map(humanize), to: &detailItems)
+        appendDetail("Capabilities", value: compactList(focusCapabilityIds), to: &detailItems)
+        appendDetail("Gears", value: compactList(focusGearIds), to: &detailItems)
+
+        return ConversationMessage(
+            id: "phase3-\(event.eventId)",
+            role: .system,
+            kind: .action,
+            headerTitle: "Focus locked",
+            content: firstNonEmpty(summary, focusSummary(capabilityIds: focusCapabilityIds, gearIds: focusGearIds))
+                ?? "Capability focus locked.",
+            timestampLabel: formattedConversationTimestamp(event.createdAt),
+            statusLabel: focusStatusLabel(capabilityIds: focusCapabilityIds, gearIds: focusGearIds),
+            systemImage: "lock.circle",
+            detailItems: detailItems,
+            sourceReferenceID: event.eventId,
+            tone: .info
+        )
+    }
+
+    private func mapStageStartedMessage(
+        event: RuntimeTranscriptEventDTO,
+        runPlanId: String?,
+        stageId: String?,
+        title: String?,
+        objective: String?,
+        requiredCapabilities: [String],
+        summary: String?
+    ) -> ConversationMessage {
+        var detailItems = [ConversationMessageDetailItem]()
+        appendDetail("Plan", value: runPlanId, to: &detailItems)
+        appendDetail("Stage", value: stageId.map(humanize), to: &detailItems)
+        appendDetail("Required capabilities", value: compactList(requiredCapabilities), to: &detailItems)
+
+        return ConversationMessage(
+            id: "phase3-\(event.eventId)",
+            role: .system,
+            kind: .action,
+            headerTitle: "Stage started",
+            content: firstNonEmpty(objective, summary, title, "Stage started.") ?? "Stage started.",
+            timestampLabel: formattedConversationTimestamp(event.createdAt),
+            statusLabel: firstNonEmpty(title, "Running"),
+            systemImage: "play.circle",
+            detailItems: detailItems,
+            sourceReferenceID: event.eventId,
+            tone: .info
+        )
+    }
+
+    private func mapStageConcludedMessage(
+        event: RuntimeTranscriptEventDTO,
+        runPlanId: String?,
+        stageId: String?,
+        title: String?,
+        status: String,
+        summary: String?
+    ) -> ConversationMessage {
+        var detailItems = [ConversationMessageDetailItem]()
+        appendDetail("Plan", value: runPlanId, to: &detailItems)
+        appendDetail("Stage", value: stageId.map(humanize), to: &detailItems)
+
+        return ConversationMessage(
+            id: "phase3-\(event.eventId)",
+            role: .system,
+            kind: .action,
+            headerTitle: stageConclusionTitle(for: status),
+            content: firstNonEmpty(summary, title, "Stage concluded.") ?? "Stage concluded.",
+            timestampLabel: formattedConversationTimestamp(event.createdAt),
+            statusLabel: humanize(status),
+            systemImage: stageConclusionSystemImage(for: status),
+            detailItems: detailItems,
+            sourceReferenceID: event.eventId,
+            tone: stageConclusionTone(for: status)
+        )
     }
 
     private func mapActionInvocationMessage(
@@ -2370,6 +2699,99 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
 
     private func actionSummary(from toolName: String) -> String {
         "Running \(actionSourceLabel(for: toolName).lowercased())."
+    }
+
+    private func appendDetail(
+        _ label: String,
+        value: String?,
+        to detailItems: inout [ConversationMessageDetailItem]
+    ) {
+        guard let value = value?.nilIfBlank else {
+            return
+        }
+        detailItems.append(ConversationMessageDetailItem(label: label, value: value))
+    }
+
+    private func compactList(_ values: [String], limit: Int = 3) -> String? {
+        let cleaned = values.compactMap(\.nilIfBlank)
+        guard !cleaned.isEmpty else {
+            return nil
+        }
+
+        let visible = cleaned.prefix(limit).joined(separator: ", ")
+        let overflowCount = cleaned.count - min(cleaned.count, limit)
+        return overflowCount > 0 ? "\(visible), +\(overflowCount) more" : visible
+    }
+
+    private func pluralizedStageCount(_ count: Int) -> String {
+        count == 1 ? "1 stage" : "\(count) stages"
+    }
+
+    private func focusStatusLabel(capabilityIds: [String], gearIds: [String]) -> String {
+        if !capabilityIds.isEmpty {
+            return capabilityIds.count == 1 ? "1 capability" : "\(capabilityIds.count) capabilities"
+        }
+        if !gearIds.isEmpty {
+            return gearIds.count == 1 ? "1 gear" : "\(gearIds.count) gears"
+        }
+        return "Scoped"
+    }
+
+    private func focusSummary(capabilityIds: [String], gearIds: [String]) -> String {
+        if let capabilities = compactList(capabilityIds, limit: 2) {
+            return "Capability focus locked to \(capabilities)."
+        }
+        if let gears = compactList(gearIds, limit: 2) {
+            return "Gear focus locked to \(gears)."
+        }
+        return "Capability focus remains scoped by the active plan."
+    }
+
+    private func stageConclusionTitle(for rawStatus: String) -> String {
+        switch rawStatus {
+        case "completed":
+            return "Stage completed"
+        case "partial":
+            return "Stage partially complete"
+        case "blocked":
+            return "Stage blocked"
+        case "plan_changed":
+            return "Stage changed plan"
+        case "needs_user_input":
+            return "Stage needs input"
+        default:
+            return "Stage concluded"
+        }
+    }
+
+    private func stageConclusionSystemImage(for rawStatus: String) -> String {
+        switch rawStatus {
+        case "completed":
+            return "checkmark.circle.fill"
+        case "blocked":
+            return "exclamationmark.triangle.fill"
+        case "needs_user_input":
+            return "hand.raised.fill"
+        case "plan_changed":
+            return "arrow.triangle.2.circlepath"
+        case "partial":
+            return "circle.lefthalf.filled"
+        default:
+            return "checkmark.circle"
+        }
+    }
+
+    private func stageConclusionTone(for rawStatus: String) -> ConversationMessage.Tone {
+        switch rawStatus {
+        case "completed":
+            return .success
+        case "blocked":
+            return .critical
+        case "partial", "plan_changed", "needs_user_input":
+            return .warning
+        default:
+            return .info
+        }
     }
 
     private func fallbackResultSummary(for rawStatus: String) -> String {

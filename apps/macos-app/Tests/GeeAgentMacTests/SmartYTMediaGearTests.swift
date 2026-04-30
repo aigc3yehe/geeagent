@@ -67,6 +67,26 @@ final class SmartYTMediaGearTests: XCTestCase {
     }
 
     @MainActor
+    func testDirectImageURLsDefaultToImageDownloads() throws {
+        let extensionURL = "https://pbs.twimg.com/media/HHFx7HsbsAEQHuH.jpg?name=large"
+        let formatURL = "https://pbs.twimg.com/media/HHFx7HsbsAEQHuH?format=jpg&name=large"
+        let videoURL = "https://video.twimg.com/amplify_video/demo/vid/avc1/demo.mp4"
+
+        XCTAssertTrue(SmartYTMediaGearStore.isDirectImageURL(extensionURL))
+        XCTAssertTrue(SmartYTMediaGearStore.isDirectImageURL(formatURL))
+        XCTAssertFalse(SmartYTMediaGearStore.isDirectImageURL(videoURL))
+        XCTAssertEqual(SmartYTMediaGearStore.defaultDownloadKind(for: extensionURL), .image)
+        XCTAssertEqual(SmartYTMediaGearStore.defaultDownloadKind(for: formatURL), .image)
+        XCTAssertEqual(SmartYTMediaGearStore.defaultDownloadKind(for: videoURL), .video)
+    }
+
+    func testSmartYTDownloadKindIncludesImage() throws {
+        XCTAssertEqual(SmartYTDownloadKind(rawValue: "image"), .image)
+        XCTAssertTrue(SmartYTDownloadKind.allCases.contains(.image))
+        XCTAssertEqual(SmartYTDownloadKind.image.title, "Image")
+    }
+
+    @MainActor
     func testDefaultSmartYTArtifactRootUsesDownloadsFolder() throws {
         let root = try SmartYTMediaGearStore.defaultArtifactRoot()
 

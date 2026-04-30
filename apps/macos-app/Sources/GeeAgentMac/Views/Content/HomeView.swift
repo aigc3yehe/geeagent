@@ -395,6 +395,8 @@ struct HomeView: View {
     private var conversationSummaryArea: some View {
         conversationSummaryContent
             .frame(maxWidth: .infinity, alignment: .topLeading)
+            .frame(maxHeight: 66, alignment: .topLeading)
+            .clipped()
     }
 
     private var conversationSummaryContent: some View {
@@ -403,18 +405,14 @@ struct HomeView: View {
                 ThinkingGradientText(text: "Agent is thinking…")
                     .font(.geeBodyMedium(15))
             } else {
-                ChatMarkdownText(
-                    content: homeConversationSummaryText,
-                    font: .geeBody(14),
-                    lineSpacing: 4,
-                    color: .white.opacity(0.74),
-                    textSelectionEnabled: false
-                )
+                Text(homeConversationSummaryPreview)
+                    .font(.geeBody(14))
+                    .lineSpacing(4)
+                    .foregroundStyle(.white.opacity(0.74))
             }
         }
-        .lineLimit(2)
+        .lineLimit(3)
         .truncationMode(.tail)
-        .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -825,6 +823,24 @@ struct HomeView: View {
         }
 
         return ""
+    }
+
+    private var homeConversationSummaryPreview: String {
+        let normalized = homeConversationSummaryText
+            .replacingOccurrences(
+                of: #"(?m)^\s*(Stage conclusion|Stage summary)\s*[:：]\s*"#,
+                with: "",
+                options: .regularExpression
+            )
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            return "Open focused chat to continue."
+        }
+        guard normalized.count > 220 else {
+            return normalized
+        }
+        return "\(normalized.prefix(219))…"
     }
 
     private func conversationMessageIDs(_ conversation: ConversationThread) -> [String] {

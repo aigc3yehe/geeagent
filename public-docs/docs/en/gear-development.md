@@ -37,6 +37,7 @@ V1 should stay practical. V1 focuses on local copy/import, bundled gears, depend
 - `gear.json`: the gear manifest. It is the minimum discovery file and the declaration source for catalog metadata, dependency setup, and future agent capabilities.
 - `Dependency preflight`: the process of checking whether required dependencies exist, versions are compatible, and permissions allow launch before a gear opens or renders.
 - `Capability`: a manifest-declared operation that the future root agent may invoke. A capability is a declaration, not a separate global agent tool.
+- `Codex plugin projection`: a generated Codex-compatible package and Gee MCP export bridge that lets Codex discover and invoke selected GeeAgent capabilities. It is an export view over Gear, not a replacement for Gear packages, native Gear UI, GearHost, or GeeAgent runtime semantics.
 
 ## Current Implementation State
 
@@ -122,6 +123,7 @@ Current gaps:
 - Gear package folders are not yet the full implementation boundary.
 - Third-party gear import is not implemented yet.
 - Full agent-runtime SDK/MCP tool injection for every Gear capability is not complete yet.
+- Full Codex plugin projection is not implemented yet. The current first implementation slice provides a manifest-backed, read-only agent-runtime projection for export status, capability listing, and capability description. Invocation, surface opening, invocation history, generated Codex plugin files, and the Gee MCP export server remain planned work.
 - `GearKit` and `GearHost` have not been split into separate SwiftPM targets yet.
 
 ## Target Architecture
@@ -683,12 +685,13 @@ Current V1 implements the first host bridge surface for native Gee usage:
 - The phase-2 SDK runtime exposes these controls to the active agent through the `gee` MCP bridge tools `app_open_surface`, `gear_list_capabilities`, and `gear_invoke`.
 - MCP Gear tools pause the same SDK run, emit `host_action_intents`, let GeeAgentMac execute the native Gear action, then resume the same run with structured host results. If the agent needs another Gear step after inspecting the result, the same pause / execute / resume loop repeats.
 - If the SDK session does not expose the `gee` MCP tools, GeeAgent must report a structured runtime failure instead of switching to a fallback execution path, inspecting source code as a substitute, or claiming the task is complete.
-- Legacy host-action control frames are migration-only data. The runtime must consume or reject them before transcript projection, and GeeAgentMac must not show them as normal chat text. Visible chat should show user text, thinking state, tool invocation/result rows, and then the final assistant reply in event order.
+- Legacy host-action control frames are migration-only data. The runtime must consume or reject them before transcript projection, and GeeAgentMac must not show them as normal chat text. Visible chat should render user text, typed plan/focus/stage activity rows, meaningful thinking state, tool invocation/result rows, and assistant replies in transcript event order. Once a final assistant reply exists, earlier work trace rows may collapse into a compact `Worked` section whose rows can still be expanded individually. Low-signal runtime plumbing such as setup, delegation, same-run Gear pause/resume breadcrumbs, and finalize markers should not be promoted into prominent thinking blocks.
 - `host_action_intents` are created by the active SDK run's MCP Gear bridge and are applied by GeeAgentMac in order. Complex capture or multi-Gear requests must stay agent-planned through the MCP bridge.
 - Media-library filters set through `media.filter` are visible as active filters in the native UI. The user can return to the full media view through `All` or the `Clear filters` affordance.
 - `media.filter`, `media.focus_folder`, and `media.import_files` require an authorized media library. The media Gear should first try to restore saved macOS security-scoped access, then fall back to the saved last-library path and let macOS surface a visible one-time authorization prompt when needed. Opening the Media Library window must not wait on that restore attempt; the window should appear first and show bounded restore progress. If no library can be restored before the restore timeout, Gear actions must return a structured failure with `code: "gear.media.authorization_required"` and a `navigate.module` intent for `media.library` instead of reporting a misleading success.
 - Runtime turns must persist tool-use and tool-result events incrementally as they arrive. GeeAgentMac should be able to refresh the active Chat transcript while a Gear workflow is still running, so users see each bridge call appear step by step instead of receiving several completed tool cards only after the final reply.
 - Tool requests must pass through GeeAgent's Tool Boundary Gateway before execution. The gateway normalizes arguments, validates the target, chooses the execution adapter, and normalizes results before transcript projection. This applies to provider-converted tool calls, Claude SDK native tools, and Gear bridge calls; UI-only cleanup is not enough.
+- Focused runtime stages may carry deterministic `capability_args` extracted from the user's request or prior structured results. The Tool Boundary Gateway may merge those arguments into the matching same-stage Gear invocation when the model omits them, but conflicting values fail as structured argument errors instead of being silently overwritten.
 - For Gear-matching requests, the bridge is the preferred execution path. The agent should not inspect GeeAgent source files, call SDK `Skill` aliases, or use Bash to discover product internals unless the user explicitly asks to debug GeeAgent itself.
 
 Gear execution results are structured data, not final prose. A Gear capability, native adapter, or transitional router may report state changes, counts, artifacts, warnings, and errors, but it must not hardcode the final user-facing completion sentence. After all Gear actions in a turn finish, GeeAgent must return those structured results to the active agent/LLM, and the agent must compose the final reply in the user's language. If the LLM continuation cannot run, GeeAgent should show a transparent pending or failure state instead of a fake hardcoded success message.
@@ -698,6 +701,14 @@ When the native host completes a Gear action, it may pass both a concise summary
 During continuation, GeeAgent may replace a large `result_json` payload with a `result_artifact` reference. The model-facing payload keeps ids, status, summary, error, artifact path, hash, byte count, and token estimate, while the full JSON is stored on disk for explicit follow-up inspection.
 
 Complex Gear work must be agent-planned, not router-planned. Local Gear capabilities should be decomposed into small tool primitives such as save bookmark, fetch tweet, sniff media, download media, import files, and attach local paths. The active agent should create a plan, invoke one primitive, inspect the structured result, and then choose the next primitive. Local routers and `host_action_intents` must not pre-build a full multi-step workflow such as “capture Tweet, discover media, download video, import to Media Library, and update Bookmark” because that prevents result-driven correction.
+
+When a runtime plan has a focused stage, capability discovery is stage-scoped. GeeAgent should request the focused summary for the current stage first, then move to later stage focus sets only after the required structured result exists.
+
+Stage advancement requires structured `result_json` evidence with the completed Gear and capability identifiers. Human-readable summaries may help the UI, but they are not enough to mark a stage complete.
+
+Gear invocation is also stage-scoped. While a focused runtime stage is active, GeeAgent rejects Gear invocations outside that stage's required capability set until the stage advances or is explicitly replanned.
+
+Deterministic stage arguments are part of the runtime plan, not a fallback route. They can only fill the selected stage's declared capability invocation, and they remain visible through normalized tool input and structured results.
 
 Progressive disclosure is still required, but the summary is now an invocation index rather than a forced prelude to every schema call. The agent should first request `detail: "summary"`; if the compact record contains the needed capability and its required arguments are clear, it may invoke directly. It should request `detail: "capabilities"` or `detail: "schema"` only when optional argument types or exact semantics are unclear. GeeAgent should not dump every Gear capability schema into the model context by default.
 
@@ -727,6 +738,44 @@ Current SDK MCP tool shape:
   }
 }
 ```
+
+### Codex Plugin Projection
+
+The target is that a capability usable in GeeAgent can also be usable from Codex when it is safe and intentionally exported. The implementation model is one generated GeeAgent Codex plugin that points Codex at a local Gee MCP export server.
+
+This does not convert Gears into Codex plugins. Gear remains the authoritative package, native app/widget, data, permission, dependency, and execution boundary. The Codex plugin is only an installable projection containing plugin metadata, MCP configuration, and skills that teach Codex how to call the Gee bridge.
+
+The core export standard lives in `docs/planning/gee-capability-export-standard-v0.md`.
+
+Current implementation status: the agent runtime has manifest-backed read-only commands for export status, capability listing, and capability description. These commands are the core logic that a future Gee MCP export server will wrap. `gee_invoke_capability`, `gee_open_surface`, `gee_get_invocation`, and generated Codex plugin files are still planned, not available.
+
+Target Codex-facing package shape:
+
+```text
+geeagent-codex/
+├── .codex-plugin/
+│   └── plugin.json
+├── .mcp.json
+├── skills/
+└── assets/
+```
+
+Target Gee MCP export tools:
+
+- `gee_status`
+- `gee_list_capabilities`
+- `gee_describe_capability`
+- `gee_invoke_capability`
+- `gee_open_surface`
+- `gee_get_invocation`
+
+Only ready, enabled, policy-allowed, export-eligible Gear capabilities are visible to Codex. Disabled, failed, installing, invalid, blocked, or explicitly non-exported Gears are invisible. The export bridge must not create one Codex tool per Gear feature, duplicate Gear business logic, store provider secrets, or call package-local fallback scripts.
+
+Codex-originated calls are external invocations. They should be recorded with caller metadata, normalized input, structured results, artifact references, and failure or recovery reasons. They do not become hidden GeeAgent chat turns. If GeeAgent, GearHost, the intended Gear, a provider channel, a permission, or the live bridge is unavailable, Codex receives a structured failed, blocked, or degraded result with the real reason.
+
+Gear capabilities may declare Codex export policy in `gear.json` under `agent.capabilities[].exports.codex`. A capability that is unsafe or meaningless outside GeeAgent's native surface should mark Codex export as disabled with a reason.
+
+When a Gear, capability, result shape, artifact, permission, provider requirement, dependency behavior, or failure code changes, maintainers must check whether the Codex plugin projection, Gee MCP export schema, generated skills, and plugin metadata also need an update. If a substantial Gear change has no Codex export impact, the final work summary should say so explicitly.
 
 There is no public textual fallback directive for Gear execution. Legacy
 directive-shaped records may be normalized for migration safety, but new agent
@@ -788,7 +837,7 @@ First-party gears should gradually move into real package boundaries.
 - Package includes manifest, README, assets, setup metadata, storage notes, and future capability declarations.
 - Native Swift implementation may remain host-compiled during migration, but the business boundary must move out of the main app.
 - Folder management, filtering, starring, Quick Look, Finder handoff, video / gif hover playback, and live presentation mode belong to the media gear, not the main workbench.
-- Agent capabilities include `media.filter`, `media.focus_folder`, and `media.import_files`. `media.import_files` imports local media paths into the authorized media library, restores saved access when possible, returns imported item paths for multi-Gear workflows, and reports `missing_paths` when requested source files cannot be found. If authorization is missing, it keeps readable paths as `pending_paths`, opens the Media Library surface, and returns a structured failure for the active agent/LLM to explain.
+- Agent capabilities include `media.filter`, `media.focus_folder`, and `media.import_files`. `media.import_files` imports local media paths into the authorized media library, restores saved access when possible, and returns item proof for multi-Gear workflows. New files appear in `imported_items`; duplicate files are treated as idempotent success with `action: "import_noop"`, `existing_items`, and `duplicate_paths`; source files that cannot be found appear in `missing_paths`; unsupported files appear in `unsupported_paths`. If no supported imported or existing media item is available, the capability returns structured failure with `code: "gear.media.no_supported_files"` instead of reporting success with `imported_count: 0`. If authorization is missing, it keeps readable paths as `pending_paths`, opens the Media Library surface, and returns a structured failure for the active agent/LLM to explain.
 
 `hyperframes.studio`:
 
@@ -816,11 +865,11 @@ First-party gears should gradually move into real package boundaries.
 `smartyt.media`:
 
 - Target: native URL media acquisition gear adapted from the SmartYT reference project.
-- The Gear accepts a URL, sniffs media metadata, downloads audio or video, and extracts transcript text.
+- The Gear accepts a URL, sniffs media metadata, downloads audio, video, or direct image artifacts, and extracts transcript text.
 - V1 uses `yt-dlp` for metadata, downloads, and subtitle extraction, and `ffmpeg` / `ffprobe` for media conversion support.
 - Transcript extraction should prefer platform subtitles first. If no subtitle is available, the Gear may fall back to local speech tooling such as Whisper when installed. If no speech backend is available, the Gear must return a structured failure that explains the missing transcription backend instead of pretending the conversion completed.
 - Job state belongs in `~/Library/Application Support/GeeAgent/gear-data/smartyt.media/`, while downloaded media, extracted subtitles, and transcript text default to `~/Downloads/SmartYT/<job-id>/` unless an agent call provides an explicit `output_dir`.
-- Agent capabilities are `smartyt.sniff`, `smartyt.download`, `smartyt.download_now`, and `smartyt.transcribe`. `smartyt.download` queues work for the app UI, while `smartyt.download_now` blocks until artifacts exist and returns `output_paths` for multi-Gear workflows. The active agent/LLM owns the final user-facing reply.
+- Agent capabilities are `smartyt.sniff`, `smartyt.download`, `smartyt.download_now`, and `smartyt.transcribe`. `smartyt.download` queues work for the app UI, while `smartyt.download_now` blocks until artifacts exist and returns `output_paths` for multi-Gear workflows. Direct image URLs, including Twitter/X image URLs with an image extension or a `format=` query hint, are treated as image downloads instead of video downloads. The active agent/LLM owns the final user-facing reply.
 
 `twitter.capture`:
 
@@ -855,10 +904,11 @@ Information capture workflow:
 - Pure text should go straight to `bookmark.save`.
 - URL metadata capture should save through `bookmark.save`; use `twitter.capture` or `smartyt.media` only when the user asks for deeper Twitter/media content or when the URL strongly implies media acquisition.
 - WeChat public-account article or album URLs should use `wespy.reader` when the user asks for Markdown, article extraction, or batch album capture; use `bookmark.save` only when the user asks to save the URL itself as a bookmark.
-- Twitter/X status URLs default to video acquisition unless the user explicitly asks to save metadata only or not to download media. Use `twitter.fetch_tweet` for tweet/media details when needed, then use `smartyt.download_now` for video acquisition.
+- Twitter/X status URLs default to media acquisition unless the user explicitly asks to save metadata only or not to download media. Use `twitter.fetch_tweet` for tweet/media details when needed, then use `smartyt.download_now` for each downloadable video or image URL.
 - YouTube URLs should use `smartyt.sniff` as the lightweight duration probe before default download decisions. Default download is allowed only when `duration_seconds` is below 300 seconds; longer or unknown-duration videos should be saved as metadata unless the user explicitly asks to download.
-- Strong media acquisition should use `smartyt.download_now`, then `media.import_files`, then `bookmark.save` with `local_media_paths`.
+- Strong media acquisition should use `smartyt.download_now` for each media URL, then `media.import_files`, then `bookmark.save` with `local_media_paths`.
 - If no media library is authorized, `media.import_files` should preserve downloaded paths as `pending_paths`, open the Media Library surface, and ask the user to choose or create a library before claiming import succeeded. Bookmark Vault may still keep the downloaded paths so the workflow can resume after authorization.
+- Runtime stages that depend on `media.import_files` should require `available_count > 0` or non-empty `imported_items` / `existing_items` before claiming media import completed. A bare successful invocation with `imported_count: 0` is not enough proof.
 
 `btc.price`:
 
@@ -1066,6 +1116,7 @@ Every phase must satisfy:
 - Gear-specific data does not enter `WorkbenchStore`.
 - Gear UI follows native macOS experience.
 - Public docs are updated in English, Simplified Chinese, and Japanese.
+- Gear capability changes check the Codex plugin projection and update export metadata, MCP schema, generated skills, or plugin metadata when needed.
 
 Package and import phases must also satisfy:
 

@@ -20,6 +20,9 @@ export function normalizeToolBoundaryInput(
   input: unknown,
 ): RecordLike {
   const normalized = { ...normalizeToolInput(input) };
+  if (toolName === "mcp__gee__gear_invoke" || toolName === "gee.gear.invoke") {
+    return normalizeGeeGearInvokeInput(normalized);
+  }
   if (
     toolName === "Read" &&
     typeof normalized.pages === "string" &&
@@ -27,6 +30,33 @@ export function normalizeToolBoundaryInput(
   ) {
     delete normalized.pages;
   }
+  return normalized;
+}
+
+export function normalizeGeeGearInvokeInput(input: RecordLike): RecordLike {
+  const nestedArguments = recordValue(input.arguments);
+  const normalized: RecordLike = {};
+
+  const gearID = stringValue(input.gear_id) ?? stringValue(nestedArguments?.gear_id);
+  const capabilityID =
+    stringValue(input.capability_id) ?? stringValue(nestedArguments?.capability_id);
+  if (gearID) {
+    normalized.gear_id = gearID;
+  }
+  if (capabilityID) {
+    normalized.capability_id = capabilityID;
+  }
+
+  const invokeArgs = firstRecord(
+    input.args,
+    nestedArguments?.args,
+    nestedArguments?.input,
+    nestedArguments?.payload,
+    input.input,
+    input.payload,
+  );
+  normalized.args = invokeArgs ? { ...invokeArgs } : {};
+
   return normalized;
 }
 
@@ -65,4 +95,24 @@ function shallowRecordEqual(left: RecordLike, right: RecordLike): boolean {
     return false;
   }
   return leftEntries.every(([key, value]) => Object.is(value, right[key]));
+}
+
+function recordValue(value: unknown): RecordLike | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as RecordLike)
+    : undefined;
+}
+
+function firstRecord(...values: Array<unknown>): RecordLike | undefined {
+  for (const value of values) {
+    const record = recordValue(value);
+    if (record) {
+      return record;
+    }
+  }
+  return undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }

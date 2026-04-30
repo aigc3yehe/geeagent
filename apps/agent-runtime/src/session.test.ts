@@ -8,6 +8,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 
 import { runtimeProjectPath } from "./native-runtime/paths.js";
+import { buildRuntimeRunPlan } from "./native-runtime/turns/planning.js";
 import type { RuntimeEvent } from "./protocol.js";
 import {
   DEFAULT_SDK_AVAILABLE_TOOLS,
@@ -294,6 +295,64 @@ describe("session prompt and tool-result helpers", () => {
       {
         file_path: "/tmp/example.pdf",
         pages: "1-3",
+      },
+    );
+  });
+
+  it("normalizes direct MCP Gear invoke argument envelopes", () => {
+    const url = "https://x.com/YaReYaRu30Life/status/2049545035176362120?s=20";
+
+    assert.deepEqual(
+      __sessionTestHooks.sanitizeToolInput("mcp__gee__gear_invoke", {
+        gear_id: "twitter.capture",
+        capability_id: "twitter.fetch_tweet",
+        arguments: {
+          args: { url },
+        },
+      }),
+      {
+        gear_id: "twitter.capture",
+        capability_id: "twitter.fetch_tweet",
+        args: { url },
+      },
+    );
+
+    assert.deepEqual(
+      __sessionTestHooks.sanitizeToolInput("mcp__gee__gear_invoke", {
+        gear_id: "twitter.capture",
+        capability_id: "twitter.fetch_tweet",
+        args: { url },
+      }),
+      {
+        gear_id: "twitter.capture",
+        capability_id: "twitter.fetch_tweet",
+        args: { url },
+      },
+    );
+  });
+
+  it("recovers deterministic current-stage Gear args from the runtime plan", () => {
+    const url = "https://x.com/YaReYaRu30Life/status/2049545035176362120?s=20";
+    const plan = buildRuntimeRunPlan(
+      `save this tweet to bookmarks ${url} and download its media into the media library gear.`,
+      "gear_first",
+    );
+
+    assert.ok(plan);
+    assert.deepEqual(
+      __sessionTestHooks.sanitizeToolInput(
+        "mcp__gee__gear_invoke",
+        {
+          gear_id: "twitter.capture",
+          capability_id: "twitter.fetch_tweet",
+          args: {},
+        },
+        plan,
+      ),
+      {
+        gear_id: "twitter.capture",
+        capability_id: "twitter.fetch_tweet",
+        args: { url },
       },
     );
   });

@@ -115,6 +115,8 @@ If all persona visual fields are missing, the app uses its default abstract surf
 
 On the Home surface, GeeAgent can expose a compact visual switcher for the active persona. It shows only the visual modes that have corresponding files, plus the abstract mode. For example, if a persona has Live2D and image assets but no video, the video option is hidden.
 
+Selecting abstract mode hides the persona visual and leaves the global background visible when one is configured. If no global background is configured, GeeAgent shows the default abstract surface.
+
 The `image` asset is only the image display mode. It is not the Live2D background.
 
 The visual layer may also declare a `global_background`. The global background is rendered as a full-coverage home background behind the persona visual, including Live2D. It supports:

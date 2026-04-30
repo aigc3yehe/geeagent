@@ -273,7 +273,7 @@ struct ChatMessageCard: View {
     private var assistantChatMessageLayout: some View {
         VStack(alignment: .leading, spacing: 8) {
             ChatMarkdownText(
-                content: message.content,
+                content: displayChatContent,
                 font: .geeBody(14),
                 lineSpacing: 7,
                 color: prominentBackground ? .white.opacity(0.94) : .primary
@@ -284,6 +284,13 @@ struct ChatMessageCard: View {
                 chatActionButtons
             }
         }
+    }
+
+    private var displayChatContent: String {
+        guard message.role == .assistant else {
+            return message.content
+        }
+        return stripHardStageConclusionPrefix(message.content)
     }
 
     private var structuredMessageLayout: some View {
@@ -642,28 +649,28 @@ private struct ChatTurnBlockView: View {
     var block: ConversationTurnBlock
     var prominentBackground: Bool
 
-    private enum AgentFlowItem: Identifiable {
+    fileprivate enum AgentFlowItem: Identifiable {
         case response(ConversationMessage)
+        case thinkingGroup([ConversationMessage])
         case activityGroup(AgentActivityGroup)
 
         var id: String {
             switch self {
             case .response(let message):
                 return message.id
+            case .thinkingGroup(let messages):
+                return messages.map(\.id).joined(separator: "-")
             case .activityGroup(let group):
                 return group.id
             }
         }
     }
 
-    private var thinkingMessages: [ConversationMessage] {
-        block.agentMessages.filter { $0.kind == .thinking }
-    }
-
     private var flowItems: [AgentFlowItem] {
         var items = [AgentFlowItem]()
         var consumedActivityRefs = Set<String>()
         var pendingActivities = [AgentActivityItem]()
+        var pendingThinking = [ConversationMessage]()
 
         func flushPendingActivities(explanation: ConversationMessage? = nil) {
             guard !pendingActivities.isEmpty else {
@@ -673,9 +680,18 @@ private struct ChatTurnBlockView: View {
             pendingActivities = []
         }
 
-        for message in block.agentMessages where message.kind != .thinking {
+        func flushPendingThinking() {
+            guard !pendingThinking.isEmpty else {
+                return
+            }
+            items.append(.thinkingGroup(pendingThinking))
+            pendingThinking = []
+        }
+
+        for message in block.agentMessages {
             switch message.kind {
             case .chat:
+                flushPendingThinking()
                 if pendingActivities.contains(where: \.isApproval),
                    isApprovalExplanation(message) {
                     flushPendingActivities(explanation: message)
@@ -684,6 +700,11 @@ private struct ChatTurnBlockView: View {
                     items.append(.response(message))
                 }
             case .action:
+                flushPendingThinking()
+                if !isToolActivityMessage(message) {
+                    pendingActivities.append(AgentActivityItem(invocation: message, result: nil, approval: nil))
+                    continue
+                }
                 let ref = message.sourceReferenceID ?? message.id
                 guard !consumedActivityRefs.contains(ref) else {
                     continue
@@ -691,20 +712,48 @@ private struct ChatTurnBlockView: View {
                 consumedActivityRefs.insert(ref)
 
                 let related = block.agentMessages.filter {
-                    $0.kind == .action && ($0.sourceReferenceID ?? $0.id) == ref
+                    $0.kind == .action && isToolActivityMessage($0) && ($0.sourceReferenceID ?? $0.id) == ref
                 }
                 let invocation = related.first { $0.id.hasPrefix("action-") } ?? message
                 let result = related.first { $0.id.hasPrefix("result-") }
                 pendingActivities.append(AgentActivityItem(invocation: invocation, result: result, approval: nil))
             case .approval:
+                flushPendingThinking()
                 pendingActivities.append(AgentActivityItem(invocation: nil, result: nil, approval: message))
             case .thinking:
-                continue
+                flushPendingActivities()
+                if !isLowSignalRuntimeThinking(message) {
+                    pendingThinking.append(message)
+                }
             }
         }
 
+        flushPendingThinking()
         flushPendingActivities()
         return items
+    }
+
+    private var visibleFlowItems: [AgentFlowItem] {
+        guard shouldFoldWorkTrace else {
+            return flowItems
+        }
+
+        return Array(flowItems.suffix(1))
+    }
+
+    private var workTraceItems: [AgentFlowItem] {
+        guard shouldFoldWorkTrace else {
+            return []
+        }
+
+        return Array(flowItems.dropLast())
+    }
+
+    private var shouldFoldWorkTrace: Bool {
+        guard flowItems.count > 1, case .response(let message) = flowItems.last else {
+            return false
+        }
+        return message.role == .assistant && message.kind == .chat
     }
 
     var body: some View {
@@ -718,31 +767,19 @@ private struct ChatTurnBlockView: View {
                 )
             }
 
-            if !thinkingMessages.isEmpty || !flowItems.isEmpty {
+            if !flowItems.isEmpty {
                 VStack(alignment: .leading, spacing: prominentBackground ? 8 : 10) {
-                    if !thinkingMessages.isEmpty {
-                        AgentThinkingDisclosure(
-                            messages: thinkingMessages,
+                    if !workTraceItems.isEmpty {
+                        WorkedTraceDisclosure(
+                            store: store,
+                            conversationID: conversationID,
+                            items: workTraceItems,
                             prominentBackground: prominentBackground
                         )
                     }
 
-                    ForEach(flowItems) { item in
-                        switch item {
-                        case .response(let message):
-                            ChatMessageCard(
-                                store: store,
-                                conversationID: conversationID,
-                                message: message,
-                                prominentBackground: prominentBackground
-                            )
-                        case .activityGroup(let group):
-                            AgentActivityTraceGroup(
-                                store: store,
-                                group: group,
-                                prominentBackground: prominentBackground
-                            )
-                        }
+                    ForEach(visibleFlowItems) { item in
+                        flowItemView(item)
                     }
                 }
                 .padding(.leading, prominentBackground ? 0 : 6)
@@ -761,6 +798,133 @@ private struct ChatTurnBlockView: View {
     private var blockBorder: some View {
         RoundedRectangle(cornerRadius: 12, style: .continuous)
             .stroke(prominentBackground ? Color.clear : Color.white.opacity(0.045), lineWidth: 0.8)
+    }
+
+    @ViewBuilder
+    fileprivate func flowItemView(_ item: AgentFlowItem) -> some View {
+        switch item {
+        case .response(let message):
+            ChatMessageCard(
+                store: store,
+                conversationID: conversationID,
+                message: message,
+                prominentBackground: prominentBackground
+            )
+        case .thinkingGroup(let messages):
+            AgentThinkingDisclosure(
+                messages: messages,
+                prominentBackground: prominentBackground
+            )
+        case .activityGroup(let group):
+            AgentActivityTraceGroup(
+                store: store,
+                group: group,
+                prominentBackground: prominentBackground
+            )
+        }
+    }
+}
+
+private struct WorkedTraceDisclosure: View {
+    @Bindable var store: WorkbenchStore
+    var conversationID: ConversationThread.ID
+    var items: [ChatTurnBlockView.AgentFlowItem]
+    var prominentBackground: Bool
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.easeOut(duration: 0.16)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(rowTint.opacity(0.72))
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+
+                    Image(systemName: "checklist.checked")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(rowTint.opacity(0.76))
+
+                    Text("Worked")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(prominentBackground ? .white.opacity(0.76) : .secondary)
+
+                    Text(workedSummary)
+                        .font(.caption)
+                        .foregroundStyle(prominentBackground ? .white.opacity(0.5) : .secondary.opacity(0.78))
+                        .lineLimit(1)
+
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(items) { item in
+                        flowItemView(item)
+                    }
+                }
+                .padding(.leading, 16)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(prominentBackground ? Color.white.opacity(0.025) : Color.black.opacity(0.018))
+        )
+    }
+
+    private var rowTint: Color {
+        prominentBackground ? .white : .secondary
+    }
+
+    private var workedSummary: String {
+        let count = activityCount(in: items)
+        return count == 1 ? "1 step" : "\(count) steps"
+    }
+
+    private func activityCount(in items: [ChatTurnBlockView.AgentFlowItem]) -> Int {
+        items.reduce(0) { count, item in
+            switch item {
+            case .response, .thinkingGroup:
+                return count + 1
+            case .activityGroup(let group):
+                return count + group.items.count
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func flowItemView(_ item: ChatTurnBlockView.AgentFlowItem) -> some View {
+        switch item {
+        case .response(let message):
+            ChatMessageCard(
+                store: store,
+                conversationID: conversationID,
+                message: message,
+                prominentBackground: prominentBackground
+            )
+        case .thinkingGroup(let messages):
+            AgentThinkingDisclosure(
+                messages: messages,
+                prominentBackground: prominentBackground
+            )
+        case .activityGroup(let group):
+            AgentActivityTraceGroup(
+                store: store,
+                group: group,
+                prominentBackground: prominentBackground
+            )
+        }
     }
 }
 
@@ -834,6 +998,40 @@ private func isApprovalExplanation(_ message: ConversationMessage) -> Bool {
         || content.localizedCaseInsensitiveContains("terminal access")
         || content.localizedCaseInsensitiveContains("host decision")
         || content.localizedCaseInsensitiveContains("approval")
+}
+
+private func stripHardStageConclusionPrefix(_ content: String) -> String {
+    content
+        .replacingOccurrences(
+            of: #"(?m)^\s*(Stage conclusion|Stage summary)\s*[:：]\s*"#,
+            with: "",
+            options: .regularExpression
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func isLowSignalRuntimeThinking(_ message: ConversationMessage) -> Bool {
+    let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+    return content.localizedCaseInsensitiveContains("Turn setup complete.")
+        || content.localizedCaseInsensitiveContains("delegating this turn into the SDK loop")
+        || content.localizedCaseInsensitiveContains("the agent inspected the Gear result and requested another native Gear host action inside the same SDK run")
+        || content.localizedCaseInsensitiveContains("the agent requested native Gear host action(s)")
+        || content.localizedCaseInsensitiveContains("GeeAgent paused the same SDK run until the macOS host returns structured results")
+        || content.localizedCaseInsensitiveContains("the SDK runtime is waiting on native Gear host action results")
+        || content.localizedCaseInsensitiveContains("native Gear actions completed; returning structured host results to the SDK runtime")
+        || content.localizedCaseInsensitiveContains("the SDK runtime continued after Gear host results and completed the active user turn")
+        || content.localizedCaseInsensitiveContains("Turn finalized after")
+        || content.localizedCaseInsensitiveContains("the SDK runtime completed")
+        || content.localizedCaseInsensitiveContains("the host auto-approved")
+        || content.localizedCaseInsensitiveContains("completed the active turn")
+        || content.localizedCaseInsensitiveContains("completed the active user turn")
+        || content.localizedCaseInsensitiveContains("committed the resulting tool trace")
+        || content.localizedCaseInsensitiveContains("committed that failed turn")
+        || content.localizedCaseInsensitiveContains("finalized")
+}
+
+private func isToolActivityMessage(_ message: ConversationMessage) -> Bool {
+    message.id.hasPrefix("action-") || message.id.hasPrefix("result-")
 }
 
 private struct AgentThinkingDisclosure: View {

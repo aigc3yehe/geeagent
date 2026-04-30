@@ -27,12 +27,30 @@ enum GeeHostToolRouter {
         let detail = (payload["detail"] as? String) ?? "summary"
         let gearID = payload["gear_id"] as? String
         let capabilityID = payload["capability_id"] as? String
+        let focusGearIDs = stringArray(payload["focus_gear_ids"])
+        let focusCapabilityIDs = stringArray(payload["focus_capability_ids"])
+        let runPlanID = payload["run_plan_id"] as? String
+        let stageID = payload["stage_id"] as? String
 
         switch detail {
         case "summary":
+            let summary = summaryPayload(
+                records: records,
+                focusGearIDs: focusGearIDs,
+                focusCapabilityIDs: focusCapabilityIDs,
+                runPlanID: runPlanID,
+                stageID: stageID
+            )
+            if isFocusedSummaryUnavailable(summary, focusGearIDs: focusGearIDs, focusCapabilityIDs: focusCapabilityIDs) {
+                return .error(
+                    toolID: toolID,
+                    code: "gear.focus_unavailable",
+                    message: "No enabled Gear capabilities matched the focused runtime plan."
+                )
+            }
             return .completed(
                 toolID: toolID,
-                payload: summaryPayload(records: records)
+                payload: summary
             )
         case "capabilities":
             guard let gearID else {
@@ -68,8 +86,24 @@ enum GeeHostToolRouter {
         }
     }
 
-    private static func summaryPayload(records: [GearCapabilityRecord]) -> [String: Any] {
-        let grouped = Dictionary(grouping: records, by: \.gearID)
+    private static func summaryPayload(
+        records: [GearCapabilityRecord],
+        focusGearIDs: [String],
+        focusCapabilityIDs: [String],
+        runPlanID: String?,
+        stageID: String?
+    ) -> [String: Any] {
+        let focusedRecords = focusedCapabilityRecords(
+            records,
+            focusGearIDs: focusGearIDs,
+            focusCapabilityIDs: focusCapabilityIDs
+        )
+        let diagnostics = focusDiagnostics(
+            records: records,
+            focusGearIDs: focusGearIDs,
+            focusCapabilityIDs: focusCapabilityIDs
+        )
+        let grouped = Dictionary(grouping: focusedRecords, by: \.gearID)
         let gears = grouped.keys.sorted().compactMap { gearID -> [String: Any]? in
             guard let capabilities = grouped[gearID], let first = capabilities.first else {
                 return nil
@@ -83,12 +117,72 @@ enum GeeHostToolRouter {
                 "capabilities": sortedCapabilities.map(compactCapabilitySummary)
             ]
         }
-        return [
+        var payload: [String: Any] = [
             "disclosure_level": "summary",
             "tool": "gee.gear.listCapabilities",
-            "next_step": "If the compact capability summary includes the needed capability and required_args are satisfied, call gee.gear.invoke directly. Request detail=schema only when optional argument types are unclear.",
+            "focus_applied": !focusGearIDs.isEmpty || !focusCapabilityIDs.isEmpty,
+            "next_step": "If the compact focused capability summary includes the needed capability and required_args are satisfied, call gee.gear.invoke directly. Request detail=schema only when optional argument types are unclear or when the active plan reopens discovery.",
             "gears": gears
         ]
+        if !focusGearIDs.isEmpty {
+            payload["focus_gear_ids"] = focusGearIDs
+        }
+        if !focusCapabilityIDs.isEmpty {
+            payload["focus_capability_ids"] = focusCapabilityIDs
+        }
+        if !focusGearIDs.isEmpty || !focusCapabilityIDs.isEmpty {
+            payload["focus_complete"] = diagnostics.missingGearIDs.isEmpty && diagnostics.missingCapabilityIDs.isEmpty
+            payload["missing_focus_gear_ids"] = diagnostics.missingGearIDs
+            payload["missing_focus_capability_ids"] = diagnostics.missingCapabilityIDs
+        }
+        if let runPlanID, !runPlanID.isEmpty {
+            payload["run_plan_id"] = runPlanID
+        }
+        if let stageID, !stageID.isEmpty {
+            payload["stage_id"] = stageID
+        }
+        return payload
+    }
+
+    private static func isFocusedSummaryUnavailable(
+        _ payload: [String: Any],
+        focusGearIDs: [String],
+        focusCapabilityIDs: [String]
+    ) -> Bool {
+        guard !focusGearIDs.isEmpty || !focusCapabilityIDs.isEmpty else {
+            return false
+        }
+        let gears = payload["gears"] as? [[String: Any]] ?? []
+        return gears.isEmpty
+    }
+
+    private static func focusDiagnostics(
+        records: [GearCapabilityRecord],
+        focusGearIDs: [String],
+        focusCapabilityIDs: [String]
+    ) -> (missingGearIDs: [String], missingCapabilityIDs: [String]) {
+        let availableGearIDs = Set(records.map(\.gearID))
+        let availableCapabilityIDs = Set(records.map(\.capabilityID))
+        return (
+            missingGearIDs: focusGearIDs.filter { !availableGearIDs.contains($0) },
+            missingCapabilityIDs: focusCapabilityIDs.filter { !availableCapabilityIDs.contains($0) }
+        )
+    }
+
+    private static func focusedCapabilityRecords(
+        _ records: [GearCapabilityRecord],
+        focusGearIDs: [String],
+        focusCapabilityIDs: [String]
+    ) -> [GearCapabilityRecord] {
+        guard !focusGearIDs.isEmpty || !focusCapabilityIDs.isEmpty else {
+            return records
+        }
+        let gearIDSet = Set(focusGearIDs)
+        let capabilityIDSet = Set(focusCapabilityIDs)
+        return records.filter { record in
+            (gearIDSet.isEmpty || gearIDSet.contains(record.gearID)) &&
+            (capabilityIDSet.isEmpty || capabilityIDSet.contains(record.capabilityID))
+        }
     }
 
     private static func compactCapabilitySummary(_ capability: GearCapabilityRecord) -> [String: Any] {
@@ -394,27 +488,50 @@ enum GeeHostToolRouter {
             let expandedPaths = paths.map { NSString(string: $0).expandingTildeInPath }
             let missingPaths = expandedPaths.filter { !FileManager.default.fileExists(atPath: $0) }
             do {
-                let imported = try await store.importMediaForAgent(paths: paths)
+                let report = try await store.importMediaForAgentReport(paths: paths)
+                if report.availableItems.isEmpty {
+                    return .completed(
+                        toolID: toolID,
+                        payload: [
+                            "gear_id": MediaLibraryGearDescriptor.gearID,
+                            "capability_id": capabilityID,
+                            "action": "import_skipped",
+                            "status": "failed",
+                            "code": "gear.media.no_supported_files",
+                            "error": "No supported media files were imported or found in the library.",
+                            "requested_paths": paths,
+                            "missing_paths": missingPaths,
+                            "unsupported_paths": report.unsupportedPaths,
+                            "duplicate_paths": report.duplicatePaths,
+                            "supported_extensions": Array(MediaLibraryService.imageExtensions.union(MediaLibraryService.videoExtensions)).sorted(),
+                            "imported_count": 0,
+                            "existing_count": 0,
+                            "available_count": 0,
+                            "library_path": store.library?.url.path ?? NSNull()
+                        ]
+                    )
+                }
+                let importAction = report.importedItems.isEmpty ? "import_noop" : "imported_files"
+                let importReason = report.importedItems.isEmpty ? "all_duplicates" : "imported_or_reused"
                 return .completed(
                     toolID: toolID,
                     payload: [
                         "gear_id": MediaLibraryGearDescriptor.gearID,
                         "capability_id": capabilityID,
-                        "action": "imported_files",
+                        "action": importAction,
+                        "status": "succeeded",
+                        "reason": importReason,
                         "requested_paths": paths,
                         "missing_paths": missingPaths,
-                        "imported_count": imported.count,
+                        "unsupported_paths": report.unsupportedPaths,
+                        "duplicate_paths": report.duplicatePaths,
+                        "imported_count": report.importedItems.count,
+                        "existing_count": report.existingItems.count,
+                        "available_count": report.availableItems.count,
                         "library_path": store.library?.url.path ?? NSNull(),
-                        "imported_items": imported.map { item in
-                            [
-                                "id": item.id,
-                                "name": item.name,
-                                "ext": item.ext,
-                                "file_path": item.fileURL.path,
-                                "media_kind": item.mediaKind.rawValue,
-                                "duration_seconds": item.durationSeconds ?? NSNull()
-                            ] as [String: Any]
-                        }
+                        "imported_items": report.importedItems.map { mediaLibraryItemPayload($0) },
+                        "existing_items": report.existingItems.map { mediaLibraryItemPayload($0) },
+                        "available_items": report.availableItems.map { mediaLibraryItemPayload($0) }
                     ]
                 )
             } catch let error as MediaLibraryAgentImportError {
@@ -489,7 +606,7 @@ enum GeeHostToolRouter {
                 return .error(
                     toolID: toolID,
                     code: "gear.args.download_kind",
-                    message: "`download_kind` must be audio, video, or both."
+                    message: "`download_kind` must be audio, image, video, or both."
                 )
             }
             downloadKind = parsedKind
@@ -577,6 +694,17 @@ enum GeeHostToolRouter {
                 ]
             ]
         )
+    }
+
+    private static func mediaLibraryItemPayload(_ item: MediaLibraryItem) -> [String: Any] {
+        [
+            "id": item.id,
+            "name": item.name,
+            "ext": item.ext,
+            "file_path": item.fileURL.path,
+            "media_kind": item.mediaKind.rawValue,
+            "duration_seconds": item.durationSeconds ?? NSNull()
+        ]
     }
 
     private static func mediaLibraryUnavailableOutcome(
@@ -696,7 +824,7 @@ enum GeeHostToolRouter {
                 "additionalProperties": false,
                 "properties": [
                     "url": ["type": "string", "format": "uri"],
-                    "download_kind": ["type": "string", "enum": ["audio", "video", "both"]],
+                    "download_kind": ["type": "string", "enum": ["audio", "image", "video", "both"]],
                     "output_dir": ["type": "string"]
                 ]
             ]
@@ -707,7 +835,7 @@ enum GeeHostToolRouter {
                 "additionalProperties": false,
                 "properties": [
                     "url": ["type": "string", "format": "uri"],
-                    "download_kind": ["type": "string", "enum": ["audio", "video", "both"]],
+                    "download_kind": ["type": "string", "enum": ["audio", "image", "video", "both"]],
                     "output_dir": [
                         "type": "string",
                         "description": "Optional local directory for completed artifacts. Defaults to ~/Downloads/SmartYT/<job-id>."
@@ -917,5 +1045,9 @@ enum GeeHostToolRouter {
 
     private static func stringArrayArg(_ args: [String: Any], _ key: String) -> [String]? {
         args[key] as? [String]
+    }
+
+    private static func stringArray(_ value: Any?) -> [String] {
+        value as? [String] ?? []
     }
 }
