@@ -769,10 +769,11 @@ async function collectEventsUntilPauseOrResult(
             partition.controlText.trim(),
           ];
         }
-        const trimmed = partition.visibleText.trim();
+        const visibleText = stripAssistantStageProgressText(partition.visibleText);
+        const trimmed = visibleText.trim();
         if (trimmed) {
           turn.assistant_chunks.push(trimmed);
-          await onAssistantText?.(partition.visibleText);
+          await onAssistantText?.(visibleText);
         }
         continue;
       }
@@ -785,9 +786,10 @@ async function collectEventsUntilPauseOrResult(
               flushed.controlText.trim(),
             ];
           }
-          if (flushed.visibleText.trim()) {
-            turn.assistant_chunks.push(flushed.visibleText.trim());
-            await onAssistantText?.(flushed.visibleText);
+          const visibleText = stripAssistantStageProgressText(flushed.visibleText);
+          if (visibleText.trim()) {
+            turn.assistant_chunks.push(visibleText.trim());
+            await onAssistantText?.(visibleText);
           }
         }
         if (event.result?.trim()) {
@@ -1354,6 +1356,15 @@ function partitionAssistantControlText(text: string): {
   };
 }
 
+function stripAssistantStageProgressText(text: string): string {
+  return text
+    .replace(
+      /(^|[\n.])\s*(?:Stage complete|Stage completed)\s*:\s*[^.\n]*(?:\.\s*)?/gi,
+      "$1",
+    )
+    .trimStart();
+}
+
 function createAssistantControlTextFilter(): {
   push(text: string): ReturnType<typeof partitionAssistantControlText>;
   flush(): ReturnType<typeof partitionAssistantControlText>;
@@ -1643,6 +1654,7 @@ export const __sdkTurnRunnerTestHooks = {
   extractHostActionDirectiveResult,
   createAssistantControlTextFilter,
   partitionAssistantControlText,
+  stripAssistantStageProgressText,
   normalizeSdkToolResult,
   runtimeProjectPath,
   summarizePrompt,

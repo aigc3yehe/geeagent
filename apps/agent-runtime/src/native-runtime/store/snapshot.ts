@@ -65,6 +65,7 @@ export async function snapshotFromStore(
     terminal_access_rules: await loadTerminalAccessRuleRecords(configDir),
     security_preferences: await loadSecurityPreferences(configDir),
     host_action_intents: store.host_action_intents ?? [],
+    external_invocations: store.external_invocations ?? [],
     skill_sources: skillSources,
     workspace_focus: store.workspace_focus,
     workspace_runtime: store.workspace_runtime,

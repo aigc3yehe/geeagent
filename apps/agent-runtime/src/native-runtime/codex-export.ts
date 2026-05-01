@@ -1,14 +1,20 @@
+import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const EXPORT_STANDARD = "gee.capability_export.v0.1";
+export const EXPORT_STANDARD = "gee.capability_export.v0.1";
 const DEFAULT_DETAIL = "summary";
-const IMPLEMENTED_CODEX_EXPORT_TOOLS = [
+export const IMPLEMENTED_CODEX_EXPORT_TOOLS = [
   "gee_status",
   "gee_list_capabilities",
   "gee_describe_capability",
+  "gee_invoke_capability",
+  "gee_open_surface",
+  "gee_get_invocation",
 ] as const;
-const PLANNED_CODEX_EXPORT_TOOLS = [
+export const PLANNED_CODEX_EXPORT_TOOLS = [] as const;
+export const LIVE_BRIDGE_CODEX_EXPORT_TOOLS = [
   "gee_invoke_capability",
   "gee_open_surface",
   "gee_get_invocation",
@@ -16,7 +22,7 @@ const PLANNED_CODEX_EXPORT_TOOLS = [
 
 type CodexExportStatus = "success" | "degraded" | "failed";
 
-type CodexExportOptions = {
+export type CodexExportOptions = {
   gear_roots?: string[];
   gear_id?: string;
   capability_ref?: string;
@@ -117,18 +123,25 @@ export type CodexExportDescribeResult =
 export type CodexExportStatusResult = {
   status: "success";
   standard: string;
-  bridge_state: "manifest_projection";
+  bridge_state: "manifest_projection_external_invocation_queue";
   implemented_tools: string[];
   planned_tools: string[];
+  available_mcp_tools: string[];
+  bridge_required_tools: string[];
 };
 
 export function codexExportStatus(): CodexExportStatusResult {
   return {
     status: "success",
     standard: EXPORT_STANDARD,
-    bridge_state: "manifest_projection",
+    bridge_state: "manifest_projection_external_invocation_queue",
     implemented_tools: [...IMPLEMENTED_CODEX_EXPORT_TOOLS],
     planned_tools: [...PLANNED_CODEX_EXPORT_TOOLS],
+    available_mcp_tools: [
+      ...IMPLEMENTED_CODEX_EXPORT_TOOLS,
+      ...PLANNED_CODEX_EXPORT_TOOLS,
+    ],
+    bridge_required_tools: [...LIVE_BRIDGE_CODEX_EXPORT_TOOLS],
   };
 }
 
@@ -242,11 +255,28 @@ function gearRoots(options: CodexExportOptions): string[] {
   const roots =
     configured.length > 0
       ? configured
-      : [
-          resolve(process.cwd(), "apps/macos-app/Gears"),
-          resolve(process.cwd(), "../macos-app/Gears"),
-        ];
+      : defaultGearRootCandidates();
   return [...new Set(roots.map((root) => resolve(root)))];
+}
+
+function defaultGearRootCandidates(): string[] {
+  const cwd = resolve(process.cwd());
+  const moduleDir = dirname(fileURLToPath(import.meta.url));
+  const entrypointDir = process.argv[1]?.trim()
+    ? dirname(resolve(process.argv[1]))
+    : moduleDir;
+  const candidates = [
+    resolve(cwd, "apps/macos-app/Gears"),
+    resolve(cwd, "../macos-app/Gears"),
+    resolve(moduleDir, "../../../macos-app/Gears"),
+    resolve(entrypointDir, "../../../macos-app/Gears"),
+  ];
+  const unique = [...new Set(candidates)];
+  const existing = unique.filter((candidate) => existsSync(candidate));
+  if (existing.length > 0) {
+    return existing;
+  }
+  return unique;
 }
 
 async function readGearManifest(

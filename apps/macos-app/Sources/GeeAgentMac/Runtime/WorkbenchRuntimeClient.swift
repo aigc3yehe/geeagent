@@ -90,11 +90,29 @@ protocol WorkbenchRuntimeClient: Sendable {
     /// Invokes a tool through the backend dispatcher. Returns the raw outcome;
     /// the store decides how to apply it (navigate, pop approval sheet, etc.).
     func invokeTool(_ invocation: ToolInvocation) async throws -> WorkbenchToolOutcome
+
+    /// Completes a Codex-originated external invocation after GeeAgentMac has
+    /// executed it through GearHost.
+    func completeExternalInvocation(
+        _ completion: WorkbenchExternalInvocationCompletion,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot
 }
 
 extension WorkbenchRuntimeClient {
     func loadLiveSnapshot() -> WorkbenchSnapshot {
         loadSnapshot()
+    }
+
+    func completeExternalInvocation(
+        _ completion: WorkbenchExternalInvocationCompletion,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        _ = completion
+        _ = snapshot
+        throw RuntimeProcessError.unsupported(
+            "This runtime client does not support external Codex invocation completion."
+        )
     }
 
     func addSystemSkillSource(

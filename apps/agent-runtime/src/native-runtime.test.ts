@@ -3195,6 +3195,25 @@ api_key = "saved-xenodia-key"
     assert.equal(finalMessageId, cursor.assistantMessageId);
   });
 
+  it("strips stage-progress assistant text before it becomes chat", () => {
+    const strip = __sdkTurnRunnerTestHooks.stripAssistantStageProgressText;
+
+    assert.equal(
+      strip("Stage complete: fetched the tweet and found one video media URL."),
+      "",
+    );
+    assert.equal(
+      strip(
+        "Stage complete: saved the bookmark with the imported local media path attached.Done — both parts completed.",
+      ),
+      "Done — both parts completed.",
+    );
+    assert.equal(
+      strip("Useful final reply."),
+      "Useful final reply.",
+    );
+  });
+
   it("builds stage capsules from the active conversation instead of reused message ids", () => {
     const now = "2026-04-27T00:00:00.000Z";
     const store = defaultRuntimeStore(now);
@@ -3345,7 +3364,7 @@ api_key = "saved-xenodia-key"
             kind: "result",
             invocation_id: "call_cp",
             status: "succeeded",
-            summary: "-rw-r--r-- /Users/davidzhang/Desktop/article.md",
+            summary: "-rw-r--r-- /tmp/Desktop/article.md",
           },
         ],
       },
@@ -3353,7 +3372,7 @@ api_key = "saved-xenodia-key"
 
     assert.match(reply, /user objective is not confirmed complete/);
     assert.match(reply, /wespy\.reader wespy\.fetch_article completed/);
-    assert.match(reply, /Bash: -rw-r--r-- \/Users\/davidzhang\/Desktop\/article\.md/);
+    assert.match(reply, /Bash: -rw-r--r-- \/tmp\/Desktop\/article\.md/);
   });
 
   it("marks SDK turns without assistant text as failed instead of fake completed", () => {

@@ -498,6 +498,7 @@ private struct RuntimeSnapshotDTO: Decodable {
     let activeAgentProfile: RuntimeAgentProfileDTO?
     let agentProfiles: [RuntimeAgentProfileDTO]?
     let hostActionIntents: [RuntimeHostActionIntentDTO]?
+    let externalInvocations: [RuntimeExternalInvocationDTO]?
     let skillSources: RuntimeSkillSourcesDTO?
 }
 
@@ -505,6 +506,16 @@ private struct RuntimeHostActionIntentDTO: Decodable {
     let hostActionId: String
     let toolId: String
     let arguments: RuntimeJSONValue?
+}
+
+private struct RuntimeExternalInvocationDTO: Decodable {
+    let externalInvocationId: String
+    let tool: String
+    let status: String
+    let gearId: String?
+    let capabilityId: String?
+    let surfaceId: String?
+    let args: RuntimeJSONValue?
 }
 
 private enum RuntimeJSONValue: Decodable {
@@ -552,7 +563,9 @@ private struct RuntimeSecurityPreferencesDTO: Decodable {
 
 enum AssistantTranscriptSanitizer {
     static func sanitize(_ content: String) -> String {
-        let cleanedContent = removingControlFrames(from: content)
+        let cleanedContent = removingStageProgressText(
+            from: removingControlFrames(from: content)
+        )
         var lines = cleanedContent
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
@@ -603,6 +616,24 @@ enum AssistantTranscriptSanitizer {
             )
         }
         return output
+    }
+
+    private static func removingStageProgressText(from content: String) -> String {
+        guard let expression = try? NSRegularExpression(
+            pattern: #"(?im)(^|[\n.])\s*(Stage complete|Stage completed)\s*:\s*[^.\n]*(?:\.\s*)?"#
+        ) else {
+            return content
+        }
+
+        let range = NSRange(content.startIndex..<content.endIndex, in: content)
+        return expression
+            .stringByReplacingMatches(
+                in: content,
+                options: [],
+                range: range,
+                withTemplate: "$1"
+            )
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -762,6 +793,11 @@ private final class AgentRuntimeProcess {
         return try decodeSnapshot(arguments: ["complete-host-action-turn", raw])
     }
 
+    func completeExternalInvocation(_ completion: WorkbenchExternalInvocationCompletion) throws -> RuntimeSnapshotDTO {
+        let raw = try Self.encodeExternalInvocationCompletion(completion)
+        return try decodeSnapshot(arguments: ["codex-external-invocation-complete", raw])
+    }
+
     func performTaskAction(taskID: String, action: String) throws -> RuntimeSnapshotDTO {
         try decodeSnapshot(arguments: ["perform-task-action", taskID, action])
     }
@@ -875,6 +911,33 @@ private final class AgentRuntimeProcess {
         guard let json = String(data: payload, encoding: .utf8) else {
             throw RuntimeProcessError.runtimeInvocation(
                 "failed to encode tool invocation payload as UTF-8"
+            )
+        }
+        return json
+    }
+
+    static func encodeExternalInvocationCompletion(
+        _ completion: WorkbenchExternalInvocationCompletion
+    ) throws -> String {
+        var object: [String: Any] = [
+            "external_invocation_id": completion.externalInvocationID,
+            "status": completion.status.rawValue,
+        ]
+        if let resultJSON = completion.resultJSON,
+           let data = resultJSON.data(using: .utf8),
+           let result = try? JSONSerialization.jsonObject(with: data) {
+            object["result"] = result
+        }
+        if let code = completion.code {
+            object["code"] = code
+        }
+        if let message = completion.message {
+            object["message"] = message
+        }
+        let payload = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        guard let json = String(data: payload, encoding: .utf8) else {
+            throw RuntimeProcessError.runtimeInvocation(
+                "failed to encode external invocation completion payload as UTF-8"
             )
         }
         return json
@@ -1579,6 +1642,18 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
         return map(nextSnapshot)
     }
 
+    func completeExternalInvocation(
+        _ completion: WorkbenchExternalInvocationCompletion,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        _ = snapshot
+        let nextSnapshot = try await runOffMainThread {
+            try self.runtime.completeExternalInvocation(completion)
+        }
+        storeRawSnapshot(nextSnapshot)
+        return map(nextSnapshot)
+    }
+
     func installAgentPack(
         at packPath: String,
         in snapshot: WorkbenchSnapshot
@@ -1918,7 +1993,8 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
             quickReply: snapshot.quickReply,
             contextBudget: contextBudget(from: snapshot.contextBudget),
             lastOutcome: requestOutcome(from: snapshot.lastRequestOutcome),
-            hostActionIntents: hostActionIntents(from: snapshot.hostActionIntents)
+            hostActionIntents: hostActionIntents(from: snapshot.hostActionIntents),
+            externalInvocations: externalInvocations(from: snapshot.externalInvocations)
         )
     }
 
@@ -1928,6 +2004,25 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
                 id: dto.hostActionId,
                 toolID: dto.toolId,
                 arguments: workbenchArguments(from: dto.arguments)
+            )
+        }
+    }
+
+    private func externalInvocations(from dtos: [RuntimeExternalInvocationDTO]?) -> [WorkbenchExternalInvocation] {
+        (dtos ?? []).compactMap { dto in
+            guard let tool = WorkbenchExternalInvocationTool(rawValue: dto.tool),
+                  let status = WorkbenchExternalInvocationStatus(rawValue: dto.status)
+            else {
+                return nil
+            }
+            return WorkbenchExternalInvocation(
+                id: dto.externalInvocationId,
+                tool: tool,
+                status: status,
+                gearID: dto.gearId,
+                capabilityID: dto.capabilityId,
+                surfaceID: dto.surfaceId,
+                args: workbenchArguments(from: dto.args)
             )
         }
     }

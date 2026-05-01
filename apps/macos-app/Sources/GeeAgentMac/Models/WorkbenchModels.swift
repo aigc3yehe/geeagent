@@ -324,12 +324,55 @@ struct WorkbenchSnapshot {
     var contextBudget: ContextBudgetRecord = .empty
     var lastOutcome: WorkbenchRequestOutcome? = nil
     var hostActionIntents: [WorkbenchHostActionIntent] = []
+    var externalInvocations: [WorkbenchExternalInvocation] = []
 }
 
 struct WorkbenchHostActionIntent: Hashable, Identifiable {
     var id: String
     var toolID: String
     var arguments: [String: WorkbenchToolArgumentValue]
+}
+
+enum WorkbenchExternalInvocationTool: String, Hashable, Sendable {
+    case invokeCapability = "gee_invoke_capability"
+    case openSurface = "gee_open_surface"
+}
+
+enum WorkbenchExternalInvocationStatus: String, Hashable, Sendable {
+    case pending
+    case running
+    case success
+    case partial
+    case blocked
+    case failed
+    case degraded
+
+    var isTerminal: Bool {
+        switch self {
+        case .success, .partial, .blocked, .failed, .degraded:
+            true
+        case .pending, .running:
+            false
+        }
+    }
+}
+
+struct WorkbenchExternalInvocation: Hashable, Identifiable, Sendable {
+    var id: String
+    var tool: WorkbenchExternalInvocationTool
+    var status: WorkbenchExternalInvocationStatus
+    var gearID: String?
+    var capabilityID: String?
+    var surfaceID: String?
+    var args: [String: WorkbenchToolArgumentValue]
+}
+
+struct WorkbenchExternalInvocationCompletion: Hashable, Sendable {
+    var externalInvocationID: String
+    var status: WorkbenchExternalInvocationStatus
+    var resultJSON: String?
+    var code: String?
+    var message: String?
 }
 
 struct WorkbenchSecurityPreferences: Hashable {

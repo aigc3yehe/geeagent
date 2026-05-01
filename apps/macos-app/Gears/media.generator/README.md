@@ -19,10 +19,17 @@ PNG, or WebP and 30MB or smaller. Local references are sent through the global
 Xenodia image request as multipart `image[]`; remote reference URLs are sent as
 `image_input`.
 
+Image generation is treated as a long-running provider task. Xenodia create,
+multipart, and task-status requests use a minimum 30-minute timeout floor. A
+timed-out status request keeps the local task `running` so polling can continue
+instead of marking the task failed while the provider is still generating.
+
 The native workbench keeps reusable quick prompts in
 `~/Library/Application Support/GeeAgent/gear-data/media.generator/quick-prompts.json`.
-Recent remote image links from pasted references and generated results are kept
-in `image-history.json` and can be reused as references from the History sheet.
+Recent reference images from pasted URLs and local files are kept in
+`image-history.json` and can be reused as references from the History sheet.
+Generated results stay in task records and output caches instead of being added
+to this reference history automatically.
 Task Apply restores the prompt, model, supported parameters, and references from
 an existing task; reuse-as-reference remains a separate image action.
 

@@ -827,7 +827,7 @@ private struct MediaGeneratorImageHistorySheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Image History")
                         .font(.system(size: 20, weight: .semibold))
-                    Text("Recent image links from references and generated results.")
+                    Text("Recent reference images from pasted links and local files.")
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.50))
                 }
@@ -846,7 +846,7 @@ private struct MediaGeneratorImageHistorySheet: View {
                         .font(.system(size: 30, weight: .medium))
                     Text("No image links yet")
                         .font(.subheadline.weight(.semibold))
-                    Text("Generated result URLs and pasted reference URLs will appear here.")
+                    Text("Pasted reference URLs and local reference files will appear here.")
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.44))
                 }
@@ -906,7 +906,7 @@ private struct MediaGeneratorImageHistoryTile: View {
                     .padding(.vertical, 4)
             }
 
-            Text(item.url)
+            Text(detailText)
                 .font(.system(size: 10))
                 .foregroundStyle(.white.opacity(0.48))
                 .lineLimit(2)
@@ -935,7 +935,7 @@ private struct MediaGeneratorImageHistoryTile: View {
 
     @ViewBuilder
     private var preview: some View {
-        if let url = URL(string: item.url) {
+        if let url = item.previewURL {
             AsyncImage(url: url) { phase in
                 switch phase {
                 case let .success(image):
@@ -955,7 +955,17 @@ private struct MediaGeneratorImageHistoryTile: View {
     }
 
     private var hostText: String {
-        URL(string: item.url)?.host ?? "Image Link"
+        if let url = item.url {
+            return URL(string: url)?.host ?? "Image Link"
+        }
+        return "Local File"
+    }
+
+    private var detailText: String {
+        if let url = item.url {
+            return url
+        }
+        return item.localPath ?? item.displayName
     }
 }
 

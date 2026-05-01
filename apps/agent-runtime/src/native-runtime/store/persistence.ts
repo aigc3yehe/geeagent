@@ -105,6 +105,9 @@ function normalizeRuntimeStore(value: unknown): RuntimeStore {
     host_action_runs: Array.isArray(value.host_action_runs)
       ? (value.host_action_runs as RuntimeStore["host_action_runs"])
       : fallback.host_action_runs,
+    external_invocations: Array.isArray(value.external_invocations)
+      ? (value.external_invocations as RuntimeStore["external_invocations"])
+      : fallback.external_invocations,
   };
 
   if (!store.agent_profiles.some((profile) => profile.id === store.active_agent_profile_id)) {

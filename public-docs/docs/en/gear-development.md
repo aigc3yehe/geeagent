@@ -2,7 +2,7 @@
 
 ## Status And Date
 
-Document date: 2026-04-27.
+Document date: 2026-05-01.
 
 Status: Gear Platform V1 public development standard. This document records both current implementation state and the target architecture. Implemented behavior is marked as current. Confirmed direction that is not fully implemented yet is described as target state or V1 standard.
 
@@ -115,6 +115,7 @@ Current capabilities already present:
 - `bookmark.vault` is a current first-party Gear app. It saves arbitrary text or URLs into `gear-data/bookmark.vault`, enriches media URLs through the same `yt-dlp` metadata family used by `smartyt.media`, enriches Twitter/X tweet URLs through an embed metadata path, and falls back to basic web metadata fetch for other sites.
 - `wespy.reader` is a current first-party Gear app. It wraps the MIT-licensed WeSpy Python package to fetch WeChat public-account articles, WeChat albums, and general article pages into Markdown-first local task files.
 - Transitional host action intents let first-party runtime turns hand native Gear actions back to GeeAgentMac while full SDK/MCP tool exposure is still being completed.
+- External Codex calls now use the generated `geeagent-codex` plugin plus the Gee MCP server to create shared-store external invocations. GeeAgentMac polls that queue and drains `gee_invoke_capability` / `gee_open_surface` through the same GearHost bridge used by the runtime, then Codex reads results with `gee_get_invocation`. The first exported built-in capabilities are low-risk `media.generator` model/task queries and `media.library` view filtering/folder focus.
 - Home widget direction for `btc.price` and `system.monitor`.
 
 Current gaps:
@@ -123,7 +124,7 @@ Current gaps:
 - Gear package folders are not yet the full implementation boundary.
 - Third-party gear import is not implemented yet.
 - Full agent-runtime SDK/MCP tool injection for every Gear capability is not complete yet.
-- Full Codex plugin projection is not implemented yet. The current first implementation slice provides a manifest-backed, read-only agent-runtime projection for export status, capability listing, and capability description. Invocation, surface opening, invocation history, generated Codex plugin files, and the Gee MCP export server remain planned work.
+- Broad external Codex coverage is intentionally narrow. Only capabilities with explicit `exports.codex.enabled: true` are visible, and provider-generating, download, import, user-file, and high-side-effect capabilities remain hidden or explicitly disabled until their approval, artifact, and failure semantics are audited end to end.
 - `GearKit` and `GearHost` have not been split into separate SwiftPM targets yet.
 
 ## Target Architecture
@@ -685,7 +686,7 @@ Current V1 implements the first host bridge surface for native Gee usage:
 - The phase-2 SDK runtime exposes these controls to the active agent through the `gee` MCP bridge tools `app_open_surface`, `gear_list_capabilities`, and `gear_invoke`.
 - MCP Gear tools pause the same SDK run, emit `host_action_intents`, let GeeAgentMac execute the native Gear action, then resume the same run with structured host results. If the agent needs another Gear step after inspecting the result, the same pause / execute / resume loop repeats.
 - If the SDK session does not expose the `gee` MCP tools, GeeAgent must report a structured runtime failure instead of switching to a fallback execution path, inspecting source code as a substitute, or claiming the task is complete.
-- Legacy host-action control frames are migration-only data. The runtime must consume or reject them before transcript projection, and GeeAgentMac must not show them as normal chat text. Visible chat should render user text, typed plan/focus/stage activity rows, meaningful thinking state, tool invocation/result rows, and assistant replies in transcript event order. Once a final assistant reply exists, earlier work trace rows may collapse into a compact `Worked` section whose rows can still be expanded individually. Low-signal runtime plumbing such as setup, delegation, same-run Gear pause/resume breadcrumbs, and finalize markers should not be promoted into prominent thinking blocks.
+- Legacy host-action control frames are migration-only data. The runtime must consume or reject them before transcript projection, and GeeAgentMac must not show them as normal chat text. Visible chat should render user text, typed plan/focus/stage activity rows, meaningful thinking state, tool invocation/result rows, and assistant replies in transcript event order. Once a final assistant reply exists, earlier work trace rows may collapse into a compact `Worked` section whose rows can still be expanded individually. Low-signal runtime plumbing such as setup, delegation, same-run Gear pause/resume breadcrumbs, finalize markers, and model-authored `Stage complete:` progress fragments should not be promoted into prominent thinking blocks or chat bubbles.
 - `host_action_intents` are created by the active SDK run's MCP Gear bridge and are applied by GeeAgentMac in order. Complex capture or multi-Gear requests must stay agent-planned through the MCP bridge.
 - Media-library filters set through `media.filter` are visible as active filters in the native UI. The user can return to the full media view through `All` or the `Clear filters` affordance.
 - `media.filter`, `media.focus_folder`, and `media.import_files` require an authorized media library. The media Gear should first try to restore saved macOS security-scoped access, then fall back to the saved last-library path and let macOS surface a visible one-time authorization prompt when needed. Opening the Media Library window must not wait on that restore attempt; the window should appear first and show bounded restore progress. If no library can be restored before the restore timeout, Gear actions must return a structured failure with `code: "gear.media.authorization_required"` and a `navigate.module` intent for `media.library` instead of reporting a misleading success.
@@ -747,7 +748,7 @@ This does not convert Gears into Codex plugins. Gear remains the authoritative p
 
 The core export standard lives in `docs/planning/gee-capability-export-standard-v0.md`.
 
-Current implementation status: the agent runtime has manifest-backed read-only commands for export status, capability listing, and capability description. These commands are the core logic that a future Gee MCP export server will wrap. `gee_invoke_capability`, `gee_open_surface`, `gee_get_invocation`, and generated Codex plugin files are still planned, not available.
+Current implementation status: the agent runtime has manifest-backed export status/list/describe commands, a Codex-facing MCP stdio server, a shared-store external invocation queue, and a local `geeagent-codex` plugin generator. The generator can refresh a local Codex marketplace entry when the caller passes an explicit `marketplace_path`; it does not write marketplace state by default. `gee_status`, `gee_list_capabilities`, and `gee_describe_capability` are backed by manifest projection. `gee_invoke_capability` and `gee_open_surface` create external invocations that GeeAgentMac drains through the live GearHost bridge; `gee_get_invocation` returns the recorded status/result. If GeeAgentMac is not running or cannot drain the queue, Codex gets a pending/failed/blocked/degraded structured result with `fallback_attempted: false`; the MCP server does not execute Gear business logic or run fallback scripts.
 
 Target Codex-facing package shape:
 
@@ -769,9 +770,11 @@ Target Gee MCP export tools:
 - `gee_open_surface`
 - `gee_get_invocation`
 
+The generated plugin package contains `.codex-plugin/plugin.json`, `.mcp.json`, and `skills/gee-capabilities/SKILL.md`. The `.mcp.json` entry points Codex at `native-runtime codex-mcp`; installed Gear availability remains live data from the MCP server, not static plugin metadata.
+
 Only ready, enabled, policy-allowed, export-eligible Gear capabilities are visible to Codex. Disabled, failed, installing, invalid, blocked, or explicitly non-exported Gears are invisible. The export bridge must not create one Codex tool per Gear feature, duplicate Gear business logic, store provider secrets, or call package-local fallback scripts.
 
-Codex-originated calls are external invocations. They should be recorded with caller metadata, normalized input, structured results, artifact references, and failure or recovery reasons. They do not become hidden GeeAgent chat turns. If GeeAgent, GearHost, the intended Gear, a provider channel, a permission, or the live bridge is unavailable, Codex receives a structured failed, blocked, or degraded result with the real reason.
+Codex-originated calls are external invocations. They are recorded with caller metadata, normalized input, structured results, artifact references, and failure or recovery reasons. They do not become hidden GeeAgent chat turns. If GeeAgent, GearHost, the intended Gear, a provider channel, a permission, or the live bridge is unavailable, Codex receives a structured pending, failed, blocked, or degraded result with the real reason.
 
 Gear capabilities may declare Codex export policy in `gear.json` under `agent.capabilities[].exports.codex`. A capability that is unsafe or meaningless outside GeeAgent's native surface should mark Codex export as disabled with a reason.
 
@@ -857,8 +860,9 @@ First-party gears should gradually move into real package boundaries.
 - Task state belongs in `~/Library/Application Support/GeeAgent/gear-data/media.generator/tasks/<task-id>/task.json`.
 - Generated results should be cached under `~/Library/Application Support/GeeAgent/gear-data/media.generator/tasks/<task-id>/outputs/` when possible. Preview and download should prefer the Gear-owned local artifact while preserving the remote URL as a fallback.
 - Reusable quick prompts belong in `~/Library/Application Support/GeeAgent/gear-data/media.generator/quick-prompts.json`; users can add, edit, delete, and reset them from the native Gear UI.
-- Recent image links from pasted references and generated results belong in `~/Library/Application Support/GeeAgent/gear-data/media.generator/image-history.json`. The History sheet reuses those links as references without opening a file picker.
+- Recent reference images from pasted URLs and local files belong in `~/Library/Application Support/GeeAgent/gear-data/media.generator/image-history.json`. The History sheet reuses those references without opening a file picker; generated results remain in task records and output caches instead of being added to reference history automatically.
 - Async task polling must resume for `running` or `queued` tasks when the Gear opens or reloads history. Polling should treat Xenodia `success` as completed, `fail` as failed, and read generated URLs from the normalized `result` payload.
+- Xenodia image generation is long-running: create, multipart, and task-status requests must use a minimum 30-minute timeout floor. A timed-out status request should keep the local task `running` and continue polling instead of marking the task failed while the provider is still generating.
 - The native task workbench supports status filters, model filters, search, starred results, local-cache badges, Finder reveal, large preview, URL copy, user-chosen download, task Apply that restores prompt/model/parameters/references, separate reuse-as-reference, and confirmed task-history deletion.
 - Agent capabilities are `media_generator.list_models`, `media_generator.create_task`, and `media_generator.get_task`. Each returns structured task/model data for the active agent/LLM to summarize.
 

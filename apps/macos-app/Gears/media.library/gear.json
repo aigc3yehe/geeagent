@@ -25,7 +25,45 @@
           "Show videos only",
           "Show starred images only",
           "Show only mp4 files longer than 3 minutes"
-        ]
+        ],
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": ["all", "image", "video"]
+            },
+            "extensions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "starred_only": {
+              "type": "boolean"
+            },
+            "minimum_duration_seconds": {
+              "type": "number"
+            },
+            "search_text": {
+              "type": "string"
+            },
+            "folder_name": {
+              "type": "string"
+            }
+          }
+        },
+        "side_effect": "native_view_state",
+        "permissions": ["gear.surface.view_state"],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "low",
+            "requires_approval": false,
+            "skill_hint": "Use when Codex needs GeeAgent Media Library to focus its visible set without reading or writing user files."
+          }
+        }
       },
       {
         "id": "media.focus_folder",
@@ -34,7 +72,27 @@
         "examples": [
           "Switch to the Assets folder",
           "Show uncategorized files only"
-        ]
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": ["folder_name"],
+          "additionalProperties": false,
+          "properties": {
+            "folder_name": {
+              "type": "string"
+            }
+          }
+        },
+        "side_effect": "native_view_state",
+        "permissions": ["gear.surface.view_state"],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "low",
+            "requires_approval": false,
+            "skill_hint": "Use when Codex needs GeeAgent Media Library to switch to a known folder or uncategorized view."
+          }
+        }
       },
       {
         "id": "media.import_files",
@@ -43,7 +101,13 @@
         "examples": [
           "Import these downloaded videos into the media library",
           "Add these local media files to Media Library"
-        ]
+        ],
+        "exports": {
+          "codex": {
+            "enabled": false,
+            "reason": "Reads user-selected local files and writes library data; keep disabled until Codex approval and macOS authorization semantics are audited end to end."
+          }
+        }
       }
     ]
   }

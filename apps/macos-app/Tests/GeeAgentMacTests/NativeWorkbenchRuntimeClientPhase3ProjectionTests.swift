@@ -31,6 +31,13 @@ final class NativeWorkbenchRuntimeClientPhase3ProjectionTests: XCTestCase {
             messages.contains { $0.kind == .thinking && $0.content.contains("same SDK run") },
             "Low-signal same-run host bridge breadcrumbs should not render as repeated Thinking rows."
         )
+        XCTAssertFalse(
+            messages.contains { $0.kind == .chat && $0.content.contains("Stage complete:") },
+            "Model-authored stage progress text is already represented by typed stage rows and should not render as chat."
+        )
+        XCTAssertTrue(
+            messages.contains { $0.kind == .chat && $0.content == "Done." }
+        )
     }
 
     private static let phase3SnapshotJSON = """
@@ -259,6 +266,28 @@ final class NativeWorkbenchRuntimeClientPhase3ProjectionTests: XCTestCase {
           "payload": {
             "kind": "session_state_changed",
             "summary": "the SDK runtime continued after Gear host results and completed the active user turn"
+          }
+        },
+        {
+          "event_id": "evt_assistant_delta",
+          "session_id": "session_phase3",
+          "parent_event_id": "evt_host_completed_state",
+          "created_at": "now",
+          "payload": {
+            "kind": "assistant_message_delta",
+            "message_id": "msg_assistant_01",
+            "delta": "Stage complete: fetched the tweet and found one video media URL."
+          }
+        },
+        {
+          "event_id": "evt_assistant_final",
+          "session_id": "session_phase3",
+          "parent_event_id": "evt_assistant_delta",
+          "created_at": "now",
+          "payload": {
+            "kind": "assistant_message",
+            "message_id": "msg_assistant_01",
+            "content": "Stage complete: saved the bookmark with the imported local media path attached.Done."
           }
         }
       ],

@@ -37,7 +37,9 @@ final class WorkbenchStore {
     private var conversationTitleOverrides: [ConversationThread.ID: String] = [:]
     private var pendingChatTurn: PendingChatTurn?
     private var scheduledHostActionBatches: Set<String> = []
+    private var scheduledExternalInvocationIDs: Set<String> = []
     private var liveSnapshotPollingTask: Task<Void, Never>?
+    private var externalInvocationPollingTask: Task<Void, Never>?
 
     var snapshot: WorkbenchSnapshot {
         didSet {
@@ -48,6 +50,7 @@ final class WorkbenchStore {
             } else {
                 applyHostActionIntents(snapshot.hostActionIntents)
             }
+            applyExternalInvocations(snapshot.externalInvocations)
         }
     }
     var lastErrorMessage: String?
@@ -168,10 +171,13 @@ final class WorkbenchStore {
         migrateLegacyHomeAppearancePreferences(defaults: defaults)
         refreshActiveLive2DState()
         expireLoadedHostActionIntents(snapshot.hostActionIntents, loadedSnapshot: snapshot)
+        applyExternalInvocations(snapshot.externalInvocations)
+        startExternalInvocationPolling()
     }
 
     func shutdownRuntime() {
         liveSnapshotPollingTask?.cancel()
+        externalInvocationPollingTask?.cancel()
         (runtimeClient as? NativeWorkbenchRuntimeClient)?.shutdown()
     }
 
@@ -794,6 +800,181 @@ final class WorkbenchStore {
                     self?.lastErrorMessage = error.localizedDescription
                 }
             }
+        }
+    }
+
+    private func applyExternalInvocations(_ invocations: [WorkbenchExternalInvocation]) {
+        let pending = invocations.filter {
+            $0.status == .pending && !scheduledExternalInvocationIDs.contains($0.id)
+        }
+        guard !pending.isEmpty else {
+            return
+        }
+        pending.forEach { scheduledExternalInvocationIDs.insert($0.id) }
+
+        let runtimeClient = self.runtimeClient
+        let currentSnapshot = snapshot
+        Task { [weak self, runtimeClient, pending, currentSnapshot] in
+            for invocation in pending {
+                guard let toolInvocation = Self.toolInvocation(for: invocation) else {
+                    let completion = WorkbenchExternalInvocationCompletion(
+                        externalInvocationID: invocation.id,
+                        status: .failed,
+                        resultJSON: nil,
+                        code: "gee.external_invocation.invalid",
+                        message: "External invocation payload could not be converted into a Gee host tool invocation."
+                    )
+                    await self?.completeExternalInvocation(
+                        completion,
+                        runtimeClient: runtimeClient,
+                        snapshot: currentSnapshot
+                    )
+                    continue
+                }
+
+                let runningCompletion = WorkbenchExternalInvocationCompletion(
+                    externalInvocationID: invocation.id,
+                    status: .running,
+                    resultJSON: nil,
+                    code: nil,
+                    message: nil
+                )
+                let runningSnapshot: WorkbenchSnapshot
+                do {
+                    runningSnapshot = try await runtimeClient.completeExternalInvocation(
+                        runningCompletion,
+                        in: currentSnapshot
+                    )
+                    await MainActor.run {
+                        guard let self else { return }
+                        self.snapshot = runningSnapshot
+                    }
+                } catch {
+                    await MainActor.run {
+                        self?.lastErrorMessage = error.localizedDescription
+                    }
+                    continue
+                }
+
+                do {
+                    let rawOutcome = try await runtimeClient.invokeTool(toolInvocation)
+                    let outcome = await GeeHostToolRouter.resolveCompletedIntent(rawOutcome) ?? rawOutcome
+                    let completion = Self.externalInvocationCompletion(for: invocation, outcome: outcome)
+                    await MainActor.run {
+                        guard let self else { return }
+                        self.applyToolOutcome(outcome, from: toolInvocation)
+                    }
+                    await self?.completeExternalInvocation(
+                        completion,
+                        runtimeClient: runtimeClient,
+                        snapshot: runningSnapshot
+                    )
+                } catch {
+                    let completion = WorkbenchExternalInvocationCompletion(
+                        externalInvocationID: invocation.id,
+                        status: .failed,
+                        resultJSON: nil,
+                        code: "gee.external_invocation.host_error",
+                        message: error.localizedDescription
+                    )
+                    await self?.completeExternalInvocation(
+                        completion,
+                        runtimeClient: runtimeClient,
+                        snapshot: runningSnapshot
+                    )
+                }
+            }
+        }
+    }
+
+    private func completeExternalInvocation(
+        _ completion: WorkbenchExternalInvocationCompletion,
+        runtimeClient: any WorkbenchRuntimeClient,
+        snapshot: WorkbenchSnapshot
+    ) async {
+        do {
+            let nextSnapshot = try await runtimeClient.completeExternalInvocation(
+                completion,
+                in: snapshot
+            )
+            await MainActor.run {
+                self.snapshot = nextSnapshot
+            }
+        } catch {
+            await MainActor.run {
+                self.lastErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private static func toolInvocation(for invocation: WorkbenchExternalInvocation) -> ToolInvocation? {
+        switch invocation.tool {
+        case .invokeCapability:
+            guard let gearID = invocation.gearID,
+                  let capabilityID = invocation.capabilityID
+            else {
+                return nil
+            }
+            return ToolInvocation(
+                toolID: "gee.gear.invoke",
+                arguments: [
+                    "gear_id": .string(gearID),
+                    "capability_id": .string(capabilityID),
+                    "args": .object(invocation.args)
+                ]
+            )
+        case .openSurface:
+            guard let surfaceID = invocation.surfaceID ?? invocation.gearID else {
+                return nil
+            }
+            return ToolInvocation(
+                toolID: "gee.app.openSurface",
+                arguments: [
+                    "surface_id": .string(surfaceID)
+                ]
+            )
+        }
+    }
+
+    private static func externalInvocationCompletion(
+        for invocation: WorkbenchExternalInvocation,
+        outcome: WorkbenchToolOutcome
+    ) -> WorkbenchExternalInvocationCompletion {
+        switch outcome {
+        case let .completed(_, payload):
+            let payloadStatus = (payload["status"] as? String)?.lowercased()
+            let failed = payloadStatus == "failed"
+            return WorkbenchExternalInvocationCompletion(
+                externalInvocationID: invocation.id,
+                status: failed ? .failed : .success,
+                resultJSON: hostActionResultJSON(from: payload),
+                code: failed ? ((payload["code"] as? String) ?? "gear.external_invocation.failed") : nil,
+                message: failed ? ((payload["error"] as? String) ?? "Gear action failed.") : nil
+            )
+        case let .needsApproval(_, _, prompt):
+            return WorkbenchExternalInvocationCompletion(
+                externalInvocationID: invocation.id,
+                status: .blocked,
+                resultJSON: nil,
+                code: "gee.external_invocation.approval_required",
+                message: "The Gear action needs approval before it can complete: \(prompt)"
+            )
+        case let .denied(_, reason):
+            return WorkbenchExternalInvocationCompletion(
+                externalInvocationID: invocation.id,
+                status: .blocked,
+                resultJSON: nil,
+                code: "gee.external_invocation.denied",
+                message: reason
+            )
+        case let .error(_, code, message):
+            return WorkbenchExternalInvocationCompletion(
+                externalInvocationID: invocation.id,
+                status: .failed,
+                resultJSON: nil,
+                code: code,
+                message: message
+            )
         }
     }
 
@@ -1976,6 +2157,30 @@ final class WorkbenchStore {
     private func stopLiveSnapshotPolling() {
         liveSnapshotPollingTask?.cancel()
         liveSnapshotPollingTask = nil
+    }
+
+    private func startExternalInvocationPolling() {
+        externalInvocationPollingTask?.cancel()
+        let runtimeClient = self.runtimeClient
+        externalInvocationPollingTask = Task { [weak self, runtimeClient] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                if Task.isCancelled {
+                    return
+                }
+                let latestSnapshot = await Task.detached(priority: .utility) {
+                    runtimeClient.loadLiveSnapshot()
+                }.value
+                guard latestSnapshot.externalInvocations.contains(where: { $0.status == .pending }) else {
+                    continue
+                }
+                await MainActor.run {
+                    guard let self else { return }
+                    self.snapshot = latestSnapshot
+                    self.applyExternalInvocations(latestSnapshot.externalInvocations)
+                }
+            }
+        }
     }
 
     private func beginPendingChatTurn(message: String, conversationID: ConversationThread.ID) {

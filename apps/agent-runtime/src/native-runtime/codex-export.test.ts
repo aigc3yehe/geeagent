@@ -77,12 +77,14 @@ function exportedGearManifest(): Record<string, unknown> {
 }
 
 describe("Codex capability export projection", () => {
-  it("reports only implemented read-only export tools as available", async () => {
+  it("reports the implemented MCP tool surface and live-bridge requirements", async () => {
     const raw = await handleNativeRuntimeCommand("codex-export-status");
     const result = JSON.parse(raw) as {
       status: string;
       implemented_tools: string[];
       planned_tools: string[];
+      available_mcp_tools: string[];
+      bridge_required_tools: string[];
     };
 
     assert.equal(result.status, "success");
@@ -90,12 +92,82 @@ describe("Codex capability export projection", () => {
       "gee_status",
       "gee_list_capabilities",
       "gee_describe_capability",
-    ]);
-    assert.deepEqual(result.planned_tools, [
       "gee_invoke_capability",
       "gee_open_surface",
       "gee_get_invocation",
     ]);
+    assert.deepEqual(result.planned_tools, []);
+    assert.deepEqual(result.available_mcp_tools, [
+      "gee_status",
+      "gee_list_capabilities",
+      "gee_describe_capability",
+      "gee_invoke_capability",
+      "gee_open_surface",
+      "gee_get_invocation",
+    ]);
+    assert.deepEqual(result.bridge_required_tools, [
+      "gee_invoke_capability",
+      "gee_open_surface",
+      "gee_get_invocation",
+    ]);
+  });
+
+  it("includes the bundled first-party capabilities explicitly exported to Codex", async () => {
+    const raw = await handleNativeRuntimeCommand("codex-export-list-capabilities", [
+      JSON.stringify({ detail: "schema" }),
+    ]);
+    const result = JSON.parse(raw) as {
+      status: string;
+      capabilities: Array<{
+        capability_ref: string;
+        risk?: string;
+        requires_approval?: boolean;
+        side_effect?: string;
+        input_schema?: Record<string, unknown>;
+      }>;
+    };
+
+    assert.equal(result.status, "success");
+    const refs = new Set(result.capabilities.map((capability) => capability.capability_ref));
+    assert.equal(refs.has("media.generator/media_generator.list_models"), true);
+    assert.equal(refs.has("media.generator/media_generator.get_task"), true);
+    assert.equal(refs.has("media.library/media.filter"), true);
+    assert.equal(refs.has("media.library/media.focus_folder"), true);
+    assert.equal(refs.has("media.generator/media_generator.create_task"), false);
+    assert.equal(refs.has("media.library/media.import_files"), false);
+
+    const focusFolder = result.capabilities.find(
+      (capability) => capability.capability_ref === "media.library/media.focus_folder",
+    );
+    assert.equal(focusFolder?.risk, "low");
+    assert.equal(focusFolder?.requires_approval, false);
+    assert.equal(focusFolder?.side_effect, "native_view_state");
+    assert.deepEqual(focusFolder?.input_schema?.required, ["folder_name"]);
+  });
+
+  it("finds bundled Gear manifests even when Codex starts from a project cwd", async () => {
+    const previousCwd = process.cwd();
+    const projectCwd = await mkdtemp(join(tmpdir(), "geeagent-codex-project-"));
+    try {
+      process.chdir(projectCwd);
+      const raw = await handleNativeRuntimeCommand("codex-export-list-capabilities", [
+        JSON.stringify({ detail: "schema" }),
+      ]);
+      const result = JSON.parse(raw) as {
+        status: string;
+        capabilities: Array<{ capability_ref: string }>;
+      };
+
+      assert.equal(result.status, "success");
+      assert.equal(
+        result.capabilities.some(
+          (capability) => capability.capability_ref === "media.generator/media_generator.list_models",
+        ),
+        true,
+      );
+    } finally {
+      process.chdir(previousCwd);
+    }
   });
 
   it("lists only explicitly Codex-exported Gear capabilities", async () => {

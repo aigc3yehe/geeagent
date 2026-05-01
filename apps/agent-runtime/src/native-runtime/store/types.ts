@@ -88,6 +88,38 @@ export type RuntimeHostActionRunRecord = {
   updated_at: string;
 };
 
+export type RuntimeExternalInvocationStatus =
+  | "pending"
+  | "running"
+  | "success"
+  | "partial"
+  | "blocked"
+  | "failed"
+  | "degraded";
+
+export type RuntimeExternalInvocationRecord = {
+  external_invocation_id: string;
+  tool: "gee_invoke_capability" | "gee_open_surface";
+  status: RuntimeExternalInvocationStatus;
+  created_at: string;
+  updated_at: string;
+  caller?: Record<string, unknown>;
+  capability_ref?: string;
+  gear_id?: string;
+  capability_id?: string;
+  surface_id?: string;
+  args?: Record<string, unknown>;
+  result?: unknown;
+  artifacts?: unknown[];
+  warnings?: unknown[];
+  recovery?: unknown;
+  error?: {
+    code: string;
+    message: string;
+  };
+  fallback_attempted: false;
+};
+
 export type RuntimeStore = {
   quick_input_hint: string;
   quick_reply: string;
@@ -111,6 +143,7 @@ export type RuntimeStore = {
   workspace_runtime: Record<string, unknown>;
   host_action_intents?: RuntimeHostActionIntent[];
   host_action_runs?: RuntimeHostActionRunRecord[];
+  external_invocations?: RuntimeExternalInvocationRecord[];
 };
 
 export type RuntimeSecurityPreferences = {
@@ -127,5 +160,6 @@ export type RuntimeSnapshot = Omit<
   terminal_access_rules: unknown[];
   security_preferences: RuntimeSecurityPreferences;
   host_action_intents: RuntimeHostActionIntent[];
+  external_invocations: RuntimeExternalInvocationRecord[];
   skill_sources: RuntimeSkillSourcesSnapshot;
 };

@@ -42,6 +42,26 @@ final class MediaGeneratorGearTests: XCTestCase {
         XCTAssertEqual(backend.requestTimeoutSeconds, 45)
     }
 
+    func testXenodiaImageGenerationClientEnforcesLongRunningRequestTimeoutFloor() {
+        let backend = XenodiaMediaBackend(
+            apiKey: "secret-test-key",
+            imageGenerationsURL: "https://api.xenodia.xyz/v1/images/generations",
+            taskRetrievalURL: "https://api.xenodia.xyz/v1/tasks",
+            storageUploadURL: nil,
+            requestTimeoutSeconds: 45
+        )
+
+        XCTAssertGreaterThanOrEqual(
+            XenodiaImageGenerationClient.requestTimeoutInterval(for: backend),
+            1_800
+        )
+    }
+
+    func testXenodiaTimedOutStatusRequestsRemainRetryable() {
+        XCTAssertTrue(XenodiaImageGenerationClient.isRetryableStatusPollError(URLError(.timedOut)))
+        XCTAssertFalse(XenodiaImageGenerationClient.isRetryableStatusPollError(URLError(.notConnectedToInternet)))
+    }
+
     func testXenodiaTaskResponseParsesOfficialSuccessPayload() throws {
         let data = Data("""
         {
@@ -220,6 +240,93 @@ final class MediaGeneratorGearTests: XCTestCase {
         try database.saveImageHistory(history)
 
         XCTAssertEqual(database.loadImageHistory(), history)
+    }
+
+    func testMediaGeneratorFileDatabaseReadsLegacyURLOnlyImageHistory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-generator-legacy-image-history-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let legacyHistoryURL = root.appendingPathComponent("image-history.json")
+        try Data("""
+        [
+          {
+            "id": "legacy-history",
+            "url": "https://cdn.example/references/legacy.png",
+            "timestamp": "2026-04-30T00:00:00Z"
+          }
+        ]
+        """.utf8).write(to: legacyHistoryURL)
+        let database = MediaGeneratorFileDatabase(rootURL: root)
+
+        let history = database.loadImageHistory()
+
+        XCTAssertEqual(history.count, 1)
+        XCTAssertEqual(history.first?.id, "legacy-history")
+        XCTAssertEqual(history.first?.url, "https://cdn.example/references/legacy.png")
+        XCTAssertEqual(history.first?.localPath, nil)
+        XCTAssertEqual(history.first?.displayName, "legacy.png")
+    }
+
+    @MainActor
+    func testReferenceURLAddsReusableHistoryItem() {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-generator-reference-url-history-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MediaGeneratorGearStore(database: MediaGeneratorFileDatabase(rootURL: root))
+
+        store.addReferenceURL("https://cdn.example/references/pose.png")
+
+        XCTAssertEqual(store.references.map(\.url), ["https://cdn.example/references/pose.png"])
+        XCTAssertEqual(store.imageHistory.map(\.url), ["https://cdn.example/references/pose.png"])
+        XCTAssertEqual(store.imageHistory.first?.localPath, nil)
+        XCTAssertEqual(store.imageHistory.first?.displayName, "pose.png")
+    }
+
+    @MainActor
+    func testLocalReferenceFileAddsReusableHistoryItem() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-generator-local-reference-history-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let referenceURL = root.appendingPathComponent("moodboard.png")
+        try Data([0x89, 0x50, 0x4E, 0x47]).write(to: referenceURL)
+        let store = MediaGeneratorGearStore(database: MediaGeneratorFileDatabase(rootURL: root.appendingPathComponent("gear-data", isDirectory: true)))
+
+        store.addReferenceFileURL(referenceURL)
+
+        XCTAssertEqual(store.references.map(\.localPath), [referenceURL.path])
+        XCTAssertEqual(store.imageHistory.map(\.localPath), [referenceURL.path])
+        XCTAssertEqual(store.imageHistory.first?.url, nil)
+        XCTAssertEqual(store.imageHistory.first?.displayName, "moodboard.png")
+    }
+
+    @MainActor
+    func testGeneratedResultReusedAsReferenceDoesNotEnterReferenceHistory() {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-generator-generated-result-history-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MediaGeneratorGearStore(database: MediaGeneratorFileDatabase(rootURL: root))
+        let task = MediaGeneratorTask(
+            id: "generated-result",
+            category: .image,
+            modelID: .nanoBananaPro,
+            prompt: "Generated output",
+            status: .completed,
+            createdAt: Date(timeIntervalSince1970: 1_774_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_774_000_030),
+            providerTaskID: "xenodia-task-1",
+            resultURL: "https://cdn.example/generated/output.png",
+            localOutputPath: nil,
+            errorMessage: nil,
+            parameters: ["aspect_ratio": "1:1"],
+            references: []
+        )
+
+        store.useResultAsReference(task)
+
+        XCTAssertEqual(store.references.map(\.url), ["https://cdn.example/generated/output.png"])
+        XCTAssertTrue(store.imageHistory.isEmpty)
     }
 
     func testMediaGeneratorTaskDecodesLegacyRecordsWithoutStarredFlag() throws {

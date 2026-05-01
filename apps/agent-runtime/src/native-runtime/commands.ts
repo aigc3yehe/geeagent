@@ -10,6 +10,14 @@ import {
   listCodexExportCapabilities,
   parseCodexExportOptions,
 } from "./codex-export.js";
+import {
+  completeExternalInvocation,
+  parseExternalInvocationCompletion,
+} from "./codex-external-invocations.js";
+import {
+  generateCodexPluginPackage,
+  parseCodexPluginGenerationOptions,
+} from "./codex-plugin.js";
 import { resolveConfigDir } from "./paths.js";
 import {
   deleteAgentProfile,
@@ -188,6 +196,13 @@ export async function handleNativeRuntimeCommand(
     case "codex-export-describe-capability":
       assertArgCount(command, args, 1);
       return stringify(await describeCodexExportCapability(parseCodexExportOptions(args[0])));
+    case "codex-export-generate-plugin":
+      assertArgCount(command, args, 1);
+      return stringify(await generateCodexPluginPackage(parseCodexPluginGenerationOptions(args[0])));
+    case "codex-external-invocation-complete":
+      assertArgCount(command, args, 1);
+      await completeExternalInvocation(configDir, parseExternalInvocationCompletion(args[0]));
+      return stringify(await loadSnapshot(configDir));
     default:
       throw new Error("unsupported command or wrong argument count");
   }

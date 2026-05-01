@@ -151,13 +151,68 @@ struct MediaGeneratorQuickPrompt: Codable, Identifiable, Hashable, Sendable {
 
 struct MediaGeneratorImageHistoryItem: Codable, Identifiable, Hashable, Sendable {
     var id: String
-    var url: String
+    var url: String?
+    var localPath: String?
+    var displayName: String
     var timestamp: Date
 
-    init(id: String = UUID().uuidString, url: String, timestamp: Date = Date()) {
+    enum CodingKeys: String, CodingKey {
+        case id
+        case url
+        case localPath
+        case displayName
+        case timestamp
+    }
+
+    init(
+        id: String = UUID().uuidString,
+        url: String? = nil,
+        localPath: String? = nil,
+        displayName: String? = nil,
+        timestamp: Date = Date()
+    ) {
         self.id = id
         self.url = url
+        self.localPath = localPath
+        self.displayName = displayName ?? Self.defaultDisplayName(url: url, localPath: localPath)
         self.timestamp = timestamp
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let url = try container.decodeIfPresent(String.self, forKey: .url)
+        let localPath = try container.decodeIfPresent(String.self, forKey: .localPath)
+        self.id = try container.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        self.url = url
+        self.localPath = localPath
+        self.displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
+            ?? Self.defaultDisplayName(url: url, localPath: localPath)
+        self.timestamp = try container.decodeIfPresent(Date.self, forKey: .timestamp) ?? Date()
+    }
+
+    var historyKey: String {
+        url ?? localPath ?? id
+    }
+
+    var previewURL: URL? {
+        if let url {
+            return URL(string: url)
+        }
+        if let localPath {
+            return URL(fileURLWithPath: localPath)
+        }
+        return nil
+    }
+
+    private static func defaultDisplayName(url: String?, localPath: String?) -> String {
+        if let url,
+           let parsed = URL(string: url) {
+            return parsed.lastPathComponent.isEmpty ? parsed.host ?? "Reference URL" : parsed.lastPathComponent
+        }
+        if let localPath {
+            return URL(fileURLWithPath: localPath).lastPathComponent
+        }
+        return "Reference Image"
     }
 }
 
@@ -488,7 +543,20 @@ struct XenodiaTaskPollResult: Sendable {
 }
 
 struct XenodiaImageGenerationClient {
+    static let minimumLongRunningRequestTimeoutSeconds = 30 * 60
+
     var backend: XenodiaMediaBackend
+
+    static func requestTimeoutInterval(for backend: XenodiaMediaBackend) -> TimeInterval {
+        TimeInterval(max(backend.requestTimeoutSeconds, minimumLongRunningRequestTimeoutSeconds))
+    }
+
+    static func isRetryableStatusPollError(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else {
+            return false
+        }
+        return urlError.code == .timedOut
+    }
 
     func createImageTask(
         modelID: MediaGeneratorModelID,
@@ -539,7 +607,7 @@ struct XenodiaImageGenerationClient {
         }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.timeoutInterval = TimeInterval(backend.requestTimeoutSeconds)
+        request.timeoutInterval = Self.requestTimeoutInterval(for: backend)
         request.setValue("Bearer \(backend.apiKey)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await URLSession.shared.data(for: request)
         try validateHTTP(response: response, data: data)
@@ -597,7 +665,7 @@ struct XenodiaImageGenerationClient {
         }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = TimeInterval(backend.requestTimeoutSeconds)
+        request.timeoutInterval = Self.requestTimeoutInterval(for: backend)
         request.setValue("Bearer \(backend.apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -618,7 +686,7 @@ struct XenodiaImageGenerationClient {
         let boundary = "GeeMediaGenerator-\(UUID().uuidString)"
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = TimeInterval(backend.requestTimeoutSeconds)
+        request.timeoutInterval = Self.requestTimeoutInterval(for: backend)
         request.setValue("Bearer \(backend.apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         let cappedImageInputURLs = Array(imageInputURLs.prefix(maxReferenceCount))
@@ -825,24 +893,32 @@ final class MediaGeneratorGearStore: ObservableObject {
                 guard references.count < selectedModelReferenceLimit else {
                     break
                 }
-                do {
-                    try Self.validateLocalReferenceFile(url)
-                    references.append(
-                        MediaGeneratorReference(
-                            id: UUID().uuidString,
-                            url: nil,
-                            localPath: url.path,
-                            displayName: url.lastPathComponent
-                        )
-                    )
-                } catch {
-                    statusMessage = error.localizedDescription
-                }
+                addReferenceFileURL(url)
             }
         }
     }
 
-    func addReferenceURL(_ url: String) {
+    func addReferenceFileURL(_ url: URL) {
+        guard references.count < selectedModelReferenceLimit else {
+            statusMessage = "\(selectedModel.title) references are limited to \(selectedModelReferenceLimit)."
+            return
+        }
+        do {
+            try Self.validateLocalReferenceFile(url)
+            let reference = MediaGeneratorReference(
+                id: UUID().uuidString,
+                url: nil,
+                localPath: url.path,
+                displayName: url.lastPathComponent
+            )
+            references.append(reference)
+            addImageHistoryReference(reference)
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func addReferenceURL(_ url: String, recordHistory: Bool = true) {
         let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
         guard references.count < selectedModelReferenceLimit,
               let parsed = URL(string: trimmed),
@@ -851,15 +927,16 @@ final class MediaGeneratorGearStore: ObservableObject {
             statusMessage = "Paste a valid image URL. \(selectedModel.title) references are limited to \(selectedModelReferenceLimit)."
             return
         }
-        references.append(
-            MediaGeneratorReference(
-                id: UUID().uuidString,
-                url: trimmed,
-                localPath: nil,
-                displayName: parsed.lastPathComponent.isEmpty ? parsed.host ?? "Reference URL" : parsed.lastPathComponent
-            )
+        let reference = MediaGeneratorReference(
+            id: UUID().uuidString,
+            url: trimmed,
+            localPath: nil,
+            displayName: parsed.lastPathComponent.isEmpty ? parsed.host ?? "Reference URL" : parsed.lastPathComponent
         )
-        addImageHistoryURL(trimmed)
+        references.append(reference)
+        if recordHistory {
+            addImageHistoryReference(reference)
+        }
     }
 
     func removeReference(_ reference: MediaGeneratorReference) {
@@ -867,11 +944,19 @@ final class MediaGeneratorGearStore: ObservableObject {
     }
 
     func applyImageHistory(_ item: MediaGeneratorImageHistoryItem) {
-        addReferenceURL(item.url)
+        if let url = item.url {
+            addReferenceURL(url)
+            return
+        }
+        if let localPath = item.localPath {
+            addReferenceFileURL(URL(fileURLWithPath: localPath))
+            return
+        }
+        statusMessage = "History item is missing a reusable reference."
     }
 
     func removeImageHistory(_ item: MediaGeneratorImageHistoryItem) {
-        imageHistory.removeAll { $0.url == item.url }
+        imageHistory.removeAll { $0.historyKey == item.historyKey }
         persistImageHistory()
     }
 
@@ -880,7 +965,7 @@ final class MediaGeneratorGearStore: ObservableObject {
             statusMessage = "No result URL to use as a reference."
             return
         }
-        addReferenceURL(resultURL)
+        addReferenceURL(resultURL, recordHistory: false)
         statusMessage = "Added generated image as a reference."
     }
 
@@ -1255,9 +1340,6 @@ final class MediaGeneratorGearStore: ObservableObject {
             task.updatedAt = Date()
             if task.status == .completed {
                 task = await cacheGeneratedResultIfPossible(task)
-                if let resultURL = task.resultURL {
-                    addImageHistoryURL(resultURL)
-                }
             }
             update(task)
             statusMessage = task.status == .completed
@@ -1294,7 +1376,22 @@ final class MediaGeneratorGearStore: ObservableObject {
                     let seconds = min(15, 3 + attempt / 20)
                     try await Task.sleep(nanoseconds: UInt64(seconds) * 1_000_000_000)
                 }
-                let status = try await client.pollTask(taskID: providerTaskID)
+                let status: XenodiaTaskPollResult
+                do {
+                    status = try await client.pollTask(taskID: providerTaskID)
+                } catch {
+                    guard XenodiaImageGenerationClient.isRetryableStatusPollError(error) else {
+                        throw error
+                    }
+                    guard var task = tasks.first(where: { $0.id == taskID }) else {
+                        return
+                    }
+                    task.status = .running
+                    task.updatedAt = Date()
+                    update(task)
+                    statusMessage = "Xenodia status check timed out. Still polling..."
+                    continue
+                }
                 guard var task = tasks.first(where: { $0.id == taskID }) else {
                     return
                 }
@@ -1311,7 +1408,6 @@ final class MediaGeneratorGearStore: ObservableObject {
                     task.resultURL = resultURL
                     task.updatedAt = Date()
                     task = await cacheGeneratedResultIfPossible(task)
-                    addImageHistoryURL(resultURL)
                     update(task)
                     statusMessage = task.isLocallyCached ? "Generated and cached image." : "Generated image."
                     return
@@ -1423,15 +1519,19 @@ final class MediaGeneratorGearStore: ObservableObject {
         persist(task)
     }
 
-    private func addImageHistoryURL(_ url: String) {
-        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let parsed = URL(string: trimmed),
-              parsed.scheme?.hasPrefix("http") == true
-        else {
+    private func addImageHistoryReference(_ reference: MediaGeneratorReference) {
+        let item: MediaGeneratorImageHistoryItem
+        if let url = reference.url?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let parsed = URL(string: url),
+           parsed.scheme?.hasPrefix("http") == true {
+            item = MediaGeneratorImageHistoryItem(url: url, displayName: reference.displayName)
+        } else if let localPath = reference.localPath, !localPath.isEmpty {
+            item = MediaGeneratorImageHistoryItem(localPath: localPath, displayName: reference.displayName)
+        } else {
             return
         }
-        imageHistory.removeAll { $0.url == trimmed }
-        imageHistory.insert(MediaGeneratorImageHistoryItem(url: trimmed), at: 0)
+        imageHistory.removeAll { $0.historyKey == item.historyKey }
+        imageHistory.insert(item, at: 0)
         if imageHistory.count > 2_000 {
             imageHistory = Array(imageHistory.prefix(2_000))
         }

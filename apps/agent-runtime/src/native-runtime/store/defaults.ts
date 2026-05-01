@@ -105,5 +105,6 @@ export function defaultRuntimeStore(now = currentTimestamp()): RuntimeStore {
     },
     host_action_intents: [],
     host_action_runs: [],
+    external_invocations: [],
   };
 }

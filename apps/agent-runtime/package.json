@@ -8,7 +8,7 @@
     "dev": "tsx src/index.ts",
     "native:serve": "node dist/native-runtime/index.mjs serve",
     "native:dev": "tsx src/native-runtime/index.ts serve",
-    "test": "node --test --import tsx src/gateway.test.ts src/session.test.ts src/runtime-process.test.ts src/chat-runtime.test.ts src/native-runtime.test.ts src/native-runtime/codex-export.test.ts src/native-runtime/gear-invoke-envelope.test.ts src/native-runtime/turns/stage-advancer.test.ts",
+    "test": "node --test --import tsx src/gateway.test.ts src/session.test.ts src/runtime-process.test.ts src/chat-runtime.test.ts src/native-runtime.test.ts src/native-runtime/codex-export.test.ts src/native-runtime/codex-mcp.test.ts src/native-runtime/gear-invoke-envelope.test.ts src/native-runtime/turns/stage-advancer.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

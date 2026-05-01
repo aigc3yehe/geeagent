@@ -1,4 +1,5 @@
 import { handleNativeRuntimeCommand } from "./commands.js";
+import { runCodexMcpServer } from "./codex-mcp-server.js";
 import { runNativeRuntimeServer } from "./server.js";
 import { shutdownSdkRuntime } from "./sdk-turn-runner.js";
 
@@ -39,7 +40,10 @@ function printUsage(): void {
       "submit-quick-prompt, perform-task-action, get-chat-routing-settings, " +
       "save-chat-routing-settings, set-highest-authorization, add-system-skill-source, " +
       "remove-system-skill-source, add-persona-skill-source, remove-persona-skill-source, " +
-      "invoke-tool, serve\n",
+      "codex-export-status, codex-export-list-capabilities, " +
+      "codex-export-describe-capability, codex-export-generate-plugin, " +
+      "codex-external-invocation-complete, " +
+      "invoke-tool, codex-mcp, serve\n",
   );
 }
 
@@ -55,6 +59,14 @@ async function main(): Promise<void> {
       throw new Error("serve does not accept positional arguments");
     }
     await runNativeRuntimeServer({ configDir: parsed.configDir });
+    return;
+  }
+
+  if (parsed.command === "codex-mcp") {
+    if (parsed.args.length > 0) {
+      throw new Error("codex-mcp does not accept positional arguments");
+    }
+    await runCodexMcpServer({ configDir: parsed.configDir });
     return;
   }
 

@@ -1004,6 +1004,32 @@ final class WorkbenchStoreTests: XCTestCase {
         XCTAssertEqual(store.activeAgentProfileID, "gee")
     }
 
+    func testExternalCodexInvocationRunsThroughGeeHostBridge() async throws {
+        var snapshot = PreviewWorkbenchRuntimeClient().loadSnapshot()
+        snapshot.externalInvocations = [
+            WorkbenchExternalInvocation(
+                id: "gee_ext_test",
+                tool: .invokeCapability,
+                status: .pending,
+                gearID: "media.generator",
+                capabilityID: "media_generator.list_models",
+                surfaceID: nil,
+                args: [:]
+            )
+        ]
+        let runtimeClient = ExternalInvocationRuntimeClient(snapshot: snapshot)
+        let store = WorkbenchStore(runtimeClient: runtimeClient)
+
+        try await waitUntil(timeout: 1.0) {
+            runtimeClient.completedInvocationIDs.contains("gee_ext_test")
+        }
+
+        XCTAssertEqual(runtimeClient.invokedToolIDs, ["gee.gear.invoke"])
+        XCTAssertEqual(runtimeClient.completedInvocationStatuses, [.running, .success])
+        XCTAssertEqual(runtimeClient.statusesAtInvoke, [.running])
+        XCTAssertEqual(store.snapshot.externalInvocations.first?.status, .success)
+    }
+
     /// Polls the main-actor condition until it becomes true or the deadline
     /// is reached. Mirrors the small utility used by other async tests so we
     /// don't need to spin a `XCTestExpectation` per case.
@@ -1132,6 +1158,107 @@ private struct FixedSnapshotRuntimeClient: WorkbenchRuntimeClient {
 
     func invokeTool(_ invocation: ToolInvocation) async throws -> WorkbenchToolOutcome {
         .completed(toolID: invocation.toolID, payload: [:])
+    }
+}
+
+private final class ExternalInvocationRuntimeClient: WorkbenchRuntimeClient, @unchecked Sendable {
+    private var storedSnapshot: WorkbenchSnapshot
+    private(set) var invokedToolIDs: [String] = []
+    private(set) var completedInvocationIDs: [String] = []
+    private(set) var completedInvocationStatuses: [WorkbenchExternalInvocationStatus] = []
+    private(set) var statusesAtInvoke: [WorkbenchExternalInvocationStatus?] = []
+
+    init(snapshot: WorkbenchSnapshot) {
+        self.storedSnapshot = snapshot
+    }
+
+    func loadSnapshot() -> WorkbenchSnapshot { storedSnapshot }
+    func loadLiveSnapshot() -> WorkbenchSnapshot { storedSnapshot }
+    func createConversation(in snapshot: WorkbenchSnapshot) async throws -> WorkbenchSnapshot { snapshot }
+    func activateConversation(
+        _ conversationID: ConversationThread.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func deleteConversation(
+        _ conversationID: ConversationThread.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func sendMessage(
+        _ message: String,
+        in snapshot: WorkbenchSnapshot,
+        conversationID: ConversationThread.ID,
+        allowAutoRouting: Bool
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func performTaskAction(
+        _ action: WorkbenchTaskAction,
+        in snapshot: WorkbenchSnapshot,
+        taskID: WorkbenchTaskRecord.ID
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func setActiveAgentProfile(
+        _ profileID: AgentProfileRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func installAgentPack(
+        at packPath: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func reloadAgentProfile(
+        _ profileID: AgentProfileRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func deleteAgentProfile(
+        _ profileID: AgentProfileRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func deleteTerminalPermissionRule(
+        _ ruleID: TerminalPermissionRuleRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func setHighestAuthorizationEnabled(
+        _ enabled: Bool,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func loadChatRoutingSettings() async throws -> ChatRoutingSettings {
+        try await PreviewWorkbenchRuntimeClient().loadChatRoutingSettings()
+    }
+    func saveChatRoutingSettings(
+        _ settings: ChatRoutingSettings,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func submitQuickPrompt(
+        _ prompt: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func completeHostActionTurn(
+        _ completions: [WorkbenchHostActionCompletion],
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func invokeTool(_ invocation: ToolInvocation) async throws -> WorkbenchToolOutcome {
+        statusesAtInvoke.append(storedSnapshot.externalInvocations.first?.status)
+        invokedToolIDs.append(invocation.toolID)
+        return .completed(
+            toolID: invocation.toolID,
+            payload: [
+                "status": "success",
+                "models": [["id": "fixture.model"]]
+            ]
+        )
+    }
+    func completeExternalInvocation(
+        _ completion: WorkbenchExternalInvocationCompletion,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        completedInvocationIDs.append(completion.externalInvocationID)
+        completedInvocationStatuses.append(completion.status)
+        var next = snapshot
+        next.externalInvocations = next.externalInvocations.map { invocation in
+            guard invocation.id == completion.externalInvocationID else { return invocation }
+            var updated = invocation
+            updated.status = completion.status
+            return updated
+        }
+        storedSnapshot = next
+        return next
     }
 }
 
