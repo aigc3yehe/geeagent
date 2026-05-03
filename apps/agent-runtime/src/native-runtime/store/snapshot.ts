@@ -66,6 +66,8 @@ export async function snapshotFromStore(
     security_preferences: await loadSecurityPreferences(configDir),
     host_action_intents: store.host_action_intents ?? [],
     external_invocations: store.external_invocations ?? [],
+    channel_bindings: store.channel_bindings ?? [],
+    channel_messages: store.channel_messages ?? [],
     skill_sources: skillSources,
     workspace_focus: store.workspace_focus,
     workspace_runtime: store.workspace_runtime,

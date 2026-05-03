@@ -124,17 +124,24 @@ describe("Codex capability export projection", () => {
         requires_approval?: boolean;
         side_effect?: string;
         input_schema?: Record<string, unknown>;
+        permissions?: string[];
       }>;
     };
 
     assert.equal(result.status, "success");
     const refs = new Set(result.capabilities.map((capability) => capability.capability_ref));
+    assert.equal(refs.has("bookmark.vault/bookmark.save"), true);
     assert.equal(refs.has("media.generator/media_generator.list_models"), true);
     assert.equal(refs.has("media.generator/media_generator.get_task"), true);
+    assert.equal(refs.has("media.generator/media_generator.create_task"), true);
     assert.equal(refs.has("media.library/media.filter"), true);
     assert.equal(refs.has("media.library/media.focus_folder"), true);
-    assert.equal(refs.has("media.generator/media_generator.create_task"), false);
-    assert.equal(refs.has("media.library/media.import_files"), false);
+    assert.equal(refs.has("media.library/media.import_files"), true);
+    assert.equal(refs.has("app.icon.forge/app_icon.generate"), true);
+    assert.equal(refs.has("telegram.bridge/telegram_bridge.status"), true);
+    assert.equal(refs.has("telegram.bridge/telegram_push.list_channels"), true);
+    assert.equal(refs.has("telegram.bridge/telegram_push.send_message"), true);
+    assert.equal(refs.has("telegram.bridge/telegram_push.upsert_channel"), false);
 
     const focusFolder = result.capabilities.find(
       (capability) => capability.capability_ref === "media.library/media.focus_folder",
@@ -143,6 +150,88 @@ describe("Codex capability export projection", () => {
     assert.equal(focusFolder?.requires_approval, false);
     assert.equal(focusFolder?.side_effect, "native_view_state");
     assert.deepEqual(focusFolder?.input_schema?.required, ["folder_name"]);
+
+    const importFiles = result.capabilities.find(
+      (capability) => capability.capability_ref === "media.library/media.import_files",
+    );
+    assert.equal(importFiles?.risk, "high");
+    assert.equal(importFiles?.requires_approval, false);
+    assert.equal(importFiles?.side_effect, "media_library.import_files");
+    assert.deepEqual(importFiles?.input_schema?.required, ["paths"]);
+    assert.deepEqual(importFiles?.permissions, [
+      "filesystem.read.user_selected",
+      "media.library.write",
+      "gear_data.write",
+      "gear.surface.view_state",
+    ]);
+
+    const bookmarkSave = result.capabilities.find(
+      (capability) => capability.capability_ref === "bookmark.vault/bookmark.save",
+    );
+    assert.equal(bookmarkSave?.risk, "medium");
+    assert.equal(bookmarkSave?.requires_approval, false);
+    assert.equal(bookmarkSave?.side_effect, "write_gear_data");
+    assert.deepEqual(bookmarkSave?.input_schema?.required, ["content"]);
+    assert.deepEqual(bookmarkSave?.permissions, ["gear_data.write", "network.metadata"]);
+
+    const createTask = result.capabilities.find(
+      (capability) => capability.capability_ref === "media.generator/media_generator.create_task",
+    );
+    assert.equal(createTask?.risk, "high");
+    assert.equal(createTask?.requires_approval, false);
+    assert.equal(createTask?.side_effect, "provider_task.create");
+    assert.deepEqual(createTask?.input_schema?.required, ["prompt"]);
+    const createTaskProperties = createTask?.input_schema?.properties as
+      | Record<string, { enum?: string[]; minimum?: number; maximum?: number; maxItems?: number }>
+      | undefined;
+    assert.deepEqual(createTaskProperties?.model?.enum, [
+      "nano-banana-pro",
+      "gpt-image-2",
+      "image-2",
+    ]);
+    assert.equal(createTaskProperties?.batch_count?.minimum, 1);
+    assert.equal(createTaskProperties?.batch_count?.maximum, 4);
+    assert.ok(createTaskProperties?.aspect_ratio?.enum?.includes("3:4"));
+    assert.ok(createTaskProperties?.resolution?.enum?.includes("2K"));
+    assert.equal(createTaskProperties?.reference_urls?.maxItems, 16);
+    assert.equal(createTaskProperties?.reference_paths?.maxItems, 16);
+    assert.equal("nsfw_checker" in (createTaskProperties ?? {}), false);
+    assert.deepEqual(createTask?.permissions, [
+      "network.xenodia",
+      "provider.media_generation",
+      "gear_data.write",
+    ]);
+
+    const appIconGenerate = result.capabilities.find(
+      (capability) => capability.capability_ref === "app.icon.forge/app_icon.generate",
+    );
+    assert.equal(appIconGenerate?.risk, "high");
+    assert.equal(appIconGenerate?.requires_approval, false);
+    assert.equal(appIconGenerate?.side_effect, "filesystem.write.user_selected");
+    assert.deepEqual(appIconGenerate?.input_schema?.required, ["source_path"]);
+    assert.deepEqual(appIconGenerate?.permissions, [
+      "filesystem.read.user_selected",
+      "filesystem.write.user_selected",
+      "process.spawn",
+    ]);
+
+    const telegramPush = result.capabilities.find(
+      (capability) => capability.capability_ref === "telegram.bridge/telegram_push.send_message",
+    );
+    assert.equal(telegramPush?.risk, "medium");
+    assert.equal(telegramPush?.requires_approval, false);
+    assert.equal(telegramPush?.side_effect, "network.telegram.send");
+    assert.deepEqual(telegramPush?.input_schema?.required, [
+      "channel_id",
+      "message",
+      "idempotency_key",
+    ]);
+    assert.deepEqual(telegramPush?.permissions, [
+      "network.telegram",
+      "secret.telegram.read",
+      "gear_data.read",
+      "gear_data.write",
+    ]);
   });
 
   it("finds bundled Gear manifests even when Codex starts from a project cwd", async () => {

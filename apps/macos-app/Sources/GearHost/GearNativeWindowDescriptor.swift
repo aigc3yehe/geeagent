@@ -66,6 +66,22 @@ struct GearHostNativeWindowScenes: Scene {
             width: GearHost.mediaGeneratorWindowDescriptor.defaultWidth,
             height: GearHost.mediaGeneratorWindowDescriptor.defaultHeight
         )
+
+        Window(GearHost.appIconForgeWindowDescriptor.title, id: GearHost.appIconForgeWindowDescriptor.windowID) {
+            GearHost.makeNativeWindowView(for: GearHost.appIconForgeWindowDescriptor.gearID)
+        }
+        .defaultSize(
+            width: GearHost.appIconForgeWindowDescriptor.defaultWidth,
+            height: GearHost.appIconForgeWindowDescriptor.defaultHeight
+        )
+
+        Window(GearHost.telegramBridgeWindowDescriptor.title, id: GearHost.telegramBridgeWindowDescriptor.windowID) {
+            GearHost.makeNativeWindowView(for: GearHost.telegramBridgeWindowDescriptor.gearID)
+        }
+        .defaultSize(
+            width: GearHost.telegramBridgeWindowDescriptor.defaultWidth,
+            height: GearHost.telegramBridgeWindowDescriptor.defaultHeight
+        )
     }
 }
 

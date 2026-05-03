@@ -36,12 +36,15 @@ function printUsage(): void {
       "commands: snapshot, list-agent-profiles, create-conversation, " +
       "set-active-conversation, delete-conversation, set-active-agent-profile, " +
       "install-agent-pack, reload-agent-profile, delete-agent-profile, " +
-      "delete-terminal-access-rule, submit-workspace-message, submit-routed-workspace-message, " +
+      "delete-terminal-access-rule, export-runtime-run, project-runtime-run, " +
+      "project-runtime-run-replay, classify-runtime-run-wait, " +
+      "submit-workspace-message, submit-routed-workspace-message, " +
       "submit-quick-prompt, perform-task-action, get-chat-routing-settings, " +
       "save-chat-routing-settings, set-highest-authorization, add-system-skill-source, " +
       "remove-system-skill-source, add-persona-skill-source, remove-persona-skill-source, " +
       "codex-export-status, codex-export-list-capabilities, " +
       "codex-export-describe-capability, codex-export-generate-plugin, " +
+      "codex-export-install-plugin, " +
       "codex-external-invocation-complete, " +
       "invoke-tool, codex-mcp, serve\n",
   );

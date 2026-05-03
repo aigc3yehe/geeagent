@@ -135,6 +135,8 @@ struct ToolApprovalSheet: View {
             return string
         case .int(let int):
             return String(int)
+        case .double(let double):
+            return String(double)
         case .bool(let bool):
             return bool ? "true" : "false"
         case .stringArray(let array):

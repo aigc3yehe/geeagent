@@ -1,0 +1,14 @@
+{
+  "name": "@geeagent/telegram-bridge-worker",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "telegram-bridge-worker": "./src/cli.ts"
+  },
+  "scripts": {
+    "cli": "../../../../agent-runtime/node_modules/.bin/tsx src/cli.ts",
+    "test": "cd ../../../../agent-runtime && node --test --import tsx ../macos-app/Gears/telegram.bridge/worker/src/*.test.ts",
+    "typecheck": "../../../../agent-runtime/node_modules/.bin/tsc --noEmit -p tsconfig.json"
+  }
+}

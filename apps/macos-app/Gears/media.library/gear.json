@@ -102,10 +102,117 @@
           "Import these downloaded videos into the media library",
           "Add these local media files to Media Library"
         ],
+        "input_schema": {
+          "type": "object",
+          "required": ["paths"],
+          "additionalProperties": false,
+          "properties": {
+            "paths": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 200,
+              "items": {
+                "type": "string"
+              },
+              "description": "Local image or video file paths to import into the authorized Media Library."
+            }
+          }
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": ["succeeded", "failed"]
+            },
+            "action": {
+              "type": "string",
+              "enum": ["imported_files", "import_noop", "import_skipped", "authorization_required"]
+            },
+            "requested_paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "pending_paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "missing_paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "unsupported_paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "duplicate_paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "imported_count": {
+              "type": "integer"
+            },
+            "existing_count": {
+              "type": "integer"
+            },
+            "available_count": {
+              "type": "integer"
+            },
+            "library_path": {
+              "type": "string"
+            },
+            "imported_items": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "existing_items": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "available_items": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "code": {
+              "type": "string"
+            },
+            "error": {
+              "type": "string"
+            },
+            "recovery": {
+              "type": "string"
+            }
+          }
+        },
+        "side_effect": "media_library.import_files",
+        "permissions": [
+          "filesystem.read.user_selected",
+          "media.library.write",
+          "gear_data.write",
+          "gear.surface.view_state"
+        ],
         "exports": {
           "codex": {
-            "enabled": false,
-            "reason": "Reads user-selected local files and writes library data; keep disabled until Codex approval and macOS authorization semantics are audited end to end."
+            "enabled": true,
+            "risk": "high",
+            "requires_approval": false,
+            "skill_hint": "Use only when the current user message explicitly asks Codex to import local media files into GeeAgent Media Library. Pass only local paths supplied by the user or returned by Gee capabilities, and report structured imported_items/existing_items or authorization_required failures."
           }
         }
       }

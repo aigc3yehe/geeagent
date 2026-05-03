@@ -302,6 +302,98 @@ describe("Codex MCP export server", () => {
     }
   });
 
+  it("queues Codex Media Library file imports for the live GearHost bridge", async () => {
+    const configDir = await mkdtemp(join(tmpdir(), "geeagent-codex-config-"));
+
+    await withCodexMcpServer(async (child, iterator, stderr) => {
+      sendRpc(child, {
+        jsonrpc: "2.0",
+        id: "invoke-media-import",
+        method: "tools/call",
+        params: {
+          name: "gee_invoke_capability",
+          arguments: {
+            capability_ref: "media.library/media.import_files",
+            args: { paths: ["/tmp/geeagent-demo/sample.png"] },
+            caller: { client: "codex", thread_id: "thread_media_import" },
+            wait_ms: 0,
+            config_dir: configDir,
+          },
+        },
+      });
+      const invoked = JSON.parse(await nextLine(iterator, stderr)) as JsonRpcResponse;
+      const payload = parseToolText(invoked);
+      assert.equal(payload.status, "pending");
+      assert.equal(payload.tool, "gee_invoke_capability");
+
+      const store = JSON.parse(
+        await readFile(join(configDir, "runtime-store.json"), "utf8"),
+      ) as {
+        external_invocations?: Array<{
+          gear_id: string;
+          capability_id: string;
+          args: Record<string, unknown>;
+          caller: Record<string, unknown>;
+        }>;
+      };
+      assert.equal(store.external_invocations?.[0]?.gear_id, "media.library");
+      assert.equal(store.external_invocations?.[0]?.capability_id, "media.import_files");
+      assert.deepEqual(store.external_invocations?.[0]?.args, {
+        paths: ["/tmp/geeagent-demo/sample.png"],
+      });
+      assert.equal(store.external_invocations?.[0]?.caller.thread_id, "thread_media_import");
+    });
+  });
+
+  it("queues Codex App Icon Forge generation for the live GearHost bridge", async () => {
+    const configDir = await mkdtemp(join(tmpdir(), "geeagent-codex-config-"));
+
+    await withCodexMcpServer(async (child, iterator, stderr) => {
+      sendRpc(child, {
+        jsonrpc: "2.0",
+        id: "invoke-app-icon",
+        method: "tools/call",
+        params: {
+          name: "gee_invoke_capability",
+          arguments: {
+            capability_ref: "app.icon.forge/app_icon.generate",
+            args: {
+              source_path: "/tmp/geeagent-demo/logo.png",
+              output_dir: "/tmp/geeagent-demo/icons",
+              name: "AppIcon",
+            },
+            caller: { client: "codex", thread_id: "thread_app_icon" },
+            wait_ms: 0,
+            config_dir: configDir,
+          },
+        },
+      });
+      const invoked = JSON.parse(await nextLine(iterator, stderr)) as JsonRpcResponse;
+      const payload = parseToolText(invoked);
+      assert.equal(payload.status, "pending");
+      assert.equal(payload.tool, "gee_invoke_capability");
+
+      const store = JSON.parse(
+        await readFile(join(configDir, "runtime-store.json"), "utf8"),
+      ) as {
+        external_invocations?: Array<{
+          gear_id: string;
+          capability_id: string;
+          args: Record<string, unknown>;
+          caller: Record<string, unknown>;
+        }>;
+      };
+      assert.equal(store.external_invocations?.[0]?.gear_id, "app.icon.forge");
+      assert.equal(store.external_invocations?.[0]?.capability_id, "app_icon.generate");
+      assert.deepEqual(store.external_invocations?.[0]?.args, {
+        source_path: "/tmp/geeagent-demo/logo.png",
+        output_dir: "/tmp/geeagent-demo/icons",
+        name: "AppIcon",
+      });
+      assert.equal(store.external_invocations?.[0]?.caller.thread_id, "thread_app_icon");
+    });
+  });
+
   it("returns completed external invocation results through gee_get_invocation", async () => {
     const configDir = await mkdtemp(join(tmpdir(), "geeagent-codex-config-"));
     const root = await mkdtemp(join(tmpdir(), "geeagent-codex-mcp-"));
@@ -379,6 +471,73 @@ describe("Codex MCP export server", () => {
       assert.deepEqual(completed.result, { value: "from-gear-host" });
     });
   });
+
+  it("degrades stale running invocations instead of leaving Codex waiting forever", async () => {
+    const configDir = await mkdtemp(join(tmpdir(), "geeagent-codex-config-"));
+    const root = await mkdtemp(join(tmpdir(), "geeagent-codex-mcp-"));
+    await writeGearManifest(root, "codex.safe", exportedGearManifest());
+
+    await withCodexMcpServer(async (child, iterator, stderr) => {
+      sendRpc(child, {
+        jsonrpc: "2.0",
+        id: "invoke",
+        method: "tools/call",
+        params: {
+          name: "gee_invoke_capability",
+          arguments: {
+            capability_ref: "codex.safe/safe.query",
+            gear_roots: [root],
+            args: { key: "fixture" },
+            wait_ms: 0,
+            config_dir: configDir,
+          },
+        },
+      });
+      const invoked = JSON.parse(await nextLine(iterator, stderr)) as JsonRpcResponse;
+      const pending = parseToolText(invoked);
+      const invocationID = String(pending.external_invocation_id);
+
+      await handleNativeRuntimeCommand("codex-external-invocation-complete", [
+        JSON.stringify({
+          external_invocation_id: invocationID,
+          status: "running",
+        }),
+      ], { configDir });
+
+      const storePath = join(configDir, "runtime-store.json");
+      const store = JSON.parse(await readFile(storePath, "utf8")) as {
+        external_invocations: Array<{ external_invocation_id: string; updated_at: string }>;
+      };
+      store.external_invocations = store.external_invocations.map((record) =>
+        record.external_invocation_id === invocationID
+          ? { ...record, updated_at: "2026-01-01T00:00:00.000Z" }
+          : record,
+      );
+      await writeFile(storePath, `${JSON.stringify(store, null, 2)}\n`, "utf8");
+
+      sendRpc(child, {
+        jsonrpc: "2.0",
+        id: "stale",
+        method: "tools/call",
+        params: {
+          name: "gee_get_invocation",
+          arguments: {
+            invocation_id: invocationID,
+            config_dir: configDir,
+          },
+        },
+      });
+      const staleResponse = JSON.parse(await nextLine(iterator, stderr)) as JsonRpcResponse;
+      const stale = parseToolText(staleResponse);
+      assert.equal(stale.status, "degraded");
+      assert.equal((stale.error as { code?: string }).code, "gee.external_invocation.running_stale");
+      assert.equal(stale.fallback_attempted, false);
+      assert.match(
+        String((stale.recovery as { message?: string }).message),
+        /not be retried automatically/i,
+      );
+    });
+  });
 });
 
 describe("Codex plugin package generation", () => {
@@ -399,19 +558,23 @@ describe("Codex plugin package generation", () => {
 
     assert.equal(result.status, "success");
     assert.equal(result.plugin_root, pluginRoot);
-    assert.deepEqual(
-      result.files.sort(),
-      [
-        ".codex-plugin/plugin.json",
-        ".mcp.json",
-        "skills/gee-capabilities/SKILL.md",
-      ].sort(),
+    assert.equal(result.files.includes(".codex-plugin/plugin.json"), true);
+    assert.equal(result.files.includes(".mcp.json"), true);
+    assert.equal(result.files.includes("skills/gee-capabilities/SKILL.md"), true);
+    assert.equal(
+      result.files.includes("skills/gee-capabilities/references/capability-index.md"),
+      true,
+    );
+    assert.equal(
+      result.files.includes("skills/gee-capabilities/references/telegram.bridge.md"),
+      true,
     );
 
     const plugin = JSON.parse(
       await readFile(join(pluginRoot, ".codex-plugin", "plugin.json"), "utf8"),
     ) as {
       name: string;
+      version: string;
       skills: string;
       mcpServers: string;
       interface: {
@@ -420,6 +583,7 @@ describe("Codex plugin package generation", () => {
       };
     };
     assert.equal(plugin.name, "geeagent-codex");
+    assert.equal(plugin.version, "0.1.3");
     assert.equal(plugin.skills, "./skills/");
     assert.equal(plugin.mcpServers, "./.mcp.json");
     assert.deepEqual(plugin.interface.capabilities, ["MCP", "Skills"]);
@@ -444,7 +608,25 @@ describe("Codex plugin package generation", () => {
     );
     assert.match(skill, /gee_status/);
     assert.match(skill, /gee_list_capabilities/);
+    assert.match(skill, /first entry point/i);
+    assert.match(skill, /references\/capability-index\.md/);
+    assert.match(skill, /telegram\.bridge/);
     assert.match(skill, /Do not run fallback scripts/);
+
+    const index = await readFile(
+      join(pluginRoot, "skills", "gee-capabilities", "references", "capability-index.md"),
+      "utf8",
+    );
+    assert.match(index, /telegram\.bridge\/telegram_push\.send_message/);
+    assert.match(index, /media\.generator\/media_generator\.create_task/);
+
+    const telegram = await readFile(
+      join(pluginRoot, "skills", "gee-capabilities", "references", "telegram.bridge.md"),
+      "utf8",
+    );
+    assert.match(telegram, /telegram\.bridge\/telegram_push\.send_message/);
+    assert.match(telegram, /idempotency_key/);
+    assert.match(telegram, /configured push-only Telegram channels/i);
   });
 
   it("defaults the generated MCP config to the current native-runtime entrypoint", async () => {
@@ -531,6 +713,52 @@ describe("Codex plugin package generation", () => {
         policy: { installation: string; authentication: string };
         category: string;
       }>;
+    };
+    assert.equal(marketplace.name, "geeagent-local");
+    assert.equal(marketplace.interface.displayName, "GeeAgent Local");
+    assert.deepEqual(marketplace.plugins, [
+      {
+        name: "geeagent-codex",
+        source: {
+          source: "local",
+          path: "./plugins/geeagent-codex",
+        },
+        policy: {
+          installation: "AVAILABLE",
+          authentication: "ON_INSTALL",
+        },
+        category: "Productivity",
+      },
+    ]);
+  });
+
+  it("installs a home-local GeeAgent Codex plugin with marketplace defaults", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "geeagent-codex-home-"));
+    const raw = await handleNativeRuntimeCommand("codex-export-install-plugin", [
+      JSON.stringify({
+        home_dir: homeDir,
+        runtime_command: "node",
+        runtime_args: ["/opt/geeagent/dist/native-runtime/index.mjs", "codex-mcp"],
+      }),
+    ]);
+    const result = JSON.parse(raw) as {
+      status: string;
+      plugin_root: string;
+      marketplace_file?: string;
+      install_hint?: string;
+    };
+
+    assert.equal(result.status, "success");
+    assert.equal(result.plugin_root, join(homeDir, "plugins", "geeagent-codex"));
+    assert.equal(result.marketplace_file, join(homeDir, ".agents", "plugins", "marketplace.json"));
+    assert.match(String(result.install_hint), /refresh Codex/i);
+
+    const marketplace = JSON.parse(
+      await readFile(join(homeDir, ".agents", "plugins", "marketplace.json"), "utf8"),
+    ) as {
+      name: string;
+      interface: { displayName: string };
+      plugins: Array<{ name: string; source: { source: string; path: string } }>;
     };
     assert.equal(marketplace.name, "geeagent-local");
     assert.equal(marketplace.interface.displayName, "GeeAgent Local");

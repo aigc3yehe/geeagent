@@ -609,6 +609,15 @@ struct ConversationThread: Identifiable, Hashable {
     var messages: [ConversationMessage]
     var tags: [String] = []
     var isActive: Bool = false
+    var runtimeRunSummary: ConversationRuntimeRunSummary? = nil
+}
+
+struct ConversationRuntimeRunSummary: Hashable {
+    var runID: String
+    var eventCount: Int
+    var firstSequence: Int?
+    var lastSequence: Int?
+    var lastEventKind: String?
 }
 
 struct ConversationMessageDetailItem: Identifiable, Hashable {
@@ -703,6 +712,102 @@ struct ConversationTurnBlock: Identifiable, Hashable {
     }
 }
 
+struct WorkbenchRuntimeRunProjection: Hashable, Sendable {
+    var runID: String
+    var rowCount: Int
+    var artifactIDs: [String]
+    var artifactRefs: [WorkbenchRuntimeRunArtifactRef]
+    var diagnostics: WorkbenchRuntimeRunDiagnostics
+    var rows: [WorkbenchRuntimeRunProjectionRow]
+
+    var hasDiagnostics: Bool {
+        !diagnostics.duplicateEventIDs.isEmpty
+            || !diagnostics.missingParentEventIDs.isEmpty
+            || !diagnostics.missingSequenceNumbers.isEmpty
+            || !diagnostics.outOfOrderEventIDs.isEmpty
+    }
+}
+
+struct WorkbenchRuntimeRunProjectionRow: Identifiable, Hashable, Sendable {
+    var id: String { rowID }
+    var rowID: String
+    var runID: String
+    var sequence: Int
+    var eventID: String?
+    var eventKind: String
+    var projectionKind: String
+    var label: String
+    var status: String?
+    var summary: String
+    var stageID: String?
+    var toolName: String?
+    var projectionScope: String
+    var expandable: Bool
+    var artifactIDs: [String]
+}
+
+struct WorkbenchRuntimeRunArtifactRef: Identifiable, Hashable, Sendable {
+    var id: String {
+        [
+            artifactID,
+            path ?? "",
+            sourceEventID ?? "",
+            sourceInvocationID ?? "",
+            sourceHostActionID ?? ""
+        ].joined(separator: ":")
+    }
+
+    var artifactID: String
+    var kind: String?
+    var title: String?
+    var path: String?
+    var summary: String?
+    var sha256: String?
+    var byteCount: Int?
+    var tokenEstimate: Int?
+    var mimeType: String?
+    var sourceEventID: String?
+    var sourceEventSequence: Int?
+    var sourceInvocationID: String?
+    var sourceToolName: String?
+    var sourceHostActionID: String?
+}
+
+struct WorkbenchRuntimeRunDiagnostics: Hashable, Sendable {
+    var duplicateEventIDs: [String]
+    var missingParentEventIDs: [String]
+    var missingSequenceNumbers: [Int]
+    var outOfOrderEventIDs: [String]
+
+    static let empty = WorkbenchRuntimeRunDiagnostics(
+        duplicateEventIDs: [],
+        missingParentEventIDs: [],
+        missingSequenceNumbers: [],
+        outOfOrderEventIDs: []
+    )
+}
+
+struct WorkbenchRuntimeRunWaitClassification: Hashable, Sendable {
+    var runID: String
+    var waitKind: String
+    var status: String
+    var detail: String
+    var evidence: WorkbenchRuntimeRunWaitEvidence
+}
+
+struct WorkbenchRuntimeRunWaitEvidence: Hashable, Sendable {
+    var runID: String
+    var lastEventKind: String?
+    var lastEventSequence: Int?
+    var lastToolUseID: String?
+    var pendingToolUseID: String?
+    var pendingHostActionIDs: [String]
+    var pendingApprovalID: String?
+    var sdkSessionID: String?
+    var gatewayRequestID: String?
+    var diagnostics: WorkbenchRuntimeRunDiagnostics
+}
+
 extension ConversationThread {
     var visibleMessages: [ConversationMessage] {
         messages.filter { !$0.isSeedPlaceholder }
@@ -755,13 +860,43 @@ extension ConversationThread {
     }
 
     var displayPreviewText: String {
-        let trimmed = previewText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return ""
+        let directPreview = conversationPreviewCandidate(previewText)
+        if !directPreview.isEmpty {
+            return directPreview
         }
 
-        return ConversationMessage.isSeedPlaceholderContent(trimmed) ? "" : trimmed
+        return visibleMessages
+            .reversed()
+            .lazy
+            .filter { $0.kind == .chat }
+            .map { conversationPreviewCandidate($0.content) }
+            .first { !$0.isEmpty } ?? ""
     }
+}
+
+private func conversationPreviewCandidate(_ content: String) -> String {
+    let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+        return ""
+    }
+    guard !ConversationMessage.isSeedPlaceholderContent(trimmed) else {
+        return ""
+    }
+
+    if trimmed.range(
+        of: #"(?im)^\s*(Stage complete|Stage completed)\s*[:：]"#,
+        options: .regularExpression
+    ) != nil {
+        return ""
+    }
+
+    return trimmed
+        .replacingOccurrences(
+            of: #"(?im)^\s*(Stage conclusion|Stage summary)\s*:\s*"#,
+            with: "",
+            options: .regularExpression
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
 enum WorkbenchTaskStatus: String, CaseIterable, Hashable {

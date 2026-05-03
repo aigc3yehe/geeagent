@@ -217,6 +217,8 @@ struct MediaGeneratorImageHistoryItem: Codable, Identifiable, Hashable, Sendable
 }
 
 struct MediaGeneratorTask: Codable, Identifiable, Hashable, Sendable {
+    static let currentSchemaVersion = 2
+
     var id: String
     var category: MediaGeneratorCategory
     var modelID: MediaGeneratorModelID
@@ -231,6 +233,10 @@ struct MediaGeneratorTask: Codable, Identifiable, Hashable, Sendable {
     var parameters: [String: String]
     var references: [MediaGeneratorReference]
     var isStarred: Bool = false
+    var schemaVersion: Int = Self.currentSchemaVersion
+    var batchID: String?
+    var batchIndex: Int = 1
+    var batchCount: Int = 1
 
     var displayTitle: String {
         prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? modelID.title : prompt
@@ -272,13 +278,17 @@ struct MediaGeneratorTask: Codable, Identifiable, Hashable, Sendable {
     var agentDictionary: [String: Any] {
         var payload: [String: Any] = [
             "id": id,
+            "task_id": id,
             "gear_id": MediaGeneratorGearDescriptor.gearID,
             "category": category.rawValue,
             "model": modelID.rawValue,
             "prompt": prompt,
             "status": status.rawValue,
+            "schema_version": schemaVersion,
             "created_at": ISO8601DateFormatter().string(from: createdAt),
             "updated_at": ISO8601DateFormatter().string(from: updatedAt),
+            "batch_index": batchIndex,
+            "batch_count": batchCount,
             "parameters": parameters,
             "references": references.map { reference in
                 [
@@ -293,6 +303,7 @@ struct MediaGeneratorTask: Codable, Identifiable, Hashable, Sendable {
         if let resultURL { payload["result_url"] = resultURL }
         if let localOutputPath { payload["local_output_path"] = localOutputPath }
         if let errorMessage { payload["error"] = errorMessage }
+        if let batchID { payload["batch_id"] = batchID }
         payload["is_starred"] = isStarred
         payload["is_locally_cached"] = isLocallyCached
         return payload
@@ -315,10 +326,22 @@ extension MediaGeneratorTask {
         case parameters
         case references
         case isStarred
+        case schemaVersion
+        case batchID
+        case batchIndex
+        case batchCount
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        guard schemaVersion == MediaGeneratorTask.currentSchemaVersion else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .schemaVersion,
+                in: container,
+                debugDescription: "Unsupported media generator task schema \(schemaVersion)."
+            )
+        }
         self.id = try container.decode(String.self, forKey: .id)
         self.category = try container.decode(MediaGeneratorCategory.self, forKey: .category)
         self.modelID = try container.decode(MediaGeneratorModelID.self, forKey: .modelID)
@@ -333,6 +356,91 @@ extension MediaGeneratorTask {
         self.parameters = try container.decode([String: String].self, forKey: .parameters)
         self.references = try container.decode([MediaGeneratorReference].self, forKey: .references)
         self.isStarred = try container.decodeIfPresent(Bool.self, forKey: .isStarred) ?? false
+        self.schemaVersion = schemaVersion
+        self.batchID = try container.decodeIfPresent(String.self, forKey: .batchID)
+        self.batchIndex = try container.decode(Int.self, forKey: .batchIndex)
+        self.batchCount = try container.decode(Int.self, forKey: .batchCount)
+    }
+}
+
+struct MediaGeneratorTaskGroup: Identifiable, Hashable, Sendable {
+    var id: String
+    var batchID: String?
+    var tasks: [MediaGeneratorTask]
+
+    var representative: MediaGeneratorTask {
+        tasks.sorted(by: Self.sortTasks).first!
+    }
+
+    var isBatch: Bool {
+        batchID != nil || tasks.count > 1 || representative.batchCount > 1
+    }
+
+    var batchCount: Int {
+        max(representative.batchCount, tasks.count)
+    }
+
+    var completedCount: Int {
+        tasks.filter { $0.status == .completed }.count
+    }
+
+    var failedCount: Int {
+        tasks.filter { $0.status == .failed }.count
+    }
+
+    var runningCount: Int {
+        tasks.filter { $0.status == .running || $0.status == .queued }.count
+    }
+
+    var statusTitle: String {
+        if completedCount == tasks.count {
+            return MediaGeneratorTaskStatus.completed.title
+        }
+        if failedCount == tasks.count {
+            return MediaGeneratorTaskStatus.failed.title
+        }
+        if failedCount > 0, runningCount == 0 {
+            return "Partial"
+        }
+        if runningCount > 0 {
+            return MediaGeneratorTaskStatus.running.title
+        }
+        return representative.status.title
+    }
+
+    var agentStatus: String {
+        if completedCount == tasks.count {
+            return MediaGeneratorTaskStatus.completed.rawValue
+        }
+        if failedCount == tasks.count {
+            return MediaGeneratorTaskStatus.failed.rawValue
+        }
+        if failedCount > 0, runningCount == 0 {
+            return "partial"
+        }
+        if runningCount > 0 {
+            return MediaGeneratorTaskStatus.running.rawValue
+        }
+        return representative.status.rawValue
+    }
+
+    var isStarred: Bool {
+        tasks.contains { $0.isStarred }
+    }
+
+    var isLocallyCached: Bool {
+        tasks.contains { $0.isLocallyCached }
+    }
+
+    static func sortTasks(_ lhs: MediaGeneratorTask, _ rhs: MediaGeneratorTask) -> Bool {
+        if let lhsBatchID = lhs.batchID,
+           lhsBatchID == rhs.batchID {
+            return lhs.batchIndex < rhs.batchIndex
+        }
+        if lhs.createdAt != rhs.createdAt {
+            return lhs.createdAt > rhs.createdAt
+        }
+        return lhs.batchIndex < rhs.batchIndex
     }
 }
 
@@ -369,6 +477,8 @@ enum MediaGeneratorError: LocalizedError {
 }
 
 struct MediaGeneratorFileDatabase {
+    private static let taskHistorySchemaVersion = MediaGeneratorTask.currentSchemaVersion
+
     var rootURL: URL?
     var fileManager: FileManager = .default
 
@@ -474,13 +584,36 @@ struct MediaGeneratorFileDatabase {
     }
 
     private func tasksRoot() throws -> URL {
-        let root = try gearRoot().appendingPathComponent("tasks", isDirectory: true)
+        try ensureCurrentTaskHistorySchema()
+        let root = try taskRootURL()
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
         return root
     }
 
     private func taskDirectory(_ id: String) throws -> URL {
         try tasksRoot().appendingPathComponent(id, isDirectory: true)
+    }
+
+    private func taskRootURL() throws -> URL {
+        try gearRoot().appendingPathComponent("tasks", isDirectory: true)
+    }
+
+    private func ensureCurrentTaskHistorySchema() throws {
+        let root = try gearRoot()
+        let markerURL = root.appendingPathComponent("task-history-schema-version")
+        let expected = "\(Self.taskHistorySchemaVersion)"
+        let current = (try? String(contentsOf: markerURL, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let tasksURL = root.appendingPathComponent("tasks", isDirectory: true)
+        guard current == expected else {
+            if fileManager.fileExists(atPath: tasksURL.path) {
+                try fileManager.removeItem(at: tasksURL)
+            }
+            try fileManager.createDirectory(at: tasksURL, withIntermediateDirectories: true)
+            try expected.write(to: markerURL, atomically: true, encoding: .utf8)
+            return
+        }
+        try fileManager.createDirectory(at: tasksURL, withIntermediateDirectories: true)
     }
 
     private func sanitizedFileExtension(_ value: String) -> String {
@@ -813,11 +946,15 @@ final class MediaGeneratorGearStore: ObservableObject {
     @Published private(set) var tasks: [MediaGeneratorTask] = []
     @Published var selectedTaskID: MediaGeneratorTask.ID?
     @Published private(set) var statusMessage = "Ready"
-    @Published private(set) var isBusy = false
+    @Published private(set) var activeCreationCount = 0
 
     private let database: MediaGeneratorFileDatabase
     private let channel: XenodiaMediaChannel
     private var pollingTaskIDs: Set<MediaGeneratorTask.ID> = []
+
+    var isBusy: Bool {
+        activeCreationCount > 0
+    }
 
     var selectedTask: MediaGeneratorTask? {
         tasks.first { $0.id == selectedTaskID } ?? tasks.first
@@ -825,6 +962,10 @@ final class MediaGeneratorGearStore: ObservableObject {
 
     var selectedModelReferenceLimit: Int {
         Self.maxReferenceCount(for: selectedModel)
+    }
+
+    var taskGroups: [MediaGeneratorTaskGroup] {
+        Self.groupedTasks(tasks)
     }
 
     var visibleTasks: [MediaGeneratorTask] {
@@ -861,6 +1002,10 @@ final class MediaGeneratorGearStore: ObservableObject {
         }
     }
 
+    var visibleTaskGroups: [MediaGeneratorTaskGroup] {
+        Self.groupedTasks(visibleTasks)
+    }
+
     init(
         database: MediaGeneratorFileDatabase = MediaGeneratorFileDatabase(),
         channel: XenodiaMediaChannel = XenodiaMediaChannel()
@@ -874,7 +1019,7 @@ final class MediaGeneratorGearStore: ObservableObject {
 
     func loadTasks() {
         tasks = database.loadTasks()
-        selectedTaskID = selectedTaskID ?? tasks.first?.id
+        selectedTaskID = selectedTaskID ?? taskGroups.first?.representative.id
         resumePollingForRunningTasks()
     }
 
@@ -978,7 +1123,7 @@ final class MediaGeneratorGearStore: ObservableObject {
             ?? Self.defaultAspectRatio(for: task.modelID)
         resolution = task.parameters["resolution"].flatMap(MediaGeneratorResolution.init(rawValue:)) ?? .oneK
         outputFormat = task.parameters["output_format"].flatMap(MediaGeneratorOutputFormat.init(rawValue:)) ?? .png
-        imageCount = Int(task.parameters["n"] ?? "1") ?? 1
+        imageCount = task.batchCount
         useAsync = Bool(task.parameters["async"] ?? "true") ?? true
         normalizeSelectionForCurrentModel()
         selectedTaskID = task.id
@@ -1044,6 +1189,19 @@ final class MediaGeneratorGearStore: ObservableObject {
         statusMessage = updated.isStarred ? "Added to starred results." : "Removed from starred results."
     }
 
+    func toggleStar(_ group: MediaGeneratorTaskGroup) {
+        let shouldStar = !group.tasks.allSatisfy(\.isStarred)
+        for task in group.tasks {
+            guard var updated = tasks.first(where: { $0.id == task.id }) else {
+                continue
+            }
+            updated.isStarred = shouldStar
+            updated.updatedAt = Date()
+            update(updated)
+        }
+        statusMessage = shouldStar ? "Added batch to starred results." : "Removed batch from starred results."
+    }
+
     func confirmAndDelete(_ task: MediaGeneratorTask) {
         let alert = NSAlert()
         alert.messageText = "Delete this generation task?"
@@ -1057,6 +1215,21 @@ final class MediaGeneratorGearStore: ObservableObject {
         delete(task)
     }
 
+    func confirmAndDelete(_ group: MediaGeneratorTaskGroup) {
+        let alert = NSAlert()
+        alert.messageText = group.isBatch ? "Delete this generation batch?" : "Delete this generation task?"
+        alert.informativeText = group.isBatch
+            ? "This removes \(group.tasks.count) task records from Media Generator history. Downloaded files you saved elsewhere are not removed."
+            : "This removes the task record from Media Generator history. Downloaded files you saved elsewhere are not removed."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            return
+        }
+        delete(group)
+    }
+
     func delete(_ task: MediaGeneratorTask) {
         do {
             try database.deleteTask(id: task.id)
@@ -1065,6 +1238,22 @@ final class MediaGeneratorGearStore: ObservableObject {
                 selectedTaskID = tasks.first?.id
             }
             statusMessage = "Deleted generation task."
+        } catch {
+            statusMessage = "Delete failed: \(error.localizedDescription)"
+        }
+    }
+
+    func delete(_ group: MediaGeneratorTaskGroup) {
+        do {
+            for task in group.tasks {
+                try database.deleteTask(id: task.id)
+            }
+            let ids = Set(group.tasks.map(\.id))
+            tasks.removeAll { ids.contains($0.id) }
+            if let currentSelection = selectedTaskID, ids.contains(currentSelection) {
+                selectedTaskID = taskGroups.first?.representative.id
+            }
+            statusMessage = group.isBatch ? "Deleted generation batch." : "Deleted generation task."
         } catch {
             statusMessage = "Delete failed: \(error.localizedDescription)"
         }
@@ -1113,11 +1302,11 @@ final class MediaGeneratorGearStore: ObservableObject {
     func generateCurrentPrompt() {
         let prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         Task { [weak self] in
-            await self?.createTask(
+            await self?.createTasks(
                 category: self?.category ?? .image,
                 modelID: self?.selectedModel ?? .nanoBananaPro,
                 prompt: prompt,
-                imageCount: self?.imageCount ?? 1,
+                batchCount: self?.imageCount ?? 1,
                 useAsync: self?.useAsync ?? true,
                 aspectRatio: self?.aspectRatio ?? .square,
                 resolution: self?.resolution ?? .oneK,
@@ -1154,18 +1343,20 @@ final class MediaGeneratorGearStore: ObservableObject {
 
     func createAgentTask(args: [String: Any]) async -> [String: Any] {
         let prompt = (args["prompt"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let model = (args["model"] as? String).flatMap(MediaGeneratorModelID.init(rawValue:)) ?? .nanoBananaPro
+        let model = Self.modelIDArg(args["model"]) ?? .nanoBananaPro
         let category = (args["category"] as? String).flatMap(MediaGeneratorCategory.init(rawValue:)) ?? .image
-        let aspectRatio = (args["aspect_ratio"] as? String).flatMap(MediaGeneratorAspectRatio.init(rawValue:))
+        let aspectRatio = Self.aspectRatioArg(args["aspect_ratio"])
             ?? Self.defaultAspectRatio(for: model)
-        let resolution = (args["resolution"] as? String).flatMap(MediaGeneratorResolution.init(rawValue:)) ?? .oneK
-        let outputFormat = (args["output_format"] as? String).flatMap(MediaGeneratorOutputFormat.init(rawValue:)) ?? .png
+        let resolution = Self.resolutionArg(args["resolution"]) ?? .oneK
+        let outputFormat = Self.outputFormatArg(args["output_format"]) ?? .png
         let useAsync = Self.boolArg(args["async"], defaultValue: true)
-        let imageCount: Int
+        let providerImageCount: Int
+        let batchCount: Int
         do {
             try Self.validateUnsupportedModelArgs(modelID: model, args: args)
             try Self.validateResponseFormat(args["response_format"])
-            imageCount = try Self.imageCountArg(args["n"])
+            providerImageCount = try Self.imageCountArg(args["n"])
+            batchCount = try Self.batchCountArg(args["batch_count"])
         } catch {
             statusMessage = error.localizedDescription
             return [
@@ -1183,11 +1374,20 @@ final class MediaGeneratorGearStore: ObservableObject {
         } + paths.prefix(max(0, maxReferenceCount - urls.count)).map {
             MediaGeneratorReference(id: UUID().uuidString, url: nil, localPath: $0, displayName: URL(fileURLWithPath: $0).lastPathComponent)
         }
-        guard let task = await createTask(
+        guard providerImageCount == 1 else {
+            statusMessage = "Xenodia image generation currently supports only n=1."
+            return [
+                "gear_id": MediaGeneratorGearDescriptor.gearID,
+                "capability_id": "media_generator.create_task",
+                "status": "failed",
+                "error": statusMessage
+            ]
+        }
+        guard let group = await createTasks(
             category: category,
             modelID: model,
             prompt: prompt,
-            imageCount: imageCount,
+            batchCount: batchCount,
             useAsync: useAsync,
             aspectRatio: aspectRatio,
             resolution: resolution,
@@ -1201,15 +1401,19 @@ final class MediaGeneratorGearStore: ObservableObject {
                 "error": statusMessage
             ]
         }
-        var payload = task.agentDictionary
-        payload["capability_id"] = "media_generator.create_task"
-        if let path = try? database.taskFileURL(task.id).path {
-            payload["task_path"] = path
-        }
-        return payload
+        return groupPayload(group, capabilityID: "media_generator.create_task")
     }
 
-    func taskPayload(taskID: String?) -> [String: Any] {
+    func taskPayload(taskID: String?, batchID: String? = nil) -> [String: Any] {
+        if let batchID,
+           let group = taskGroups.first(where: { $0.id == batchID || $0.batchID == batchID }) {
+            return groupPayload(group, capabilityID: "media_generator.get_task")
+        }
+        if let taskID,
+           let group = taskGroups.first(where: { $0.id == taskID || $0.batchID == taskID }),
+           group.isBatch {
+            return groupPayload(group, capabilityID: "media_generator.get_task")
+        }
         let task = taskID.flatMap { id in tasks.first { $0.id == id } } ?? selectedTask
         guard let task else {
             return [
@@ -1246,6 +1450,7 @@ final class MediaGeneratorGearStore: ObservableObject {
             },
             "constraints": [
                 "n": ["minimum": 1, "maximum": 1, "default": 1],
+                "batch_count": ["minimum": 1, "maximum": 4, "default": 1],
                 "response_format": ["enum": ["url"], "default": "url"],
                 "max_total_references_by_model": [
                     MediaGeneratorModelID.nanoBananaPro.rawValue: Self.maxReferenceCount(for: .nanoBananaPro),
@@ -1261,18 +1466,126 @@ final class MediaGeneratorGearStore: ObservableObject {
         ]
     }
 
+    private func groupPayload(_ group: MediaGeneratorTaskGroup, capabilityID: String) -> [String: Any] {
+        if !group.isBatch {
+            var payload = group.representative.agentDictionary
+            payload["capability_id"] = capabilityID
+            if let path = try? database.taskFileURL(group.representative.id).path {
+                payload["task_path"] = path
+            }
+            return payload
+        }
+
+        let taskPayloads = group.tasks.sorted(by: MediaGeneratorTaskGroup.sortTasks).map { task in
+            var payload = task.agentDictionary
+            if let path = try? database.taskFileURL(task.id).path {
+                payload["task_path"] = path
+            }
+            return payload
+        }
+        return [
+            "gear_id": MediaGeneratorGearDescriptor.gearID,
+            "capability_id": capabilityID,
+            "status": group.agentStatus,
+            "category": group.representative.category.rawValue,
+            "model": group.representative.modelID.rawValue,
+            "prompt": group.representative.prompt,
+            "batch_id": group.id,
+            "batch_count": group.batchCount,
+            "completed_count": group.completedCount,
+            "failed_count": group.failedCount,
+            "running_count": group.runningCount,
+            "tasks": taskPayloads
+        ]
+    }
+
     @discardableResult
-    private func createTask(
+    private func createTasks(
         category: MediaGeneratorCategory,
         modelID: MediaGeneratorModelID,
         prompt: String,
-        imageCount: Int,
+        batchCount: Int,
         useAsync: Bool,
         aspectRatio: MediaGeneratorAspectRatio,
         resolution: MediaGeneratorResolution,
         outputFormat: MediaGeneratorOutputFormat,
         references: [MediaGeneratorReference]
-    ) async -> MediaGeneratorTask? {
+    ) async -> MediaGeneratorTaskGroup? {
+        do {
+            try Self.validateBatchCount(batchCount)
+        } catch {
+            statusMessage = error.localizedDescription
+            return nil
+        }
+        let normalizedBatchCount = max(1, min(batchCount, 4))
+        let batchID = normalizedBatchCount > 1
+            ? "media-generator-batch-\(Self.timestamp())-\(UUID().uuidString.prefix(8))"
+            : nil
+        var enqueuedTasks: [MediaGeneratorTask] = []
+        for index in 1...normalizedBatchCount {
+            guard let task = enqueueTask(
+                category: category,
+                modelID: modelID,
+                prompt: prompt,
+                providerImageCount: 1,
+                useAsync: useAsync,
+                aspectRatio: aspectRatio,
+                resolution: resolution,
+                outputFormat: outputFormat,
+                references: references,
+                batchID: batchID,
+                batchIndex: index,
+                batchCount: normalizedBatchCount
+            ) else {
+                if enqueuedTasks.isEmpty {
+                    return nil
+                }
+                break
+            }
+            enqueuedTasks.append(task)
+        }
+        guard !enqueuedTasks.isEmpty else {
+            return nil
+        }
+        let id = batchID ?? enqueuedTasks[0].id
+        statusMessage = normalizedBatchCount > 1
+            ? "Queued \(normalizedBatchCount) Xenodia generation tasks."
+            : "Queued Xenodia generation task."
+
+        let creationTasks = enqueuedTasks.map { task in
+            Task { [weak self] in
+                await self?.startProviderCreation(taskID: task.id)
+            }
+        }
+        for creationTask in creationTasks {
+            _ = await creationTask.value
+        }
+
+        let refreshedTasks = enqueuedTasks.compactMap { enqueuedTask in
+            tasks.first { $0.id == enqueuedTask.id }
+        }
+        return MediaGeneratorTaskGroup(
+            id: id,
+            batchID: batchID,
+            tasks: refreshedTasks.isEmpty ? enqueuedTasks : refreshedTasks
+        )
+    }
+
+    @discardableResult
+    private func enqueueTask(
+        category: MediaGeneratorCategory,
+        modelID: MediaGeneratorModelID,
+        prompt: String,
+        providerImageCount: Int,
+        useAsync: Bool,
+        aspectRatio: MediaGeneratorAspectRatio,
+        resolution: MediaGeneratorResolution,
+        outputFormat: MediaGeneratorOutputFormat,
+        references: [MediaGeneratorReference],
+        batchID: String? = nil,
+        batchIndex: Int = 1,
+        batchCount: Int = 1
+    ) -> MediaGeneratorTask? {
         guard !prompt.isEmpty else {
             statusMessage = MediaGeneratorError.emptyPrompt.localizedDescription
             return nil
@@ -1282,7 +1595,7 @@ final class MediaGeneratorGearStore: ObservableObject {
             return nil
         }
         do {
-            try Self.validateImageCount(imageCount)
+            try Self.validateImageCount(providerImageCount)
             try Self.validateModelParameters(modelID: modelID, aspectRatio: aspectRatio, resolution: resolution)
             try Self.validateReferences(modelID: modelID, references)
         } catch {
@@ -1291,7 +1604,7 @@ final class MediaGeneratorGearStore: ObservableObject {
         }
 
         let now = Date()
-        var task = MediaGeneratorTask(
+        let task = MediaGeneratorTask(
             id: "media-generator-\(Self.timestamp())-\(UUID().uuidString.prefix(8))",
             category: category,
             modelID: modelID,
@@ -1305,41 +1618,61 @@ final class MediaGeneratorGearStore: ObservableObject {
             errorMessage: nil,
             parameters: currentParameterSnapshot(
                 modelID: modelID,
-                imageCount: imageCount,
+                imageCount: providerImageCount,
+                batchCount: batchCount,
                 useAsync: useAsync,
                 aspectRatio: aspectRatio,
                 resolution: resolution,
                 outputFormat: outputFormat
             ),
-            references: Array(references.prefix(Self.maxReferenceCount(for: modelID)))
+            references: Array(references.prefix(Self.maxReferenceCount(for: modelID))),
+            batchID: batchID,
+            batchIndex: batchIndex,
+            batchCount: batchCount
         )
         tasks.insert(task, at: 0)
         selectedTaskID = task.id
         persist(task)
+        return task
+    }
 
-        isBusy = true
-        statusMessage = "Creating Xenodia generation task..."
-        defer { isBusy = false }
+    @discardableResult
+    private func startProviderCreation(taskID: MediaGeneratorTask.ID) async -> MediaGeneratorTask? {
+        guard let enqueuedTask = tasks.first(where: { $0.id == taskID }) else {
+            return nil
+        }
+        activeCreationCount += 1
+        statusMessage = enqueuedTask.batchCount > 1
+            ? "Creating Xenodia generation task \(enqueuedTask.batchIndex) of \(enqueuedTask.batchCount)..."
+            : "Creating Xenodia generation task..."
+        defer { activeCreationCount = max(0, activeCreationCount - 1) }
 
         do {
             let backend = try await channel.loadBackend()
             let client = XenodiaImageGenerationClient(backend: backend)
             let created = try await client.createImageTask(
-                modelID: modelID,
-                prompt: prompt,
-                imageCount: imageCount,
-                useAsync: useAsync,
-                aspectRatio: aspectRatio,
-                resolution: resolution,
-                outputFormat: outputFormat,
-                references: task.references
+                modelID: enqueuedTask.modelID,
+                prompt: enqueuedTask.prompt,
+                imageCount: Int(enqueuedTask.parameters["n"] ?? "1") ?? 1,
+                useAsync: Bool(enqueuedTask.parameters["async"] ?? "true") ?? true,
+                aspectRatio: enqueuedTask.parameters["aspect_ratio"].flatMap(MediaGeneratorAspectRatio.init(rawValue:))
+                    ?? Self.defaultAspectRatio(for: enqueuedTask.modelID),
+                resolution: enqueuedTask.parameters["resolution"].flatMap(MediaGeneratorResolution.init(rawValue:)) ?? .oneK,
+                outputFormat: enqueuedTask.parameters["output_format"].flatMap(MediaGeneratorOutputFormat.init(rawValue:)) ?? .png,
+                references: enqueuedTask.references
             )
+            guard var task = tasks.first(where: { $0.id == taskID }) else {
+                return nil
+            }
             task.providerTaskID = created.providerTaskID
             task.resultURL = created.resultURL
             task.status = created.resultURL == nil ? .running : .completed
             task.updatedAt = Date()
             if task.status == .completed {
                 task = await cacheGeneratedResultIfPossible(task)
+            }
+            guard tasks.contains(where: { $0.id == taskID }) else {
+                return nil
             }
             update(task)
             statusMessage = task.status == .completed
@@ -1352,6 +1685,9 @@ final class MediaGeneratorGearStore: ObservableObject {
             }
             return task
         } catch {
+            guard var task = tasks.first(where: { $0.id == taskID }) else {
+                return nil
+            }
             task.status = .failed
             task.errorMessage = error.localizedDescription
             task.updatedAt = Date()
@@ -1488,6 +1824,7 @@ final class MediaGeneratorGearStore: ObservableObject {
     private func currentParameterSnapshot(
         modelID: MediaGeneratorModelID,
         imageCount: Int,
+        batchCount: Int,
         useAsync: Bool,
         aspectRatio: MediaGeneratorAspectRatio,
         resolution: MediaGeneratorResolution,
@@ -1496,6 +1833,7 @@ final class MediaGeneratorGearStore: ObservableObject {
         var parameters = [
             "response_format": "url",
             "n": "\(imageCount)",
+            "batch_count": "\(batchCount)",
             "async": "\(useAsync)"
         ]
         switch modelID {
@@ -1591,6 +1929,58 @@ final class MediaGeneratorGearStore: ObservableObject {
         modelID == .gptImage2 ? .auto : .square
     }
 
+    private static func modelIDArg(_ value: Any?) -> MediaGeneratorModelID? {
+        guard let string = value as? String else {
+            return nil
+        }
+        let normalized = string
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+            .replacingOccurrences(of: " ", with: "-")
+        switch normalized {
+        case "nano-banana-pro", "nanobananapro":
+            return .nanoBananaPro
+        case "gpt-image-2", "gptimage2", "image-2", "image2":
+            return .gptImage2
+        default:
+            return MediaGeneratorModelID(rawValue: normalized)
+        }
+    }
+
+    private static func aspectRatioArg(_ value: Any?) -> MediaGeneratorAspectRatio? {
+        guard let string = value as? String else {
+            return nil
+        }
+        return MediaGeneratorAspectRatio(
+            rawValue: string
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "：", with: ":")
+        )
+    }
+
+    private static func resolutionArg(_ value: Any?) -> MediaGeneratorResolution? {
+        guard let string = value as? String else {
+            return nil
+        }
+        return MediaGeneratorResolution(
+            rawValue: string
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .uppercased()
+        )
+    }
+
+    private static func outputFormatArg(_ value: Any?) -> MediaGeneratorOutputFormat? {
+        guard let string = value as? String else {
+            return nil
+        }
+        return MediaGeneratorOutputFormat(
+            rawValue: string
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+        )
+    }
+
     nonisolated static func supportedAspectRatios(for modelID: MediaGeneratorModelID) -> [MediaGeneratorAspectRatio] {
         switch modelID {
         case .nanoBananaPro:
@@ -1627,9 +2017,35 @@ final class MediaGeneratorGearStore: ObservableObject {
     private static func supportedFields(for modelID: MediaGeneratorModelID) -> [String] {
         switch modelID {
         case .nanoBananaPro:
-            ["model", "prompt", "n", "async", "response_format", "aspect_ratio", "resolution", "output_format", "image_input"]
+            ["model", "prompt", "n", "batch_count", "async", "response_format", "aspect_ratio", "resolution", "output_format", "image_input"]
         case .gptImage2:
-            ["model", "prompt", "n", "async", "response_format", "aspect_ratio", "resolution", "image_input"]
+            ["model", "prompt", "n", "batch_count", "async", "response_format", "aspect_ratio", "resolution", "image_input"]
+        }
+    }
+
+    nonisolated static func groupedTasks(_ tasks: [MediaGeneratorTask]) -> [MediaGeneratorTaskGroup] {
+        let orderedTasks = tasks.sorted(by: MediaGeneratorTaskGroup.sortTasks)
+        var grouped: [String: [MediaGeneratorTask]] = [:]
+        var order: [String] = []
+        for task in orderedTasks {
+            let key = task.batchID ?? task.id
+            if grouped[key] == nil {
+                grouped[key] = []
+                order.append(key)
+            }
+            grouped[key, default: []].append(task)
+        }
+        return order.compactMap { key in
+            guard let tasks = grouped[key]?.sorted(by: MediaGeneratorTaskGroup.sortTasks),
+                  !tasks.isEmpty
+            else {
+                return nil
+            }
+            return MediaGeneratorTaskGroup(
+                id: key,
+                batchID: tasks.first?.batchID,
+                tasks: tasks
+            )
         }
     }
 
@@ -1647,6 +2063,7 @@ final class MediaGeneratorGearStore: ObservableObject {
     private static func defaultParameterPayload(for modelID: MediaGeneratorModelID) -> [String: Any] {
         var payload: [String: Any] = [
             "n": 1,
+            "batch_count": 1,
             "async": true,
             "response_format": "url",
             "aspect_ratio": defaultAspectRatio(for: modelID).rawValue
@@ -1674,6 +2091,7 @@ final class MediaGeneratorGearStore: ObservableObject {
             references = Array(references.prefix(Self.maxReferenceCount(for: selectedModel)))
             statusMessage = "\(selectedModel.title) accepts at most \(Self.maxReferenceCount(for: selectedModel)) references."
         }
+        imageCount = min(max(imageCount, 1), 4)
     }
 
     private static func boolArg(_ value: Any?, defaultValue: Bool) -> Bool {
@@ -1708,9 +2126,35 @@ final class MediaGeneratorGearStore: ObservableObject {
         throw MediaGeneratorError.invalidOption("Xenodia image generation currently supports only n=1.")
     }
 
+    private static func batchCountArg(_ value: Any?) throws -> Int {
+        if value == nil {
+            return 1
+        }
+        if let int = value as? Int {
+            try validateBatchCount(int)
+            return int
+        }
+        if let double = value as? Double, double.rounded() == double {
+            let int = Int(double)
+            try validateBatchCount(int)
+            return int
+        }
+        if let string = value as? String, let int = Int(string) {
+            try validateBatchCount(int)
+            return int
+        }
+        throw MediaGeneratorError.invalidOption("Media Generator batch_count must be between 1 and 4.")
+    }
+
     private static func validateImageCount(_ imageCount: Int) throws {
         guard imageCount == 1 else {
             throw MediaGeneratorError.invalidOption("Xenodia image generation currently supports only n=1.")
+        }
+    }
+
+    private static func validateBatchCount(_ batchCount: Int) throws {
+        guard (1...4).contains(batchCount) else {
+            throw MediaGeneratorError.invalidOption("Media Generator batch_count must be between 1 and 4.")
         }
     }
 

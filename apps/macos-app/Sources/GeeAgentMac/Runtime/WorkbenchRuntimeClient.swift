@@ -71,6 +71,8 @@ protocol WorkbenchRuntimeClient: Sendable {
         _ settings: ChatRoutingSettings,
         in snapshot: WorkbenchSnapshot
     ) async throws -> WorkbenchSnapshot
+    func projectRuntimeRun(_ runID: String) async throws -> WorkbenchRuntimeRunProjection
+    func classifyRuntimeRunWait(_ runID: String) async throws -> WorkbenchRuntimeRunWaitClassification
 
     /// Submits a single-shot prompt through the menu-bar / quick-input surface
     /// and returns the next full snapshot.
@@ -112,6 +114,20 @@ extension WorkbenchRuntimeClient {
         _ = snapshot
         throw RuntimeProcessError.unsupported(
             "This runtime client does not support external Codex invocation completion."
+        )
+    }
+
+    func projectRuntimeRun(_ runID: String) async throws -> WorkbenchRuntimeRunProjection {
+        _ = runID
+        throw RuntimeProcessError.unsupported(
+            "This runtime client does not support runtime run projection."
+        )
+    }
+
+    func classifyRuntimeRunWait(_ runID: String) async throws -> WorkbenchRuntimeRunWaitClassification {
+        _ = runID
+        throw RuntimeProcessError.unsupported(
+            "This runtime client does not support runtime run wait classification."
         )
     }
 

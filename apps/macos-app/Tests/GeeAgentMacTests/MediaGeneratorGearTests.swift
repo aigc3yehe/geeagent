@@ -206,6 +206,33 @@ final class MediaGeneratorGearTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: try database.taskFileURL(task.id).path))
     }
 
+    func testMediaGeneratorFileDatabaseClearsPreBatchTaskHistory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-generator-legacy-task-clear-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tasksRoot = root.appendingPathComponent("tasks", isDirectory: true)
+        let legacyDirectory = tasksRoot.appendingPathComponent("legacy-task", isDirectory: true)
+        try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: true)
+        try Data("""
+        {
+          "id": "legacy-task",
+          "category": "image",
+          "modelID": "nano-banana-pro",
+          "prompt": "old task",
+          "status": "completed",
+          "createdAt": "2026-05-01T00:00:00Z",
+          "updatedAt": "2026-05-01T00:00:00Z",
+          "parameters": { "n": "1" },
+          "references": []
+        }
+        """.utf8).write(to: legacyDirectory.appendingPathComponent("task.json"))
+
+        let database = MediaGeneratorFileDatabase(rootURL: root)
+
+        XCTAssertTrue(database.loadTasks().isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyDirectory.path))
+    }
+
     func testMediaGeneratorFileDatabaseRoundTripsQuickPrompts() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-generator-quick-prompt-tests-\(UUID().uuidString)", isDirectory: true)
@@ -329,7 +356,7 @@ final class MediaGeneratorGearTests: XCTestCase {
         XCTAssertTrue(store.imageHistory.isEmpty)
     }
 
-    func testMediaGeneratorTaskDecodesLegacyRecordsWithoutStarredFlag() throws {
+    func testMediaGeneratorTaskRejectsPreBatchLegacyRecords() throws {
         let data = Data("""
         {
           "id": "legacy-task",
@@ -350,10 +377,7 @@ final class MediaGeneratorGearTests: XCTestCase {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
 
-        let task = try decoder.decode(MediaGeneratorTask.self, from: data)
-
-        XCTAssertEqual(task.id, "legacy-task")
-        XCTAssertFalse(task.isStarred)
+        XCTAssertThrowsError(try decoder.decode(MediaGeneratorTask.self, from: data))
     }
 
     func testMediaGeneratorFileDatabaseDeletesTaskDirectory() throws {
@@ -443,7 +467,54 @@ final class MediaGeneratorGearTests: XCTestCase {
         XCTAssertTrue(task.isLocallyCached)
         XCTAssertEqual(task.resultDisplayURL, cachedURL)
         XCTAssertEqual(task.resultFileExtension, "webp")
+        XCTAssertEqual(task.agentDictionary["id"] as? String, "media-generator-local-result-test")
+        XCTAssertEqual(task.agentDictionary["task_id"] as? String, "media-generator-local-result-test")
         XCTAssertEqual(task.agentDictionary["is_locally_cached"] as? Bool, true)
+    }
+
+    func testMediaGeneratorTaskGroupReportsCompletedBatchStatusToAgents() {
+        let batchID = "media-generator-batch-test"
+        let first = MediaGeneratorTask(
+            id: "media-generator-batch-test-1",
+            category: .image,
+            modelID: .nanoBananaPro,
+            prompt: "Batch prompt",
+            status: .completed,
+            createdAt: Date(timeIntervalSince1970: 1_774_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_774_000_030),
+            providerTaskID: "xenodia-task-1",
+            resultURL: "https://cdn.example/image-1.png",
+            localOutputPath: nil,
+            errorMessage: nil,
+            parameters: ["n": "1", "batch_count": "2"],
+            references: [],
+            batchID: batchID,
+            batchIndex: 1,
+            batchCount: 2
+        )
+        let second = MediaGeneratorTask(
+            id: "media-generator-batch-test-2",
+            category: .image,
+            modelID: .nanoBananaPro,
+            prompt: "Batch prompt",
+            status: .completed,
+            createdAt: Date(timeIntervalSince1970: 1_774_000_001),
+            updatedAt: Date(timeIntervalSince1970: 1_774_000_031),
+            providerTaskID: "xenodia-task-2",
+            resultURL: "https://cdn.example/image-2.png",
+            localOutputPath: nil,
+            errorMessage: nil,
+            parameters: ["n": "1", "batch_count": "2"],
+            references: [],
+            batchID: batchID,
+            batchIndex: 2,
+            batchCount: 2
+        )
+
+        let group = MediaGeneratorTaskGroup(id: batchID, batchID: batchID, tasks: [first, second])
+
+        XCTAssertEqual(group.statusTitle, MediaGeneratorTaskStatus.completed.title)
+        XCTAssertEqual(group.agentStatus, MediaGeneratorTaskStatus.completed.rawValue)
     }
 
     @MainActor
@@ -572,6 +643,8 @@ final class MediaGeneratorGearTests: XCTestCase {
         let referenceLimits = constraints?["max_total_references_by_model"] as? [String: Int]
         XCTAssertEqual(referenceLimits?["nano-banana-pro"], 8)
         XCTAssertEqual(referenceLimits?["gpt-image-2"], 16)
+        let batchConstraint = constraints?["batch_count"] as? [String: Int]
+        XCTAssertEqual(batchConstraint?["maximum"], 4)
         XCTAssertEqual(constraints?["max_reference_file_bytes"] as? Int64, 31_457_280)
         let placeholders = payload["placeholders"] as? [String: String]
         XCTAssertTrue(placeholders?["video"]?.contains("Xenodia video") == true)
@@ -599,6 +672,33 @@ final class MediaGeneratorGearTests: XCTestCase {
     }
 
     @MainActor
+    func testAgentBatchCountCreatesGroupedChildTasksWithSingleProviderImageRequests() async {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-generator-batch-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MediaGeneratorGearStore(database: MediaGeneratorFileDatabase(rootURL: root))
+
+        let payload = await store.createAgentTask(args: [
+            "category": "image",
+            "prompt": "Make four compact icon variations",
+            "batch_count": 4
+        ])
+
+        XCTAssertEqual(payload["gear_id"] as? String, MediaGeneratorGearDescriptor.gearID)
+        XCTAssertEqual(payload["capability_id"] as? String, "media_generator.create_task")
+        XCTAssertEqual(payload["batch_count"] as? Int, 4)
+        XCTAssertNotNil(payload["batch_id"] as? String)
+        XCTAssertEqual(store.tasks.count, 4)
+        XCTAssertEqual(store.visibleTaskGroups.count, 1)
+        XCTAssertEqual(store.visibleTaskGroups.first?.tasks.count, 4)
+        XCTAssertEqual(Set(store.tasks.compactMap(\.batchID)).count, 1)
+        XCTAssertEqual(Set(store.tasks.map(\.batchCount)), [4])
+        XCTAssertEqual(Set(store.tasks.compactMap { $0.parameters["n"] }), ["1"])
+        let payloadTasks = payload["tasks"] as? [[String: Any]]
+        XCTAssertEqual(payloadTasks?.count, 4)
+    }
+
+    @MainActor
     func testUnsupportedGptImage2ResolutionCombinationFailsBeforeProviderCall() async {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-generator-gpt-resolution-tests-\(UUID().uuidString)", isDirectory: true)
@@ -617,6 +717,29 @@ final class MediaGeneratorGearTests: XCTestCase {
         XCTAssertEqual(payload["capability_id"] as? String, "media_generator.create_task")
         XCTAssertEqual(payload["status"] as? String, "failed")
         XCTAssertTrue((payload["error"] as? String)?.contains("resolution=4K") == true)
+        XCTAssertTrue(store.tasks.isEmpty)
+    }
+
+    @MainActor
+    func testImage2AliasAndLowercaseResolutionNormalizeForAgentTasks() async {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-generator-image2-alias-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MediaGeneratorGearStore(database: MediaGeneratorFileDatabase(rootURL: root))
+
+        let payload = await store.createAgentTask(args: [
+            "category": "image",
+            "model": "image-2",
+            "prompt": "Make a compact icon",
+            "aspect_ratio": "auto",
+            "resolution": "2k"
+        ])
+
+        XCTAssertEqual(payload["gear_id"] as? String, MediaGeneratorGearDescriptor.gearID)
+        XCTAssertEqual(payload["capability_id"] as? String, "media_generator.create_task")
+        XCTAssertEqual(payload["status"] as? String, "failed")
+        XCTAssertTrue((payload["error"] as? String)?.contains("GPT Image-2") == true)
+        XCTAssertTrue((payload["error"] as? String)?.contains("resolution=2K") == true)
         XCTAssertTrue(store.tasks.isEmpty)
     }
 

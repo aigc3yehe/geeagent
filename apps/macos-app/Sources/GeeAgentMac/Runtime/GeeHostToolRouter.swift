@@ -300,6 +300,10 @@ enum GeeHostToolRouter {
             return await invokeWeSpyReader(toolID: toolID, capabilityID: capabilityID, args: args)
         case MediaGeneratorGearDescriptor.gearID:
             return await invokeMediaGenerator(toolID: toolID, capabilityID: capabilityID, args: args)
+        case AppIconForgeGearDescriptor.gearID:
+            return invokeAppIconForge(toolID: toolID, capabilityID: capabilityID, args: args)
+        case TelegramBridgeGearDescriptor.gearID:
+            return await invokeTelegramBridge(toolID: toolID, capabilityID: capabilityID, args: args)
         default:
             return .error(
                 toolID: toolID,
@@ -323,6 +327,50 @@ enum GeeHostToolRouter {
         return args
     }
 
+    private static func invokeAppIconForge(
+        toolID: String,
+        capabilityID: String,
+        args: [String: Any]
+    ) -> WorkbenchToolOutcome {
+        guard capabilityID == "app_icon.generate" else {
+            return .error(
+                toolID: toolID,
+                code: "gear.app_icon.capability_unsupported",
+                message: "app.icon.forge does not support `\(capabilityID)` yet."
+            )
+        }
+        return .completed(
+            toolID: toolID,
+            payload: AppIconForgeGearStore.shared.runAgentAction(args: args)
+        )
+    }
+
+    private static func invokeTelegramBridge(
+        toolID: String,
+        capabilityID: String,
+        args: [String: Any]
+    ) async -> WorkbenchToolOutcome {
+        guard [
+            "telegram_bridge.status",
+            "telegram_push.list_channels",
+            "telegram_push.upsert_channel",
+            "telegram_push.send_message"
+        ].contains(capabilityID) else {
+            return .error(
+                toolID: toolID,
+                code: "gear.telegram_bridge.capability_unsupported",
+                message: "telegram.bridge does not support `\(capabilityID)` yet."
+            )
+        }
+        return .completed(
+            toolID: toolID,
+            payload: await TelegramBridgeGearStore.shared.runAgentAction(
+                capabilityID: capabilityID,
+                args: args
+            )
+        )
+    }
+
     private static func invokeMediaGenerator(
         toolID: String,
         capabilityID: String,
@@ -342,7 +390,10 @@ enum GeeHostToolRouter {
         case "media_generator.get_task":
             return .completed(
                 toolID: toolID,
-                payload: MediaGeneratorGearStore.shared.taskPayload(taskID: stringArg(args, "task_id"))
+                payload: MediaGeneratorGearStore.shared.taskPayload(
+                    taskID: stringArg(args, "task_id"),
+                    batchID: stringArg(args, "batch_id")
+                )
             )
         default:
             return .error(
@@ -786,6 +837,59 @@ enum GeeHostToolRouter {
 
     private static func argsSchema(gearID: String, capabilityID: String) -> [String: Any]? {
         switch (gearID, capabilityID) {
+        case (TelegramBridgeGearDescriptor.gearID, "telegram_bridge.status"):
+            return [
+                "type": "object",
+                "additionalProperties": false,
+                "properties": [:]
+            ]
+        case (TelegramBridgeGearDescriptor.gearID, "telegram_push.list_channels"):
+            return [
+                "type": "object",
+                "additionalProperties": false,
+                "properties": [
+                    "enabled_only": ["type": "boolean"]
+                ]
+            ]
+        case (TelegramBridgeGearDescriptor.gearID, "telegram_push.upsert_channel"):
+            return [
+                "type": "object",
+                "required": ["channel_id", "account_id", "target_kind", "target_value"],
+                "additionalProperties": false,
+                "properties": [
+                    "channel_id": ["type": "string"],
+                    "account_id": ["type": "string"],
+                    "title": ["type": "string"],
+                    "bot_username": ["type": "string"],
+                    "target_kind": [
+                        "type": "string",
+                        "enum": ["chat_id", "group_id", "channel_id", "channel_username"]
+                    ],
+                    "target_value": ["type": "string"],
+                    "enabled": ["type": "boolean"],
+                    "parse_mode": [
+                        "type": "string",
+                        "enum": ["Markdown", "MarkdownV2", "HTML", "plain"]
+                    ],
+                    "disable_web_preview": ["type": "boolean"]
+                ]
+            ]
+        case (TelegramBridgeGearDescriptor.gearID, "telegram_push.send_message"):
+            return [
+                "type": "object",
+                "required": ["channel_id", "message", "idempotency_key"],
+                "additionalProperties": false,
+                "properties": [
+                    "channel_id": ["type": "string"],
+                    "message": ["type": "string"],
+                    "idempotency_key": ["type": "string"],
+                    "parse_mode": [
+                        "type": "string",
+                        "enum": ["Markdown", "MarkdownV2", "HTML", "plain"]
+                    ],
+                    "disable_web_preview": ["type": "boolean"]
+                ]
+            ]
         case (MediaLibraryGearDescriptor.gearID, "media.filter"):
             return [
                 "type": "object",
@@ -949,13 +1053,23 @@ enum GeeHostToolRouter {
                 "additionalProperties": false,
                 "properties": [
                     "prompt": ["type": "string"],
-                    "category": ["type": "string", "enum": ["image", "video", "audio"]],
-                    "model": ["type": "string", "enum": ["nano-banana-pro", "gpt-image-2"]],
+                    "category": ["type": "string", "enum": ["image"]],
+                    "model": [
+                        "type": "string",
+                        "enum": ["nano-banana-pro", "gpt-image-2", "image-2"],
+                        "description": "Use gpt-image-2 for GPT Image-2. image-2 is accepted as an alias."
+                    ],
                     "n": [
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 1,
                         "description": "Xenodia image generation currently supports only 1 image per request."
+                    ],
+                    "batch_count": [
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 4,
+                        "description": "Gear-level batch fan-out. Gee creates one Xenodia n=1 task per requested image and returns one grouped batch result."
                     ],
                     "async": [
                         "type": "boolean",
@@ -974,28 +1088,24 @@ enum GeeHostToolRouter {
                     "resolution": [
                         "type": "string",
                         "enum": ["1K", "2K", "4K"],
-                        "description": "Nano Banana Pro only."
+                        "description": "Resolution is normalized case-insensitively."
                     ],
                     "output_format": [
                         "type": "string",
                         "enum": ["png", "jpg"],
                         "description": "Nano Banana Pro only."
                     ],
-                    "nsfw_checker": [
-                        "type": "boolean",
-                        "description": "GPT Image-2 only."
-                    ],
                     "reference_urls": [
                         "type": "array",
-                        "maxItems": 8,
+                        "maxItems": 16,
                         "items": ["type": "string"],
-                        "description": "Remote reference image URLs passed as Xenodia image_input."
+                        "description": "Remote reference image URLs passed as Xenodia image_input. Gear validation enforces the selected model limit."
                     ],
                     "reference_paths": [
                         "type": "array",
-                        "maxItems": 8,
+                        "maxItems": 16,
                         "items": ["type": "string"],
-                        "description": "Optional local JPEG, PNG, or WebP image paths, up to 30MB each. The Gear sends them through the global Xenodia channel instead of Qiniu."
+                        "description": "Optional local JPEG, PNG, or WebP image paths, up to 30MB each. Gear validation enforces the selected model limit and sends them through the global Xenodia channel instead of Qiniu."
                     ]
                 ]
             ]
@@ -1004,7 +1114,8 @@ enum GeeHostToolRouter {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": [
-                    "task_id": ["type": "string"]
+                    "task_id": ["type": "string"],
+                    "batch_id": ["type": "string"]
                 ]
             ]
         case (MediaLibraryGearDescriptor.gearID, "media.import_files"):
@@ -1017,6 +1128,39 @@ enum GeeHostToolRouter {
                         "type": "array",
                         "items": ["type": "string"],
                         "description": "Local media file paths to import into the currently open media library."
+                    ]
+                ]
+            ]
+        case (AppIconForgeGearDescriptor.gearID, "app_icon.generate"):
+            return [
+                "type": "object",
+                "required": ["source_path"],
+                "additionalProperties": false,
+                "properties": [
+                    "source_path": [
+                        "type": "string",
+                        "description": "Local image path selected or supplied by the user."
+                    ],
+                    "output_dir": [
+                        "type": "string",
+                        "description": "Optional local directory for generated .icns, .iconset, and .appiconset artifacts."
+                    ],
+                    "name": [
+                        "type": "string",
+                        "description": "Output base name. Defaults to AppIcon."
+                    ],
+                    "content_scale": [
+                        "type": "number",
+                        "minimum": 0.6,
+                        "maximum": 0.95
+                    ],
+                    "corner_radius_ratio": [
+                        "type": "number",
+                        "minimum": 0.08,
+                        "maximum": 0.28
+                    ],
+                    "shadow": [
+                        "type": "boolean"
                     ]
                 ]
             ]

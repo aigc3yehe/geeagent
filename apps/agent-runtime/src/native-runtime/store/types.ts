@@ -78,6 +78,7 @@ export type RuntimeHostActionRunSource = "sdk_same_run" | "static_fallback";
 
 export type RuntimeHostActionRunRecord = {
   host_action_id: string;
+  run_id: string;
   tool_id: string;
   session_id: string;
   conversation_id: string;
@@ -120,6 +121,27 @@ export type RuntimeExternalInvocationRecord = {
   fallback_attempted: false;
 };
 
+export type RuntimeChannelBindingRecord = {
+  source: string;
+  role: string;
+  channel_identity: string;
+  conversation_id: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type RuntimeChannelMessageRecord = {
+  source: string;
+  role: string;
+  channel_identity: string;
+  idempotency_key: string;
+  run_id?: string | null;
+  status: "accepted" | "duplicate" | "failed" | "degraded";
+  created_at: string;
+  updated_at: string;
+  fallback_attempted: false;
+};
+
 export type RuntimeStore = {
   quick_input_hint: string;
   quick_reply: string;
@@ -144,6 +166,8 @@ export type RuntimeStore = {
   host_action_intents?: RuntimeHostActionIntent[];
   host_action_runs?: RuntimeHostActionRunRecord[];
   external_invocations?: RuntimeExternalInvocationRecord[];
+  channel_bindings?: RuntimeChannelBindingRecord[];
+  channel_messages?: RuntimeChannelMessageRecord[];
 };
 
 export type RuntimeSecurityPreferences = {
@@ -161,5 +185,7 @@ export type RuntimeSnapshot = Omit<
   security_preferences: RuntimeSecurityPreferences;
   host_action_intents: RuntimeHostActionIntent[];
   external_invocations: RuntimeExternalInvocationRecord[];
+  channel_bindings: RuntimeChannelBindingRecord[];
+  channel_messages: RuntimeChannelMessageRecord[];
   skill_sources: RuntimeSkillSourcesSnapshot;
 };

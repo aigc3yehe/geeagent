@@ -132,6 +132,7 @@ export function installClaudeSdkTerminalApproval(
   });
   store.approval_requests.unshift({
     approval_request_id: approvalRequestId,
+    run_id: cursor.runId,
     task_id: taskId,
     action_title: `Review terminal access: ${summarizePrompt(pending.command, 72)}`,
     reason: "This terminal command needs your approval before GeeAgent runs it.",
@@ -147,6 +148,7 @@ export function installClaudeSdkTerminalApproval(
       source: route.source,
       surface: route.surface,
       user_prompt: userContent,
+      run_id: cursor.runId,
       runtime_session_id: pending.runtime_session_id,
       runtime_request_id: pending.runtime_request_id,
       scope: pending.scope,

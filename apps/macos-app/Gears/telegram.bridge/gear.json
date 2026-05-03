@@ -1,0 +1,264 @@
+{
+  "schema": "gee.gear.v1",
+  "id": "telegram.bridge",
+  "name": "Telegram Bridge",
+  "description": "Optional Telegram bridge for Codex remote control, GeeAgent direct chat, and push-only Telegram information delivery channels.",
+  "developer": "Gee",
+  "version": "0.1.0",
+  "category": "Communication",
+  "kind": "atmosphere",
+  "display_mode": "full_canvas",
+  "entry": {
+    "type": "native",
+    "native_id": "telegram.bridge"
+  },
+  "permissions": [
+    "network.telegram",
+    "gear_data.read",
+    "gear_data.write",
+    "secret.telegram.read",
+    "secret.telegram.write",
+    "runtime.session.invoke"
+  ],
+  "dependencies": {
+    "install_strategy": "on_open",
+    "items": [
+      {
+        "id": "node",
+        "kind": "runtime",
+        "scope": "global",
+        "required": false,
+        "detect": {
+          "command": "node",
+          "args": ["--version"],
+          "min_version": "22.0.0"
+        },
+        "installer": {
+          "type": "recipe",
+          "id": "brew.install.node"
+        }
+      }
+    ]
+  },
+  "agent": {
+    "enabled": true,
+    "capabilities": [
+      {
+        "id": "telegram_bridge.status",
+        "title": "Get Telegram bridge status",
+        "description": "Return configured Telegram Bridge account roles, push-only channels, worker state, and structured degraded or failed reasons.",
+        "examples": [
+          "Show Telegram Bridge status",
+          "List configured Telegram channels"
+        ],
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {}
+        },
+        "side_effect": "read_only",
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "low",
+            "requires_approval": false,
+            "skill_hint": "Use to inspect configured Telegram Bridge accounts and push channels. Never expose bot tokens."
+          }
+        }
+      },
+      {
+        "id": "telegram_push.list_channels",
+        "title": "List push-only Telegram channels",
+        "description": "List enabled push-only Telegram delivery channels with redacted targets.",
+        "examples": [
+          "Which Telegram push channels are available?",
+          "List Telegram delivery channels"
+        ],
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled_only": {
+              "type": "boolean",
+              "description": "When true, include only enabled push-only channels."
+            }
+          }
+        },
+        "side_effect": "read_only",
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "low",
+            "requires_approval": false,
+            "skill_hint": "Use before sending a Telegram push message so Codex chooses an existing configured channel."
+          }
+        }
+      },
+      {
+        "id": "telegram_push.upsert_channel",
+        "title": "Create or update push-only Telegram channel",
+        "description": "Create or update a push-only Telegram delivery channel bound to a push-only bot account. Bot tokens are stored outside config and are not accepted by this capability.",
+        "examples": [
+          "Create a morning_news Telegram push channel",
+          "Bind this Telegram channel target to the news bot account"
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": ["channel_id", "account_id", "target_kind", "target_value"],
+          "additionalProperties": false,
+          "properties": {
+            "channel_id": {
+              "type": "string",
+              "description": "Stable push channel id, such as morning_news."
+            },
+            "account_id": {
+              "type": "string",
+              "description": "Push-only bot account id to create or reuse."
+            },
+            "title": {
+              "type": "string"
+            },
+            "bot_username": {
+              "type": "string"
+            },
+            "target_kind": {
+              "type": "string",
+              "enum": ["chat_id", "group_id", "channel_id", "channel_username"]
+            },
+            "target_value": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "parse_mode": {
+              "type": "string",
+              "enum": ["Markdown", "MarkdownV2", "HTML", "plain"]
+            },
+            "disable_web_preview": {
+              "type": "boolean"
+            }
+          }
+        },
+        "side_effect": "gear_data.write",
+        "permissions": [
+          "gear_data.read",
+          "gear_data.write"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": false,
+            "reason": "Channel creation should stay in the Gee native setup flow because bot token binding and target confirmation are user-local configuration steps."
+          }
+        }
+      },
+      {
+        "id": "telegram_push.send_message",
+        "title": "Send push-only Telegram message",
+        "description": "Send a report, digest, alert, or artifact summary to a named push-only Telegram channel. This capability is intended for scheduled Codex reports after the delivery dispatcher is implemented.",
+        "examples": [
+          "Send the morning news brief to Telegram",
+          "Push this task report to the morning_news channel"
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": ["channel_id", "message", "idempotency_key"],
+          "additionalProperties": false,
+          "properties": {
+            "channel_id": {
+              "type": "string",
+              "description": "Configured push-only channel id, such as morning_news."
+            },
+            "message": {
+              "type": "string",
+              "description": "Rendered Telegram message body."
+            },
+            "idempotency_key": {
+              "type": "string",
+              "description": "Caller-provided key used to avoid duplicate sends for scheduled reports."
+            },
+            "title": {
+              "type": "string",
+              "description": "Optional delivery title for audit and activity UI."
+            },
+            "parse_mode": {
+              "type": "string",
+              "enum": ["Markdown", "MarkdownV2", "HTML", "plain"],
+              "description": "Optional Telegram parse mode override."
+            },
+            "disable_web_preview": {
+              "type": "boolean",
+              "description": "Whether Telegram should suppress link previews."
+            },
+            "artifact_refs": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Optional Gee artifact refs summarized or delivered by policy."
+            }
+          }
+        },
+        "output_schema": {
+          "type": "object",
+          "required": ["status", "fallback_attempted", "channelId", "error"],
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": ["success", "partial", "blocked", "degraded", "failed"]
+            },
+            "fallback_attempted": { "type": "boolean" },
+            "channelId": { "type": "string" },
+            "accountId": { "type": "string" },
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": { "type": "string" },
+                "redacted": { "type": "string" }
+              }
+            },
+            "delivery": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "telegramMessageId": { "type": "string" },
+                "sentAt": { "type": "string" },
+                "idempotencyKey": { "type": "string" }
+              }
+            },
+            "error": {
+              "oneOf": [
+                { "type": "null" },
+                {
+                  "type": "object",
+                  "required": ["code", "message"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": { "type": "string" },
+                    "message": { "type": "string" },
+                    "retryAfterMs": { "type": "number" }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "side_effect": "network.telegram.send",
+        "permissions": [
+          "network.telegram",
+          "secret.telegram.read",
+          "gear_data.read",
+          "gear_data.write"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "medium",
+            "requires_approval": false,
+            "skill_hint": "Use only for configured push-only Telegram channels returned by GeeAgent. Never call Telegram Bot API directly or invent a target."
+          }
+        }
+      }
+    ]
+  }
+}

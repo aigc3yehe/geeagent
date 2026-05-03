@@ -52,8 +52,8 @@ import {
 
 export type TurnRoute = {
   mode: "quick_prompt" | "workspace_message";
-  source: "quick_input" | "workspace_chat";
-  surface: "cli_quick_input" | "cli_workspace_chat";
+  source: "quick_input" | "workspace_chat" | "telegram.bridge";
+  surface: "cli_quick_input" | "cli_workspace_chat" | "telegram";
 };
 
 export type SdkToolEvent =
@@ -1145,6 +1145,14 @@ function isGeeGearInvokeTool(toolName: string): boolean {
   );
 }
 
+function isGeeAppOpenSurfaceTool(toolName: string): boolean {
+  return (
+    toolName === "mcp__gee__app_open_surface" ||
+    toolName === "app_open_surface" ||
+    toolName === "gee.app.openSurface"
+  );
+}
+
 function normalizeSdkGearInvokeInput(
   toolName: string,
   input: Record<string, unknown>,
@@ -1178,12 +1186,33 @@ function turnUsedGeeHostBridge(turn: SdkTurnResult): boolean {
   );
 }
 
+function turnUsedGeeHostExecution(turn: SdkTurnResult): boolean {
+  if (turn.pending_host_actions && turn.pending_host_actions.length > 0) {
+    return true;
+  }
+  return turn.tool_events.some(
+    (event) =>
+      event.kind === "invocation" &&
+      (isGeeGearInvokeTool(event.tool_name) || isGeeAppOpenSurfaceTool(event.tool_name)),
+  );
+}
+
 function gearFirstMissingBridgeResultReason(
   toolBoundaryMode: "default" | "gear_first",
   turn: SdkTurnResult,
   runPlan: RuntimeRunPlan | null,
 ): string | null {
-  if (toolBoundaryMode !== "gear_first" || turnUsedGeeHostBridge(turn)) {
+  if (toolBoundaryMode !== "gear_first") {
+    return null;
+  }
+  const usedBridge = turnUsedGeeHostBridge(turn);
+  if (usedBridge && !runPlan && !turnUsedGeeHostExecution(turn)) {
+    return (
+      "Gear-first light turn ended after capability discovery without executing a Gear invocation or opening a Gear surface. " +
+      "GeeAgent marked the run failed instead of treating capability discovery as task completion."
+    );
+  }
+  if (usedBridge) {
     return null;
   }
   if (runPlan && !runtimePlanHasLockedFocus(runPlan)) {
@@ -1648,6 +1677,7 @@ export const __sdkTurnRunnerTestHooks = {
   gearFirstCapabilityFocusViolationReason,
   gearFirstMissingBridgeResultReason,
   normalizeSdkGearInvokeInput,
+  turnUsedGeeHostExecution,
   turnUsedGeeHostBridge,
   unsupportedToolDenialMessage,
   extractHostActionDirective,

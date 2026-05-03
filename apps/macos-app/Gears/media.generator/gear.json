@@ -46,10 +46,155 @@
           "Generate an image of a neon rainy study room",
           "Use this reference image and make a cinematic poster"
         ],
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "prompt"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "prompt": {
+              "type": "string",
+              "description": "The user-provided generation prompt."
+            },
+            "category": {
+              "type": "string",
+              "enum": [
+                "image"
+              ],
+              "description": "Only image generation is currently wired through Xenodia."
+            },
+            "model": {
+              "type": "string",
+              "enum": [
+                "nano-banana-pro",
+                "gpt-image-2",
+                "image-2"
+              ],
+              "description": "Use gpt-image-2 for GPT Image-2. image-2 is accepted as an alias."
+            },
+            "n": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1,
+              "description": "Xenodia image generation currently supports only 1 image per request."
+            },
+            "batch_count": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4,
+              "description": "Gear-level batch fan-out. Gee creates one Xenodia n=1 task per requested image and returns one grouped batch result."
+            },
+            "async": {
+              "type": "boolean",
+              "description": "When true, create an async Xenodia task and poll the task endpoint. Gee defaults this to true."
+            },
+            "response_format": {
+              "type": "string",
+              "enum": [
+                "url"
+              ],
+              "description": "Only URL responses are currently supported."
+            },
+            "aspect_ratio": {
+              "type": "string",
+              "enum": [
+                "auto",
+                "1:1",
+                "2:3",
+                "3:2",
+                "3:4",
+                "4:3",
+                "4:5",
+                "5:4",
+                "9:16",
+                "16:9",
+                "21:9"
+              ],
+              "description": "Supported ratios vary by model; 3:4 is supported by GPT Image-2."
+            },
+            "resolution": {
+              "type": "string",
+              "enum": [
+                "1K",
+                "2K",
+                "4K"
+              ],
+              "description": "Resolution is normalized case-insensitively."
+            },
+            "output_format": {
+              "type": "string",
+              "enum": [
+                "png",
+                "jpg"
+              ],
+              "description": "Nano Banana Pro only."
+            },
+            "reference_urls": {
+              "type": "array",
+              "maxItems": 16,
+              "items": {
+                "type": "string"
+              },
+              "description": "Remote reference image URLs passed as Xenodia image_input. Gear validation enforces the selected model limit."
+            },
+            "reference_paths": {
+              "type": "array",
+              "maxItems": 16,
+              "items": {
+                "type": "string"
+              },
+              "description": "Optional local JPEG, PNG, or WebP image paths, up to 30MB each. Gear validation enforces the selected model limit."
+            }
+          }
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string"
+            },
+            "batch_id": {
+              "type": "string"
+            },
+            "batch_count": {
+              "type": "integer"
+            },
+            "status": {
+              "type": "string"
+            },
+            "provider_task_id": {
+              "type": "string"
+            },
+            "result_url": {
+              "type": "string"
+            },
+            "local_output_path": {
+              "type": "string"
+            },
+            "task_path": {
+              "type": "string"
+            },
+            "tasks": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "side_effect": "provider_task.create",
+        "permissions": [
+          "network.xenodia",
+          "provider.media_generation",
+          "gear_data.write"
+        ],
         "exports": {
           "codex": {
-            "enabled": false,
-            "reason": "Creates provider-backed generation tasks and artifacts; keep disabled until Codex approval, provider readiness, and artifact continuation semantics are audited end to end."
+            "enabled": true,
+            "risk": "high",
+            "requires_approval": false,
+            "skill_hint": "Use only when the current user message explicitly asks Codex to create a media generation task. Preserve the user's prompt, map image-2 to gpt-image-2, use batch_count 1-4 for multi-image requests, prefer async=true, and report the returned task_id or batch_id/artifact references instead of claiming the image is finished before Gee returns it."
           }
         }
       },
@@ -66,6 +211,9 @@
           "additionalProperties": false,
           "properties": {
             "task_id": {
+              "type": "string"
+            },
+            "batch_id": {
               "type": "string"
             }
           }

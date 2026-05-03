@@ -38,6 +38,41 @@ final class NativeWorkbenchRuntimeClientPhase3ProjectionTests: XCTestCase {
         XCTAssertTrue(
             messages.contains { $0.kind == .chat && $0.content == "Done." }
         )
+        XCTAssertEqual(snapshot.conversations.first?.runtimeRunSummary?.runID, "run_phase3")
+        XCTAssertEqual(snapshot.conversations.first?.runtimeRunSummary?.lastSequence, 12)
+        XCTAssertEqual(snapshot.conversations.first?.runtimeRunSummary?.lastEventKind, "assistant_message")
+    }
+
+    func testProjectsExternalInvocationFractionalArgsWithoutTruncation() throws {
+        let json = Self.phase3SnapshotJSON.replacingOccurrences(
+            of: #""tasks": []"#,
+            with: #"""
+      "external_invocations": [
+        {
+          "external_invocation_id": "gee_ext_icon",
+          "tool": "gee_invoke_capability",
+          "status": "pending",
+          "gear_id": "app.icon.forge",
+          "capability_id": "app_icon.generate",
+          "surface_id": null,
+          "args": {
+            "source_path": "/tmp/source.png",
+            "content_scale": 0.95,
+            "corner_radius_ratio": 0.22,
+            "shadow": true
+          }
+        }
+      ],
+      "tasks": []
+"""#
+        )
+        let snapshot = try NativeWorkbenchRuntimeClient.projectSnapshotForTesting(from: Data(json.utf8))
+        let invocation = try XCTUnwrap(snapshot.externalInvocations.first)
+
+        XCTAssertEqual(invocation.args["source_path"], .string("/tmp/source.png"))
+        XCTAssertEqual(invocation.args["content_scale"], .double(0.95))
+        XCTAssertEqual(invocation.args["corner_radius_ratio"], .double(0.22))
+        XCTAssertEqual(invocation.args["shadow"], .bool(true))
     }
 
     private static let phase3SnapshotJSON = """
@@ -283,6 +318,8 @@ final class NativeWorkbenchRuntimeClientPhase3ProjectionTests: XCTestCase {
           "event_id": "evt_assistant_final",
           "session_id": "session_phase3",
           "parent_event_id": "evt_assistant_delta",
+          "run_id": "run_phase3",
+          "sequence": 12,
           "created_at": "now",
           "payload": {
             "kind": "assistant_message",

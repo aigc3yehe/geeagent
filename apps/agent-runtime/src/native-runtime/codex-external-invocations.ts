@@ -43,6 +43,7 @@ const TERMINAL_STATUSES = new Set([
   "failed",
   "degraded",
 ]);
+const DEFAULT_STALE_RUNNING_MS = 10 * 60 * 1000;
 
 export async function createExternalInvocation(
   configDir: string,
@@ -118,9 +119,17 @@ export async function getExternalInvocation(
   invocationID: string,
 ): Promise<ExternalInvocationResult | null> {
   const store = await loadRuntimeStore(configDir);
-  const record = (store.external_invocations ?? []).find(
-    (item) => item.external_invocation_id === invocationID,
-  );
+  const records = store.external_invocations ?? [];
+  const index = records.findIndex((item) => item.external_invocation_id === invocationID);
+  if (index < 0) {
+    return null;
+  }
+  const record = maybeDegradeStaleRunningInvocation(records[index]);
+  if (record !== records[index]) {
+    records[index] = record;
+    store.external_invocations = records;
+    await persistRuntimeStore(configDir, store);
+  }
   return record ? withStandard(record) : null;
 }
 
@@ -169,6 +178,34 @@ function normalizeCompletionStatus(value: unknown): RuntimeExternalInvocationSta
     return value;
   }
   throw new Error("external invocation completion status must be running, success, partial, blocked, failed, or degraded");
+}
+
+function maybeDegradeStaleRunningInvocation(
+  record: RuntimeExternalInvocationRecord,
+): RuntimeExternalInvocationRecord {
+  if (record.status !== "running") {
+    return record;
+  }
+  const updatedAt = Date.parse(record.updated_at);
+  if (!Number.isFinite(updatedAt) || Date.now() - updatedAt <= DEFAULT_STALE_RUNNING_MS) {
+    return record;
+  }
+  return {
+    ...record,
+    status: "degraded",
+    updated_at: currentTimestamp(),
+    error: {
+      code: "gee.external_invocation.running_stale",
+      message:
+        "This external Gee invocation was running for too long without a completion update.",
+    },
+    recovery: {
+      kind: "manual_retry_required",
+      message:
+        "This invocation will not be retried automatically because it may have already executed side effects. Inspect the Gear state, then start a new Codex invocation if needed.",
+    },
+    fallback_attempted: false,
+  };
 }
 
 function withStandard(record: RuntimeExternalInvocationRecord): ExternalInvocationResult {

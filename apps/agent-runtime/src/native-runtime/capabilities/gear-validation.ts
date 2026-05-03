@@ -32,11 +32,28 @@ const GEAR_CAPABILITY_CONTRACTS: RuntimeCapabilityContract[] = [
   gearContract("bookmark.vault", "bookmark.save", [
     requiredString("content", ["content", "raw_content"]),
   ]),
+  gearContract("app.icon.forge", "app_icon.generate", [
+    requiredString("source_path", ["source_path", "path"]),
+  ]),
+  gearContract("media.generator", "media_generator.create_task", [
+    requiredString("prompt", ["prompt"]),
+  ]),
   gearContract("media.library", "media.focus_folder", [
     requiredString("folder_name", ["folder_name"]),
   ]),
   gearContract("media.library", "media.import_files", [
     requiredStringArray("paths", ["paths", "file_paths"]),
+  ]),
+  gearContract("telegram.bridge", "telegram_push.upsert_channel", [
+    requiredString("channel_id", ["channel_id", "channelId"]),
+    requiredString("account_id", ["account_id", "accountId"]),
+    requiredString("target_kind", ["target_kind", "targetKind"]),
+    requiredString("target_value", ["target_value", "targetValue"]),
+  ]),
+  gearContract("telegram.bridge", "telegram_push.send_message", [
+    requiredString("channel_id", ["channel_id", "channelId"]),
+    requiredString("message", ["message"]),
+    requiredString("idempotency_key", ["idempotency_key", "idempotencyKey"]),
   ]),
   gearContract("smartyt.media", "smartyt.download", [requiredString("url", ["url"])]),
   gearContract("smartyt.media", "smartyt.download_now", [requiredString("url", ["url"])]),

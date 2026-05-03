@@ -13,6 +13,11 @@ Current Xenodia image models:
 - `gpt-image-2`: supports `n=1`, `async`, `response_format=url`,
   `aspect_ratio`, `resolution`, and reference images.
 
+Multi-image generation is Gear-level fan-out, not provider `n>1`. The UI and
+agent capability accept `batch_count` from 1 to 4; Gee creates one saved
+Xenodia `n=1` task per requested image and presents those child tasks as one
+batch row in the native workbench.
+
 Reference inputs are model-specific: Nano Banana Pro accepts up to 8 total
 images, and GPT Image-2 accepts up to 16 total images. Local files must be JPEG,
 PNG, or WebP and 30MB or smaller. Local references are sent through the global

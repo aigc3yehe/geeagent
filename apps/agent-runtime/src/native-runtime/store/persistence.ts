@@ -108,6 +108,12 @@ function normalizeRuntimeStore(value: unknown): RuntimeStore {
     external_invocations: Array.isArray(value.external_invocations)
       ? (value.external_invocations as RuntimeStore["external_invocations"])
       : fallback.external_invocations,
+    channel_bindings: Array.isArray(value.channel_bindings)
+      ? (value.channel_bindings as RuntimeStore["channel_bindings"])
+      : fallback.channel_bindings,
+    channel_messages: Array.isArray(value.channel_messages)
+      ? (value.channel_messages as RuntimeStore["channel_messages"])
+      : fallback.channel_messages,
   };
 
   if (!store.agent_profiles.some((profile) => profile.id === store.active_agent_profile_id)) {

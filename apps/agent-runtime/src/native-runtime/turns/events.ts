@@ -3,7 +3,7 @@ import { currentTimestamp } from "../store/defaults.js";
 import type { RuntimeConversation, RuntimeStore } from "../store/types.js";
 import { runtimeProjectPath } from "../paths.js";
 import type { SdkToolArtifactRef, SdkToolEvent, TurnRoute } from "../sdk-turn-runner.js";
-import { isRecord, summarizePrompt } from "./state.js";
+import { isRecord, stringField, summarizePrompt } from "./state.js";
 import type { JsonRecord, TurnReplayCursor } from "./types.js";
 import type { RuntimeRunPlan } from "./planning.js";
 
@@ -14,22 +14,23 @@ export function beginTurnReplay(
   surface: TurnRoute["surface"],
   userContent: string,
 ): TurnReplayCursor {
-  const [sessionId, userMessageId] = appendUserMessageForActiveConversation(
+  const [sessionId, userMessageId, runId] = appendUserMessageForActiveConversation(
     store,
     surface,
     userContent,
   );
   const assistantMessageId = nextAssistantMessageIdForActiveConversation(store);
   appendSessionStateForSession(store, sessionId, turnSetupSummary(surface));
-  return { sessionId, userMessageId, assistantMessageId, stepCount: 0 };
+  return { runId, sessionId, userMessageId, assistantMessageId, stepCount: 0 };
 }
 
 function appendUserMessageForActiveConversation(
   store: RuntimeStore,
   surface: TurnRoute["surface"],
   content: string,
-): [string, string] {
+): [string, string, string] {
   const sessionId = ensureExecutionSessionForActiveConversation(store, surface);
+  const runId = nextRunIdForSession(store, sessionId);
   const conversation = activeConversation(store);
   const messageId = userMessageId(conversation);
   conversation.messages.push({
@@ -43,8 +44,8 @@ function appendUserMessageForActiveConversation(
     kind: "user_message",
     message_id: messageId,
     content,
-  });
-  return [sessionId, messageId];
+  }, runId);
+  return [sessionId, messageId, runId];
 }
 
 export function appendAssistantMessageForActiveConversation(
@@ -98,11 +99,12 @@ export function appendSessionStateForSession(
   store: RuntimeStore,
   sessionId: string,
   summary: string,
+  runId?: string | null,
 ): void {
   appendTranscriptEvent(store, sessionId, {
     kind: "session_state_changed",
     summary,
-  });
+  }, runId);
 }
 
 export function appendRunPlanForSession(
@@ -273,6 +275,7 @@ export function appendToolResultForExistingInvocation(
   summary?: string,
   error?: string,
   artifacts: SdkToolArtifactRef[] = [],
+  runId?: string | null,
 ): void {
   const hasInvocation = store.transcript_events.some(
     (event) =>
@@ -301,7 +304,7 @@ export function appendToolResultForExistingInvocation(
     summary: summary ?? null,
     error: error ?? null,
     artifacts: transcriptArtifacts(artifacts),
-  });
+  }, runId);
 }
 
 export function appendToolResultForHostBridgeCompletion(
@@ -311,6 +314,7 @@ export function appendToolResultForHostBridgeCompletion(
   status: "succeeded" | "failed",
   summary?: string,
   error?: string,
+  runId?: string | null,
 ): void {
   const toolName = hostBridgeToolName(toolID);
   if (!toolName) {
@@ -356,7 +360,7 @@ export function appendToolResultForHostBridgeCompletion(
         summary: summary ?? null,
         error: error ?? null,
         artifacts: [],
-      });
+      }, runId);
       return;
     }
   }
@@ -379,22 +383,50 @@ export function appendTranscriptEvent(
   store: RuntimeStore,
   sessionId: string,
   payload: JsonRecord,
+  runId?: string | null,
 ): void {
+  const payloadRunId = nonEmptyStringField(payload, "run_id");
+  const explicitRunId = typeof runId === "string" && runId.trim().length > 0 ? runId : null;
+  const resolvedRunId =
+    payloadRunId ??
+    explicitRunId ??
+    latestRunIdForSession(store, sessionId);
+  const resolvedPayload = resolvedRunId && !payloadRunId
+    ? { ...payload, run_id: resolvedRunId }
+    : payload;
   const eventId = nextTranscriptEventId(store, sessionId);
   const parentEventId = lastTranscriptEventId(store, sessionId);
-  store.transcript_events.push({
+  const event: JsonRecord = {
     event_id: eventId,
     session_id: sessionId,
     parent_event_id: parentEventId,
     created_at: "now",
-    payload,
-  });
+    payload: resolvedPayload,
+  };
+  if (resolvedRunId) {
+    event.run_id = resolvedRunId;
+    event.sequence = nextRunEventSequence(store, sessionId, resolvedRunId);
+  }
+  store.transcript_events.push(event);
   const session = store.execution_sessions.find(
     (candidate) => isRecord(candidate) && candidate.session_id === sessionId,
   );
   if (isRecord(session)) {
     session.updated_at = "now";
+    if (resolvedRunId) {
+      session.last_run_id = resolvedRunId;
+    }
   }
+}
+
+export function latestRunIdForSession(
+  store: RuntimeStore,
+  sessionId: string,
+): string | null {
+  const found = [...store.transcript_events]
+    .reverse()
+    .find((event) => isRecord(event) && event.session_id === sessionId && stringField(event, "run_id"));
+  return isRecord(found) ? stringField(found, "run_id") ?? null : null;
 }
 
 export function ensureExecutionSessionForActiveConversation(
@@ -449,6 +481,36 @@ function nextTranscriptEventId(store: RuntimeStore, sessionId: string): string {
     (event) => isRecord(event) && event.session_id === sessionId,
   ).length;
   return `event_${sessionId}_${String(count + 1).padStart(2, "0")}`;
+}
+
+function nextRunIdForSession(store: RuntimeStore, sessionId: string): string {
+  const runIds = new Set(
+    store.transcript_events
+      .filter((event) => isRecord(event) && event.session_id === sessionId)
+      .map((event) => stringField(event, "run_id"))
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0),
+  );
+  return `run_${sessionId}_${String(runIds.size + 1).padStart(4, "0")}`;
+}
+
+function nextRunEventSequence(store: RuntimeStore, sessionId: string, runId: string): number {
+  const sequenceNumbers = store.transcript_events
+    .map((event) => {
+      if (!isRecord(event)) {
+        return null;
+      }
+      if (event.session_id !== sessionId || stringField(event, "run_id") !== runId) {
+        return null;
+      }
+      return typeof event.sequence === "number" ? event.sequence : null;
+    })
+    .filter((value): value is number => typeof value === "number" && Number.isInteger(value) && value > 0);
+  return (sequenceNumbers.length > 0 ? Math.max(...sequenceNumbers) : 0) + 1;
+}
+
+function nonEmptyStringField(record: unknown, field: string): string | null {
+  const value = stringField(record, field).trim();
+  return value.length > 0 ? value : null;
 }
 
 function lastTranscriptEventId(store: RuntimeStore, sessionId: string): string | null {

@@ -174,7 +174,7 @@ private struct MediaGeneratorGearRootView: View {
                         options: MediaGeneratorOutputFormat.allCases
                     )
                 }
-                MediaGeneratorReadonlyField(title: "Images", value: "\(store.imageCount)")
+                MediaGeneratorImageCountField(selection: $store.imageCount)
             }
             MediaGeneratorCheckboxRow(
                 title: "Async task",
@@ -271,19 +271,14 @@ private struct MediaGeneratorGearRootView: View {
                 store.generateCurrentPrompt()
             } label: {
                 HStack(spacing: 8) {
-                    if store.isBusy {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Image(systemName: "paperplane.fill")
-                    }
-                    Text(store.isBusy ? "Generating..." : "Generate Now")
+                    Image(systemName: "paperplane.fill")
+                    Text("Generate Now")
                         .font(.system(size: 14, weight: .semibold))
                 }
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(MediaGeneratorPrimaryButtonStyle())
-            .disabled(store.isBusy || store.category != .image || store.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(store.category != .image || store.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
     }
 
@@ -405,7 +400,7 @@ private struct MediaGeneratorGearRootView: View {
                     Image(systemName: "clock")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.52))
-                    Text("\(store.visibleTasks.count)/\(store.tasks.count)")
+                    Text("\(store.visibleTaskGroups.count)/\(store.taskGroups.count)")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.white.opacity(0.46))
                 }
@@ -452,7 +447,7 @@ private struct MediaGeneratorGearRootView: View {
             }
 
             ScrollView {
-                if store.visibleTasks.isEmpty {
+                if store.visibleTaskGroups.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "display")
                             .font(.system(size: 30, weight: .medium))
@@ -468,37 +463,72 @@ private struct MediaGeneratorGearRootView: View {
                     .padding(.horizontal, 24)
                 } else {
                     LazyVStack(spacing: 12) {
-                        ForEach(store.visibleTasks) { task in
-                            MediaGeneratorTaskCard(
-                                task: task,
-                                isSelected: store.selectedTaskID == task.id,
-                                onPreview: {
-                                    previewScale = 1
-                                    previewTask = task
-                                },
-                                onDownload: {
-                                    store.downloadResult(task)
-                                },
-                                onCopy: {
-                                    store.copyResultURL(task)
-                                },
-                                onReveal: {
-                                    store.revealResultInFinder(task)
-                                },
-                                onUseAsReference: {
-                                    store.useResultAsReference(task)
-                                },
-                                onApply: {
-                                    store.applyTaskParameters(task)
-                                },
-                                onStar: {
-                                    store.toggleStar(task)
-                                },
-                                onDelete: {
-                                    store.confirmAndDelete(task)
+                        ForEach(store.visibleTaskGroups) { group in
+                            if group.isBatch {
+                                MediaGeneratorTaskGroupCard(
+                                    group: group,
+                                    isSelected: group.tasks.contains { $0.id == store.selectedTaskID },
+                                    onPreview: { task in
+                                        previewScale = 1
+                                        previewTask = task
+                                    },
+                                    onDownload: { task in
+                                        store.downloadResult(task)
+                                    },
+                                    onCopy: { task in
+                                        store.copyResultURL(task)
+                                    },
+                                    onReveal: { task in
+                                        store.revealResultInFinder(task)
+                                    },
+                                    onUseAsReference: { task in
+                                        store.useResultAsReference(task)
+                                    },
+                                    onApply: {
+                                        store.applyTaskParameters(group.representative)
+                                    },
+                                    onStar: {
+                                        store.toggleStar(group)
+                                    },
+                                    onDelete: {
+                                        store.confirmAndDelete(group)
+                                    }
+                                ) {
+                                    store.selectedTaskID = group.representative.id
                                 }
-                            ) {
-                                store.selectedTaskID = task.id
+                            } else {
+                                let task = group.representative
+                                MediaGeneratorTaskCard(
+                                    task: task,
+                                    isSelected: store.selectedTaskID == task.id,
+                                    onPreview: {
+                                        previewScale = 1
+                                        previewTask = task
+                                    },
+                                    onDownload: {
+                                        store.downloadResult(task)
+                                    },
+                                    onCopy: {
+                                        store.copyResultURL(task)
+                                    },
+                                    onReveal: {
+                                        store.revealResultInFinder(task)
+                                    },
+                                    onUseAsReference: {
+                                        store.useResultAsReference(task)
+                                    },
+                                    onApply: {
+                                        store.applyTaskParameters(task)
+                                    },
+                                    onStar: {
+                                        store.toggleStar(task)
+                                    },
+                                    onDelete: {
+                                        store.confirmAndDelete(task)
+                                    }
+                                ) {
+                                    store.selectedTaskID = task.id
+                                }
                             }
                         }
                     }
@@ -554,6 +584,36 @@ private struct MediaGeneratorOptionField<Value: Identifiable & RawRepresentable 
             } label: {
                 HStack(spacing: 8) {
                     Text(selection.rawValue)
+                        .font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                    Spacer()
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.45))
+                }
+            }
+            .buttonStyle(MediaGeneratorSelectButtonStyle())
+        }
+    }
+}
+
+private struct MediaGeneratorImageCountField: View {
+    @Binding var selection: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Images")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white.opacity(0.56))
+            Menu {
+                ForEach(1...4, id: \.self) { count in
+                    Button("\(count)") {
+                        selection = count
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Text("\(selection)")
                         .font(.system(size: 12, weight: .medium))
                         .lineLimit(1)
                     Spacer()
@@ -1465,6 +1525,218 @@ private struct MediaGeneratorTaskCard: View {
         case .running: MediaGeneratorPalette.accent
         case .completed: .green
         case .failed: .red
+        }
+    }
+}
+
+private struct MediaGeneratorTaskGroupCard: View {
+    var group: MediaGeneratorTaskGroup
+    var isSelected: Bool
+    var onPreview: (MediaGeneratorTask) -> Void
+    var onDownload: (MediaGeneratorTask) -> Void
+    var onCopy: (MediaGeneratorTask) -> Void
+    var onReveal: (MediaGeneratorTask) -> Void
+    var onUseAsReference: (MediaGeneratorTask) -> Void
+    var onApply: () -> Void
+    var onStar: () -> Void
+    var onDelete: () -> Void
+    var onSelect: () -> Void
+    @State private var isHovered = false
+
+    private let columns = [
+        GridItem(.flexible(), spacing: 8),
+        GridItem(.flexible(), spacing: 8)
+    ]
+
+    var body: some View {
+        let representative = group.representative
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 8) {
+                Text(representative.modelID.title)
+                    .font(.system(size: 10, weight: .bold))
+                    .textCase(.uppercase)
+                    .foregroundStyle(MediaGeneratorPalette.modelPurple)
+                    .lineLimit(1)
+                MediaGeneratorTaskTinyBadge(text: "\(group.batchCount) IMAGES", color: MediaGeneratorPalette.accentLight)
+                Text(timeText)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.white.opacity(0.40))
+                Spacer()
+                if group.isStarred {
+                    MediaGeneratorTaskTinyBadge(text: "STAR", color: .yellow)
+                }
+                if group.isLocallyCached {
+                    MediaGeneratorTaskTinyBadge(text: "CACHED", color: .green)
+                }
+            }
+
+            Text(representative.displayTitle)
+                .font(.system(size: 11, weight: .medium))
+                .lineSpacing(3)
+                .foregroundStyle(.white.opacity(0.90))
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 10) {
+                Text(group.statusTitle)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(statusColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(statusColor.opacity(0.14), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                Text("\(group.completedCount) done / \(group.failedCount) failed / \(group.runningCount) running")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.white.opacity(0.46))
+                    .lineLimit(1)
+                Spacer()
+                HStack(spacing: 8) {
+                    Button(action: onStar) {
+                        Image(systemName: group.isStarred ? "star.fill" : "star")
+                    }
+                    .buttonStyle(MediaGeneratorTaskActionButtonStyle(tint: .yellow, isActive: group.isStarred))
+                    Button(action: onApply) {
+                        Label("Apply", systemImage: "checkmark.circle")
+                    }
+                    .buttonStyle(MediaGeneratorTaskActionButtonStyle())
+                    Button(action: onDelete) {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(MediaGeneratorTaskActionButtonStyle(tint: .red))
+                }
+            }
+
+            LazyVGrid(columns: columns, spacing: 8) {
+                ForEach(group.tasks.sorted(by: MediaGeneratorTaskGroup.sortTasks)) { task in
+                    MediaGeneratorTaskGroupTile(
+                        task: task,
+                        isHovered: isHovered,
+                        onPreview: { onPreview(task) },
+                        onDownload: { onDownload(task) },
+                        onCopy: { onCopy(task) },
+                        onReveal: { onReveal(task) },
+                        onUseAsReference: { onUseAsReference(task) }
+                    )
+                }
+            }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(isSelected ? MediaGeneratorPalette.accent.opacity(0.10) : Color.white.opacity(isHovered ? 0.06 : 0.04))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(isSelected ? MediaGeneratorPalette.accent.opacity(0.34) : Color.white.opacity(isHovered ? 0.12 : 0.08), lineWidth: 0.8)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .onTapGesture(perform: onSelect)
+        .animation(.easeOut(duration: 0.16), value: isHovered)
+        .onHover { isHovered = $0 }
+    }
+
+    private var timeText: String {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .medium
+        formatter.dateStyle = .none
+        return formatter.string(from: group.representative.createdAt)
+    }
+
+    private var statusColor: Color {
+        switch group.statusTitle {
+        case MediaGeneratorTaskStatus.completed.title:
+            .green
+        case MediaGeneratorTaskStatus.failed.title:
+            .red
+        case "Partial":
+            .orange
+        default:
+            MediaGeneratorPalette.accent
+        }
+    }
+}
+
+private struct MediaGeneratorTaskGroupTile: View {
+    var task: MediaGeneratorTask
+    var isHovered: Bool
+    var onPreview: () -> Void
+    var onDownload: () -> Void
+    var onCopy: () -> Void
+    var onReveal: () -> Void
+    var onUseAsReference: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            tileContent
+                .frame(maxWidth: .infinity)
+                .aspectRatio(1, contentMode: .fit)
+                .background(.black.opacity(0.20), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .onTapGesture {
+                    if task.resultDisplayURL != nil {
+                        onPreview()
+                    }
+                }
+
+            HStack(spacing: 5) {
+                MediaGeneratorTaskTinyBadge(text: "\(task.batchIndex)", color: .white.opacity(0.76))
+                if task.status == .failed {
+                    MediaGeneratorTaskTinyBadge(text: "FAILED", color: .red)
+                } else if task.status == .running || task.status == .queued {
+                    MediaGeneratorTaskTinyBadge(text: "RUNNING", color: MediaGeneratorPalette.accent)
+                }
+            }
+            .padding(7)
+
+            if isHovered, task.resultDisplayURL != nil {
+                HStack(spacing: 5) {
+                    if task.isLocallyCached {
+                        MediaGeneratorOverlayIcon(systemName: "folder", action: onReveal)
+                    }
+                    MediaGeneratorOverlayIcon(systemName: "arrow.down.to.line", action: onDownload)
+                    MediaGeneratorOverlayIcon(systemName: "doc.on.doc", action: onCopy)
+                    if task.category == .image {
+                        MediaGeneratorOverlayIcon(systemName: "photo.badge.plus", action: onUseAsReference)
+                    }
+                }
+                .padding(7)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .transition(.opacity)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var tileContent: some View {
+        if let url = task.resultDisplayURL {
+            MediaGeneratorResultImage(url: url, mode: .fill)
+        } else if task.status == .running || task.status == .queued {
+            Rectangle()
+                .fill(.white.opacity(0.055))
+                .overlay {
+                    VStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Processing")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.48))
+                    }
+                }
+        } else {
+            Rectangle()
+                .fill(.white.opacity(0.055))
+                .overlay {
+                    VStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundStyle(.red.opacity(0.82))
+                        Text(task.errorMessage ?? "Failed")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.white.opacity(0.52))
+                            .lineLimit(2)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 8)
+                    }
+                }
         }
     }
 }

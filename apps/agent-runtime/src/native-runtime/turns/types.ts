@@ -2,6 +2,7 @@ import type { AgentProfile } from "../store/types.js";
 import type { ContextProjection } from "../context/types.js";
 
 export type TurnReplayCursor = {
+  runId: string;
   sessionId: string;
   userMessageId: string;
   assistantMessageId: string;

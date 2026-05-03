@@ -95,4 +95,90 @@ describe("Gee Gear invoke envelope normalization", () => {
     assert.equal(extraction.errors[0]?.code, "gear.args.envelope");
     assert.match(extraction.errors[0]?.message ?? "", /conflicting/);
   });
+
+  it("validates media generator create_task requires an explicit prompt", () => {
+    const missing = geeGearInvoke({
+      tool_id: "gee.gear.invoke",
+      arguments: {
+        gear_id: "media.generator",
+        capability_id: "media_generator.create_task",
+        args: {
+          model: "gpt-image-2",
+          aspect_ratio: "3:4",
+          resolution: "2K",
+        },
+      },
+    });
+
+    assert.equal(missing.kind, "error");
+    assert.equal(missing.kind === "error" ? missing.code : "", "gear.args.prompt");
+
+    const valid = geeGearInvoke({
+      tool_id: "gee.gear.invoke",
+      arguments: {
+        gear_id: "media.generator",
+        capability_id: "media_generator.create_task",
+        args: {
+          prompt: "A soft pastel toy-house jelly beetle illustration",
+          model: "image-2",
+          aspect_ratio: "3:4",
+          resolution: "2K",
+        },
+      },
+    });
+
+    assert.equal(valid.kind, "completed");
+    assert.deepEqual(valid.kind === "completed" ? valid.payload : {}, {
+      intent: "gear.invoke",
+      gear_id: "media.generator",
+      capability_id: "media_generator.create_task",
+      args: {
+        prompt: "A soft pastel toy-house jelly beetle illustration",
+        model: "image-2",
+        aspect_ratio: "3:4",
+        resolution: "2K",
+      },
+    });
+  });
+
+  it("validates app icon generation requires an explicit source path", () => {
+    const missing = geeGearInvoke({
+      tool_id: "gee.gear.invoke",
+      arguments: {
+        gear_id: "app.icon.forge",
+        capability_id: "app_icon.generate",
+        args: {
+          name: "AppIcon",
+        },
+      },
+    });
+
+    assert.equal(missing.kind, "error");
+    assert.equal(missing.kind === "error" ? missing.code : "", "gear.args.source_path");
+
+    const valid = geeGearInvoke({
+      tool_id: "gee.gear.invoke",
+      arguments: {
+        gear_id: "app.icon.forge",
+        capability_id: "app_icon.generate",
+        args: {
+          source_path: "/tmp/logo.png",
+          output_dir: "/tmp/icons",
+          name: "AppIcon",
+        },
+      },
+    });
+
+    assert.equal(valid.kind, "completed");
+    assert.deepEqual(valid.kind === "completed" ? valid.payload : {}, {
+      intent: "gear.invoke",
+      gear_id: "app.icon.forge",
+      capability_id: "app_icon.generate",
+      args: {
+        source_path: "/tmp/logo.png",
+        output_dir: "/tmp/icons",
+        name: "AppIcon",
+      },
+    });
+  });
 });

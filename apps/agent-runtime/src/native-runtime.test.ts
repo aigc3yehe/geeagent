@@ -25,9 +25,12 @@ import {
   appendStageConclusionForSession,
   appendStageStartedForSession,
   appendToolEvents,
+  appendToolResultForExistingInvocation,
   appendToolResultForHostBridgeCompletion,
   beginTurnReplay,
   executionSessionIdForConversation,
+  finalizeTurnReplay,
+  latestRunIdForSession,
 } from "./native-runtime/turns/events.js";
 import {
   sdkRuntimeBashScope,
@@ -43,6 +46,7 @@ import {
   capabilityFocusArgsForPlan,
   capabilityFocusForStage,
   nextRuntimeRunPlan,
+  selectRuntimePlanningMode,
 } from "./native-runtime/turns/planning.js";
 import {
   advanceRunPlanAfterHostCompletions,
@@ -289,6 +293,51 @@ describe("native runtime command modules", () => {
     assert.doesNotMatch(prompt, /Do not include me yet/);
   });
 
+  it("keeps direct and light turns from inheriting stage capsules", () => {
+    const now = "2026-04-27T12:00:00.000Z";
+    const store = defaultRuntimeStore(now);
+    store.conversations[0].messages = [
+      {
+        message_id: "msg_user_old",
+        role: "user",
+        content: `old direct context ${"large history ".repeat(5000)}`,
+        timestamp: now,
+      },
+      {
+        message_id: "msg_assistant_recent",
+        role: "assistant",
+        content: "recent answer should remain available",
+        timestamp: now,
+      },
+    ];
+    store.transcript_events.push({
+      event_id: "event_stage_capsule",
+      session_id: `session_${store.active_conversation_id}`,
+      parent_event_id: null,
+      created_at: now,
+      payload: {
+        kind: "session_state_changed",
+        summary: "Context capsule updated.",
+        stage_capsule: "[GEEAGENT STAGE SUMMARY CAPSULE]\nStructured-only capsule.\n[/GEEAGENT STAGE SUMMARY CAPSULE]",
+      },
+    });
+
+    const route = {
+      mode: "workspace_message" as const,
+      source: "workspace_chat" as const,
+      surface: "cli_workspace_chat" as const,
+    };
+
+    for (const mode of ["direct", "light"] as const) {
+      const prepared = __turnTestHooks.prepareTurnContext(store, route, "continue", mode);
+      const prompt = __turnTestHooks.composeClaudeSdkTurnPrompt(route, prepared, "continue");
+
+      assert.equal(prepared.stageCapsuleMessages.length, 0);
+      assert.doesNotMatch(prompt, /Structured-only capsule/);
+      assert.match(prompt, /recent answer should remain available/);
+    }
+  });
+
   it("excludes quick-tagged conversations from automatic routing candidates", () => {
     const now = "2026-04-27T12:00:00.000Z";
     const store = defaultRuntimeStore(now);
@@ -517,6 +566,7 @@ describe("native runtime command modules", () => {
     store.host_action_runs = [
       {
         host_action_id: "host_action_orphaned",
+        run_id: "run_session_conv_deleted_0001",
         tool_id: "gee.gear.invoke",
         session_id: "session_conv_deleted",
         conversation_id: "conv_deleted",
@@ -1313,6 +1363,7 @@ describe("native runtime command modules", () => {
     store.host_action_runs = [
       {
         host_action_id: "legacy_static_action",
+        run_id: cursor.runId,
         tool_id: "gee.gear.invoke",
         source: "static_fallback",
         session_id: cursor.sessionId,
@@ -1485,6 +1536,7 @@ describe("native runtime command modules", () => {
     store.host_action_runs = [
       {
         host_action_id: "host_action_sdk_lineage",
+        run_id: cursor.runId,
         tool_id: "gee.gear.invoke",
         session_id: cursor.sessionId,
         conversation_id: store.active_conversation_id,
@@ -1553,6 +1605,25 @@ describe("native runtime command modules", () => {
       capability_id: "media.filter",
       args: { kind: "image", extensions: ["png"] },
     });
+  });
+
+  it("routes media-library local file imports into the import capability", () => {
+    const routed = routeLocalGearIntent(
+      "import /tmp/geeagent-demo/sample.png and /tmp/geeagent-demo/clip.mp4 into the media browser",
+    );
+    assert.ok(routed);
+    assert.equal(routed.hostActions.length, 2);
+    assert.deepEqual(routed.hostActions[0].arguments, { gear_id: "media.library" });
+    assert.deepEqual(routed.hostActions[1].arguments, {
+      gear_id: "media.library",
+      capability_id: "media.import_files",
+      args: { paths: ["/tmp/geeagent-demo/sample.png", "/tmp/geeagent-demo/clip.mp4"] },
+    });
+  });
+
+  it("does not treat media-library import prompts without paths as filters", () => {
+    assert.equal(routeLocalGearIntent("import png image files into the media library"), null);
+    assert.equal(requiresGeeGearBridgeFirst("import files into the media browser"), true);
   });
 
   it("parses simple Twitter capture requests into candidate Gear host actions", () => {
@@ -1669,7 +1740,85 @@ describe("native runtime command modules", () => {
       ),
       true,
     );
+    assert.equal(
+      requiresGeeGearBridgeFirst(
+        "save this tweet to bookmarks https://x.com/YaReYaRu30Life/status/2049545035176362120?s=20 and download its media into the media manager gear.",
+      ),
+      true,
+    );
+    assert.equal(
+      routeLocalGearIntent(
+        "save this tweet to bookmarks https://x.com/YaReYaRu30Life/status/2049545035176362120?s=20 and download its media into the media manager gear.",
+      ),
+      null,
+    );
+    assert.equal(
+      requiresGeeGearBridgeFirst("use the generator with image-2, 3:4, 2k, prompt: macaron toy house style"),
+      true,
+    );
+    assert.equal(requiresGeeGearBridgeFirst("explain image-2 parameters and limits"), false);
+    assert.equal(requiresGeeGearBridgeFirst("how do I use image-2 to generate images?"), false);
+    assert.equal(requiresGeeGearBridgeFirst("open the media generator"), true);
+    assert.equal(
+      routeLocalGearIntent("use the generator with image-2, 3:4, 2k, prompt: macaron toy house style"),
+      null,
+    );
     assert.equal(requiresGeeGearBridgeFirst("check whether local port 8080 is listening"), false);
+  });
+
+  it("selects adaptive planning modes without forcing every turn into a stage plan", () => {
+    assert.deepEqual(
+      selectRuntimePlanningMode("check whether local port 8080 is listening", "default"),
+      {
+        mode: "direct",
+        boundary_mode: "default",
+        reason: "ordinary SDK turn; no Gear-first runtime boundary was selected",
+        should_create_run_plan: false,
+      },
+    );
+
+    const light = selectRuntimePlanningMode("open the media library", "gear_first");
+    assert.equal(light.mode, "light");
+    assert.equal(light.should_create_run_plan, false);
+
+    const generatorSurface = selectRuntimePlanningMode("open the media generator", "gear_first");
+    assert.equal(generatorSurface.mode, "light");
+    assert.equal(generatorSurface.should_create_run_plan, false);
+
+    const modelInfo = selectRuntimePlanningMode("explain image-2 parameters and limits", "gear_first");
+    assert.equal(modelInfo.mode, "light");
+    assert.equal(modelInfo.should_create_run_plan, false);
+
+    const usageQuestion = selectRuntimePlanningMode("how do I use image-2 to generate images?", "gear_first");
+    assert.equal(usageQuestion.mode, "light");
+    assert.equal(usageQuestion.should_create_run_plan, false);
+
+    const bookmarkOnly = selectRuntimePlanningMode(
+      "save this tweet to bookmarks https://x.com/demo/status/123",
+      "gear_first",
+    );
+    assert.equal(bookmarkOnly.mode, "structured");
+    assert.equal(bookmarkOnly.should_create_run_plan, true);
+
+    const structured = selectRuntimePlanningMode(
+      "save this tweet to bookmarks https://x.com/YaReYaRu30Life/status/2049545035176362120?s=20, download its media into the media manager gear, then search related information and explain the technology.",
+      "gear_first",
+    );
+    assert.equal(structured.mode, "structured");
+    assert.equal(structured.should_create_run_plan, true);
+    assert.ok(
+      buildRuntimeRunPlan(
+        "save this tweet to bookmarks https://x.com/YaReYaRu30Life/status/2049545035176362120?s=20, download its media into the media manager gear, then search related information and explain the technology.",
+        "gear_first",
+      ),
+    );
+
+    const generation = selectRuntimePlanningMode(
+      "use the generator with image-2, 3:4, 2k, prompt: macaron toy house style",
+      "gear_first",
+    );
+    assert.equal(generation.mode, "structured");
+    assert.equal(generation.should_create_run_plan, true);
   });
 
   it("prepends a strict first Gear MCP call boundary for Gear-first turns", () => {
@@ -1691,6 +1840,7 @@ describe("native runtime command modules", () => {
 
     assert.ok(plan);
     assert.equal(plan.phase, "phase3.6");
+    assert.equal(plan.planning_mode, "structured");
     assert.equal(plan.current_stage_id, "stage_fetch_tweet");
     assert.deepEqual(plan.focus.focus_gear_ids, ["twitter.capture"]);
     assert.deepEqual(plan.focus.focus_capability_ids, ["twitter.fetch_tweet"]);
@@ -1712,6 +1862,55 @@ describe("native runtime command modules", () => {
     });
     assert.ok(plan.stages.some((stage) => stage.stage_id === "stage_import_media"));
     assert.ok(plan.success_criteria.some((item) => /Bookmark Vault/.test(item)));
+  });
+
+  it("builds a focused Phase 3.6 plan for Media Generator image requests", () => {
+    const plan = buildRuntimeRunPlan(
+      [
+        "use the generator with image-2, 3:4, 2k, prompt:",
+        "Overall visual tone: macaron toy house and soft candy picture-book style.",
+      ].join("\n"),
+      "gear_first",
+    );
+
+    assert.ok(plan);
+    assert.equal(plan.phase, "phase3.6");
+    assert.equal(plan.current_stage_id, "stage_create_media_generation_task");
+    assert.deepEqual(plan.focus.focus_gear_ids, ["media.generator"]);
+    assert.deepEqual(plan.focus.focus_capability_ids, ["media_generator.create_task"]);
+    assert.deepEqual(
+      plan.stages[0]?.capability_args?.["media.generator/media_generator.create_task"],
+      {
+        category: "image",
+        model: "gpt-image-2",
+        prompt: "Overall visual tone: macaron toy house and soft candy picture-book style.",
+        aspect_ratio: "3:4",
+        resolution: "2K",
+        response_format: "url",
+        n: 1,
+        async: true,
+      },
+    );
+    assert.deepEqual(capabilityFocusArgsForPlan(plan), {
+      detail: "summary",
+      run_plan_id: plan?.plan_id,
+      stage_id: "stage_create_media_generation_task",
+      focus_gear_ids: ["media.generator"],
+      focus_capability_ids: ["media_generator.create_task"],
+    });
+
+    const modelInfoPlan = buildRuntimeRunPlan("explain image-2 parameters and limits", "gear_first");
+    assert.notEqual(modelInfoPlan?.current_stage_id, "stage_create_media_generation_task");
+
+    const usageQuestionPlan = buildRuntimeRunPlan("how do I use image-2 to generate images?", "gear_first");
+    assert.notEqual(usageQuestionPlan?.current_stage_id, "stage_create_media_generation_task");
+
+    const batchPlan = buildRuntimeRunPlan("use the generator to generate 4 images, prompt: neon study room", "gear_first");
+    assert.equal(
+      batchPlan?.stages[0]?.capability_args?.["media.generator/media_generator.create_task"]
+        ?.batch_count,
+      4,
+    );
   });
 
   it("adds research and synthesis stages for cross-domain Twitter requests", () => {
@@ -2605,6 +2804,68 @@ describe("native runtime command modules", () => {
     assert.match(turn.failed_reason ?? "", /ended without requesting any Gee MCP Gear bridge action/);
   });
 
+  it("does not treat light Gear capability discovery as task completion", async () => {
+    const turn: SdkTurnResult = {
+      assistant_chunks: [],
+      tool_events: [],
+      auto_approved_tools: 0,
+    };
+    const managed = {
+      events: [
+        {
+          type: "session.tool_use",
+          sessionId: "session_test",
+          toolUseId: "toolu_list",
+          toolName: "mcp__gee__gear_list_capabilities",
+          input: { detail: "summary" },
+          raw: {},
+        },
+        {
+          type: "session.tool_result",
+          sessionId: "session_test",
+          toolUseId: "toolu_list",
+          status: "succeeded",
+          summary: "media.library is available",
+          raw: {},
+        },
+        {
+          type: "session.assistant_text",
+          sessionId: "session_test",
+          text: "Done.",
+          raw: {},
+        },
+        {
+          type: "session.result",
+          sessionId: "session_test",
+          subtype: "success",
+          result: "Done.",
+          raw: { is_error: false },
+        },
+      ],
+      waiters: [],
+      session: {
+        close() {},
+      },
+      toolBoundaryMode: "gear_first",
+      toolInvocationCount: 0,
+    };
+
+    await __sdkTurnRunnerTestHooks.collectEventsUntilPauseOrResult(
+      undefined,
+      managed as never,
+      "session_test",
+      [],
+      turn,
+      undefined,
+      undefined,
+      5_000,
+      "gear_first",
+      null,
+    );
+
+    assert.match(turn.failed_reason ?? "", /capability discovery without executing a Gear invocation/);
+  });
+
   it("extracts generic Gee host-action directives for any enabled Gear", () => {
     const actions = __sdkTurnRunnerTestHooks.extractHostActionDirective([
       'Need native Gear work.\n<gee-host-actions>{"actions":[',
@@ -3129,6 +3390,426 @@ api_key = "saved-xenodia-key"
         inlinePreviewSummary: "Large output preview.",
       },
     ]);
+  });
+
+  it("threads first-class run ids through transcript events, host actions, and stage capsules", () => {
+    const store = defaultRuntimeStore("2026-04-27T00:00:00.000Z");
+    const cursor = beginTurnReplay(
+      store,
+      "cli_workspace_chat",
+      "save this tweet to bookmarks https://x.com/demo/status/123",
+    );
+    const plan = buildRuntimeRunPlan(
+      "save this tweet to bookmarks https://x.com/demo/status/123",
+      "gear_first",
+    );
+    assert.ok(plan);
+    appendRunPlanForSession(store, cursor.sessionId, plan);
+    appendCapabilityFocusForSession(store, cursor.sessionId, plan);
+    appendStageStartedForSession(store, cursor.sessionId, plan);
+    appendToolEvents(store, cursor.sessionId, cursor.userMessageId, [
+      {
+        kind: "invocation",
+        invocation_id: "toolu_fetch",
+        tool_name: "gear_invoke",
+        input_summary: "Fetch tweet",
+      },
+    ]);
+    appendToolResultForExistingInvocation(
+      store,
+      cursor.sessionId,
+      "toolu_fetch",
+      "succeeded",
+      "Fetched structured tweet result.",
+      undefined,
+      [],
+      cursor.runId,
+    );
+    __turnTestHooks.recordHostActionRuns(
+      store,
+      "sdk_same_run",
+      cursor.runId,
+      cursor.sessionId,
+      cursor.userMessageId,
+      [
+        {
+          host_action_id: "host_action_fetch",
+          tool_id: "gee.gear.invoke",
+          arguments: {
+            gear_id: "twitter.capture",
+            capability_id: "twitter.fetch_tweet",
+            args: { url: "https://x.com/demo/status/123" },
+          },
+        },
+      ],
+    );
+    const capsule = __turnTestHooks.stageSummaryCapsuleForTurn(
+      store,
+      cursor,
+      {
+        assistant_chunks: ["Done."],
+        final_result: "Done.",
+        tool_events: [],
+        auto_approved_tools: 0,
+      },
+      "Done.",
+      plan,
+    );
+    finalizeTurnReplay(store, cursor, "run id lineage test completed", capsule);
+
+    assert.match(cursor.runId, /^run_session_/);
+    assert.equal(latestRunIdForSession(store, cursor.sessionId), cursor.runId);
+    assert.equal(store.host_action_runs?.[0]?.run_id, cursor.runId);
+    assert.match(capsule, new RegExp(`Run id: ${cursor.runId}`));
+
+    const turnEvents = (store.transcript_events as Array<Record<string, unknown>>).filter(
+      (event) => event.session_id === cursor.sessionId,
+    );
+    assert.ok(turnEvents.length > 0);
+    assert.ok(turnEvents.every((event) => event.run_id === cursor.runId));
+    assert.deepEqual(
+      turnEvents.map((event) => event.sequence),
+      turnEvents.map((_, index) => index + 1),
+    );
+    assert.ok(
+      turnEvents.every(
+        (event) =>
+          typeof event.payload === "object" &&
+          event.payload !== null &&
+          !Array.isArray(event.payload) &&
+          (event.payload as Record<string, unknown>).run_id === cursor.runId,
+      ),
+    );
+  });
+
+  it("exports a replay bundle for one runtime run without prompt replay context", async () => {
+    const configDir = await tempConfigDir();
+    const store = defaultRuntimeStore("2026-04-27T00:00:00.000Z");
+    const cursor = beginTurnReplay(
+      store,
+      "cli_workspace_chat",
+      "save this tweet to bookmarks https://x.com/demo/status/123",
+    );
+    appendToolEvents(store, cursor.sessionId, cursor.userMessageId, [
+      {
+        kind: "invocation",
+        invocation_id: "toolu_replay",
+        tool_name: "Read",
+        input_summary: "Read replay evidence",
+      },
+      {
+        kind: "result",
+        invocation_id: "toolu_replay",
+        status: "succeeded",
+        summary: "Large output stored as an artifact.",
+        artifacts: [
+          {
+            artifactId: "artifact_replay",
+            type: "tool_result_artifact",
+            title: "Replay artifact",
+            payloadRef: "/tmp/geeagent-replay-artifact.json",
+            inlinePreviewSummary: "Replay evidence.",
+          },
+        ],
+      },
+    ]);
+    __turnTestHooks.recordHostActionRuns(
+      store,
+      "sdk_same_run",
+      cursor.runId,
+      cursor.sessionId,
+      cursor.userMessageId,
+      [
+        {
+          host_action_id: "host_action_replay",
+          tool_id: "gee.gear.invoke",
+          arguments: {
+            gear_id: "bookmark.vault",
+            capability_id: "bookmark.save",
+            args: { content: "https://x.com/demo/status/123" },
+          },
+        },
+      ],
+    );
+    store.approval_requests.push({
+      approval_request_id: "approval_replay",
+      run_id: cursor.runId,
+      machine_context: {
+        run_id: cursor.runId,
+        runtime_session_id: cursor.sessionId,
+      },
+    });
+    await writeFile(join(configDir, "runtime-store.json"), JSON.stringify(store, null, 2), "utf8");
+
+    const raw = await handleNativeRuntimeCommand("export-runtime-run", [cursor.runId], {
+      configDir,
+    });
+    const exported = JSON.parse(raw);
+
+    assert.equal(exported.schema_version, 1);
+    assert.equal(exported.run_id, cursor.runId);
+    assert.deepEqual(
+      exported.events.map((event: { sequence: number }) => event.sequence),
+      [1, 2, 3, 4],
+    );
+    assert.deepEqual(exported.execution_session_ids, [cursor.sessionId]);
+    assert.deepEqual(exported.conversation_ids, [store.active_conversation_id]);
+    assert.equal(exported.host_action_runs[0].run_id, cursor.runId);
+    assert.equal(exported.approval_requests[0].run_id, cursor.runId);
+    assert.deepEqual(exported.artifact_ids, ["artifact_replay"]);
+    assert.equal(exported.artifact_refs[0].artifact_id, "artifact_replay");
+    assert.equal(exported.artifact_refs[0].path, "/tmp/geeagent-replay-artifact.json");
+    assert.equal(exported.artifact_refs[0].source_event_sequence, 4);
+    assert.equal(exported.artifact_refs[0].source_invocation_id, "toolu_replay");
+    assert.equal(exported.artifact_refs[0].source_tool_name, "Read");
+    assert.deepEqual(exported.diagnostics.duplicate_event_ids, []);
+    assert.deepEqual(exported.diagnostics.missing_parent_event_ids, []);
+    assert.deepEqual(exported.diagnostics.missing_sequence_numbers, []);
+    assert.deepEqual(exported.diagnostics.out_of_order_event_ids, []);
+
+    const projectedRaw = await handleNativeRuntimeCommand("project-runtime-run", [cursor.runId], {
+      configDir,
+    });
+    const projected = JSON.parse(projectedRaw);
+    assert.equal(projected.run_id, cursor.runId);
+    assert.deepEqual(
+      projected.rows.map((row: { projection_kind: string }) => row.projection_kind),
+      ["user_message", "runtime_state", "tool", "tool_result"],
+    );
+    assert.deepEqual(projected.artifact_ids, ["artifact_replay"]);
+    assert.equal(projected.artifact_refs[0].source_tool_name, "Read");
+    assert.equal(projected.rows[0].projection_scope, "main_timeline");
+    assert.equal(projected.rows[1].projection_scope, "inspector");
+    assert.equal(projected.rows[2].projection_scope, "worked");
+    assert.deepEqual(projected.rows[3].artifact_ids, ["artifact_replay"]);
+
+    await assert.rejects(
+      handleNativeRuntimeCommand("export-runtime-run", ["run_missing"], { configDir }),
+      /has no transcript events/,
+    );
+  });
+
+  it("imports replay fixtures into deterministic projections with diagnostics", async () => {
+    const configDir = await tempConfigDir();
+    const replay = {
+      schema_version: 1,
+      run_id: "run_fixture",
+      exported_at: "2026-05-01T00:00:00.000Z",
+      event_count: 3,
+      conversation_ids: ["conv_fixture"],
+      execution_session_ids: ["session_fixture"],
+      sdk_session_ids: [],
+      parent_run_ids: [],
+      host_action_runs: [],
+      approval_requests: [],
+      artifact_ids: ["artifact_late", "artifact_early"],
+      artifact_refs: [
+        {
+          artifact_id: "artifact_late",
+          path: "/tmp/late.json",
+          source_event_sequence: 4,
+        },
+        {
+          artifact_id: "artifact_early",
+          path: "/tmp/early.json",
+          source_event_sequence: 2,
+        },
+      ],
+      diagnostics: {
+        duplicate_event_ids: [],
+        missing_parent_event_ids: [],
+        missing_sequence_numbers: [],
+        out_of_order_event_ids: [],
+      },
+      events: [
+        {
+          event_id: "event_assistant",
+          session_id: "session_fixture",
+          parent_event_id: "event_missing",
+          run_id: "run_fixture",
+          sequence: 2,
+          payload: {
+            kind: "assistant_message",
+            content: "Done.",
+          },
+        },
+        {
+          event_id: "event_user",
+          session_id: "session_fixture",
+          parent_event_id: null,
+          sequence: 1,
+          payload: {
+            kind: "user_message",
+            content: "Replay this.",
+          },
+        },
+        {
+          event_id: "event_user",
+          session_id: "session_fixture",
+          parent_event_id: "event_assistant",
+          run_id: "run_fixture",
+          sequence: 4,
+          payload: {
+            kind: "session_state_changed",
+            summary: "State changed.",
+          },
+        },
+      ],
+    };
+
+    const raw = await handleNativeRuntimeCommand(
+      "project-runtime-run-replay",
+      [JSON.stringify(replay)],
+      { configDir },
+    );
+    const projected = JSON.parse(raw);
+
+    assert.equal(projected.schema_version, 1);
+    assert.equal(projected.run_id, "run_fixture");
+    assert.deepEqual(
+      projected.rows.map((row: { sequence: number }) => row.sequence),
+      [1, 2, 4],
+    );
+    assert.deepEqual(
+      projected.rows.map((row: { projection_kind: string }) => row.projection_kind),
+      ["user_message", "assistant_message", "runtime_state"],
+    );
+    assert.deepEqual(
+      projected.artifact_refs.map((artifact: { artifact_id: string }) => artifact.artifact_id),
+      ["artifact_early", "artifact_late"],
+    );
+    assert.deepEqual(projected.diagnostics.duplicate_event_ids, ["event_user"]);
+    assert.deepEqual(projected.diagnostics.missing_parent_event_ids, ["event_missing"]);
+    assert.deepEqual(projected.diagnostics.missing_sequence_numbers, [3]);
+    assert.deepEqual(projected.diagnostics.out_of_order_event_ids, ["event_user"]);
+  });
+
+  it("classifies runtime waits with run lineage evidence", async () => {
+    const configDir = await tempConfigDir();
+    const storePath = join(configDir, "runtime-store.json");
+
+    const toolStore = defaultRuntimeStore("2026-05-01T00:00:00.000Z");
+    const toolCursor = beginTurnReplay(toolStore, "cli_workspace_chat", "inspect tool wait");
+    appendToolEvents(toolStore, toolCursor.sessionId, toolCursor.userMessageId, [
+      {
+        kind: "invocation",
+        invocation_id: "toolu_wait",
+        tool_name: "Bash",
+        input_summary: "sleep 1",
+      },
+    ]);
+    await writeFile(storePath, JSON.stringify(toolStore, null, 2), "utf8");
+    const toolWait = JSON.parse(
+      await handleNativeRuntimeCommand("classify-runtime-run-wait", [toolCursor.runId], {
+        configDir,
+      }),
+    );
+    assert.equal(toolWait.wait_kind, "tool_wait");
+    assert.equal(toolWait.evidence.pending_tool_use_id, "toolu_wait");
+    assert.equal(toolWait.evidence.last_tool_use_id, "toolu_wait");
+
+    const hostStore = defaultRuntimeStore("2026-05-01T00:00:00.000Z");
+    const hostCursor = beginTurnReplay(hostStore, "cli_workspace_chat", "wait for host");
+    const hostAction = {
+      host_action_id: "host_action_wait",
+      tool_id: "gee.gear.invoke",
+      arguments: {
+        gear_id: "media.library",
+        capability_id: "media.filter",
+        args: { kind: "video" },
+      },
+    };
+    hostStore.host_action_intents = [hostAction];
+    __turnTestHooks.recordHostActionRuns(
+      hostStore,
+      "sdk_same_run",
+      hostCursor.runId,
+      hostCursor.sessionId,
+      hostCursor.userMessageId,
+      [hostAction],
+    );
+    await writeFile(storePath, JSON.stringify(hostStore, null, 2), "utf8");
+    const hostWait = JSON.parse(
+      await handleNativeRuntimeCommand("classify-runtime-run-wait", [hostCursor.runId], {
+        configDir,
+      }),
+    );
+    assert.equal(hostWait.wait_kind, "host_wait");
+    assert.deepEqual(hostWait.evidence.pending_host_action_ids, ["host_action_wait"]);
+    assert.equal(hostWait.evidence.pending_host_action_payloads[0].arguments.gear_id, "media.library");
+
+    const approvalStore = defaultRuntimeStore("2026-05-01T00:00:00.000Z");
+    const approvalCursor = beginTurnReplay(
+      approvalStore,
+      "cli_workspace_chat",
+      "wait for approval",
+    );
+    approvalStore.approval_requests.push({
+      approval_request_id: "approval_wait",
+      run_id: approvalCursor.runId,
+      status: "open",
+      machine_context: {
+        run_id: approvalCursor.runId,
+        runtime_session_id: "sdk_approval",
+        runtime_request_id: "gateway_req_approval",
+      },
+    });
+    await writeFile(storePath, JSON.stringify(approvalStore, null, 2), "utf8");
+    const approvalWait = JSON.parse(
+      await handleNativeRuntimeCommand("classify-runtime-run-wait", [approvalCursor.runId], {
+        configDir,
+      }),
+    );
+    assert.equal(approvalWait.wait_kind, "approval_wait");
+    assert.equal(approvalWait.evidence.pending_approval_id, "approval_wait");
+    assert.equal(approvalWait.evidence.sdk_session_id, "sdk_approval");
+    assert.equal(approvalWait.evidence.gateway_request_id, "gateway_req_approval");
+
+    const lostStore = defaultRuntimeStore("2026-05-01T00:00:00.000Z");
+    const lostCursor = beginTurnReplay(lostStore, "cli_workspace_chat", "lost session");
+    lostStore.last_run_state = {
+      conversation_id: lostStore.active_conversation_id,
+      status: "failed",
+      stop_reason: "sdk_host_action_session_lost",
+      detail: "lost",
+      resumable: false,
+      task_id: null,
+      module_run_id: null,
+    };
+    await writeFile(storePath, JSON.stringify(lostStore, null, 2), "utf8");
+    const sessionLost = JSON.parse(
+      await handleNativeRuntimeCommand("classify-runtime-run-wait", [lostCursor.runId], {
+        configDir,
+      }),
+    );
+    assert.equal(sessionLost.wait_kind, "session_lost");
+    assert.equal(sessionLost.status, "failed");
+
+    const completedStore = defaultRuntimeStore("2026-05-01T00:00:00.000Z");
+    const completedCursor = beginTurnReplay(completedStore, "cli_workspace_chat", "finish run");
+    appendAssistantMessageForActiveConversation(
+      completedStore,
+      completedCursor.sessionId,
+      "Done.",
+      completedCursor.assistantMessageId,
+    );
+    await writeFile(storePath, JSON.stringify(completedStore, null, 2), "utf8");
+    const completed = JSON.parse(
+      await handleNativeRuntimeCommand("classify-runtime-run-wait", [completedCursor.runId], {
+        configDir,
+      }),
+    );
+    assert.equal(completed.wait_kind, "completed");
+    assert.equal(completed.status, "complete");
+
+    const silentStore = defaultRuntimeStore("2026-05-01T00:00:00.000Z");
+    await writeFile(storePath, JSON.stringify(silentStore, null, 2), "utf8");
+    const silence = JSON.parse(
+      await handleNativeRuntimeCommand("classify-runtime-run-wait", ["run_missing"], {
+        configDir,
+      }),
+    );
+    assert.equal(silence.wait_kind, "event_silence");
   });
 
   it("persists assistant deltas with the same message id as the final assistant message", () => {

@@ -1,12 +1,18 @@
-import { createConversation, QUICK_CONVERSATION_TAG } from "./store/conversations.js";
+import {
+  createConversation,
+  QUICK_CONVERSATION_TAG,
+  syncConversationStatuses,
+} from "./store/conversations.js";
 import { loadChatReadiness, type ChatReadiness } from "../chat-runtime.js";
 import { loadRuntimeStore, persistRuntimeStore } from "./store/persistence.js";
+import { currentTimestamp } from "./store/defaults.js";
 import { snapshotFromStore } from "./store/snapshot.js";
 import type {
   RuntimeHostActionCompletion,
   RuntimeHostActionIntent,
 } from "../protocol.js";
 import type {
+  RuntimeChannelMessageRecord,
   RuntimeHostActionRunRecord,
   RuntimeHostActionRunSource,
   RuntimeSnapshot,
@@ -53,9 +59,11 @@ import {
   appendToolEvents,
   appendToolResultForHostBridgeCompletion,
   appendToolResultForExistingInvocation,
+  appendTranscriptEvent,
   beginTurnReplay,
   executionSessionIdForConversation,
   finalizeTurnReplay,
+  latestRunIdForSession,
   latestRunPlanForSession,
 } from "./turns/events.js";
 import {
@@ -81,6 +89,8 @@ import {
   buildRuntimeRunPlan,
   currentRuntimePlanStage,
   nextRuntimeRunPlan,
+  selectRuntimePlanningMode,
+  type RuntimePlanningDecision,
   type RuntimeRunPlan,
 } from "./turns/planning.js";
 import {
@@ -92,6 +102,7 @@ import {
 const GEAR_COMPLETION_SDK_IDLE_TIMEOUT_MS = 75_000;
 
 type HostActionCompletionContext = {
+  runId: string | null;
   sessionId: string;
   conversationId: string;
   source: RuntimeHostActionRunSource | null;
@@ -112,8 +123,12 @@ export async function submitWorkspaceMessage(
     source: "workspace_chat",
     surface: "cli_workspace_chat",
   };
-  const prepared = prepareTurnContext(store, route, trimmed);
-  await applyClaudeSdkTurn(store, configDir, route, prepared, trimmed);
+  const planningDecision = selectRuntimePlanningMode(
+    trimmed,
+    requiresGeeGearBridgeFirst(trimmed) ? "gear_first" : "default",
+  );
+  const prepared = prepareTurnContext(store, route, trimmed, planningDecision.mode);
+  await applyClaudeSdkTurn(store, configDir, route, prepared, trimmed, planningDecision);
   await persistRuntimeStore(configDir, store);
   return snapshotFromStore(store, configDir);
 }
@@ -133,8 +148,12 @@ export async function submitQuickPrompt(
     source: "quick_input",
     surface: "cli_quick_input",
   };
-  const prepared = prepareTurnContext(store, route, trimmed);
-  await applyClaudeSdkTurn(store, configDir, route, prepared, trimmed);
+  const planningDecision = selectRuntimePlanningMode(
+    trimmed,
+    requiresGeeGearBridgeFirst(trimmed) ? "gear_first" : "default",
+  );
+  const prepared = prepareTurnContext(store, route, trimmed, planningDecision.mode);
+  await applyClaudeSdkTurn(store, configDir, route, prepared, trimmed, planningDecision);
   await persistRuntimeStore(configDir, store);
   return snapshotFromStore(store, configDir);
 }
@@ -155,10 +174,295 @@ export async function submitRoutedWorkspaceMessage(
     surface: "cli_workspace_chat",
   };
   routeQuickPromptToBestConversation(store, trimmed);
-  const prepared = prepareTurnContext(store, route, trimmed);
-  await applyClaudeSdkTurn(store, configDir, route, prepared, trimmed);
+  const planningDecision = selectRuntimePlanningMode(
+    trimmed,
+    requiresGeeGearBridgeFirst(trimmed) ? "gear_first" : "default",
+  );
+  const prepared = prepareTurnContext(store, route, trimmed, planningDecision.mode);
+  await applyClaudeSdkTurn(store, configDir, route, prepared, trimmed, planningDecision);
   await persistRuntimeStore(configDir, store);
   return snapshotFromStore(store, configDir);
+}
+
+export async function submitChannelMessage(
+  configDir: string,
+  input: unknown,
+): Promise<RuntimeSnapshot> {
+  const payload = parseChannelMessageInput(input);
+  const text = payload.message.text.trim();
+  if (!text) {
+    throw new Error("channel message text cannot be empty");
+  }
+  if (payload.security.decision !== "allowed") {
+    throw new Error(`channel message rejected by security policy \`${payload.security.policyId || "unknown"}\``);
+  }
+
+  const store = await loadRuntimeStore(configDir);
+  const binding = ensureChannelBinding(store, payload);
+  store.active_conversation_id = binding.conversation_id;
+  syncConversationStatuses(store);
+  const duplicate = findAcceptedChannelMessage(store, payload);
+  if (duplicate) {
+    store.last_run_state = {
+      ...(isRecord(store.last_run_state) ? store.last_run_state : {}),
+      source: payload.source,
+      channel_identity: payload.channelIdentity,
+      run_id: duplicate.run_id,
+      duplicate_channel_message: true,
+      fallback_attempted: false,
+    };
+    await persistRuntimeStore(configDir, store);
+    return snapshotFromStore(store, configDir);
+  }
+
+  const route: TurnRoute = {
+    mode: "workspace_message",
+    source: "telegram.bridge",
+    surface: "telegram",
+  };
+  const planningDecision = selectRuntimePlanningMode(
+    text,
+    requiresGeeGearBridgeFirst(text) ? "gear_first" : "default",
+  );
+  const prepared = prepareTurnContext(store, route, text, planningDecision.mode);
+  await applyClaudeSdkTurn(store, configDir, route, prepared, text, planningDecision);
+
+  const sessionId = executionSessionIdForConversation(binding.conversation_id);
+  const runId = latestRunIdForSession(store, sessionId);
+  appendTranscriptEvent(
+    store,
+    sessionId,
+    {
+      kind: "channel_message_received",
+      channel: channelIngressRecord(payload),
+      summary: "Telegram Bridge accepted an inbound direct message into the Phase 3 runtime.",
+    },
+    runId,
+  );
+  recordChannelMessage(store, payload, runId);
+  if (isRecord(store.last_run_state)) {
+    store.last_run_state = {
+      ...store.last_run_state,
+      source: payload.source,
+      channel_identity: payload.channelIdentity,
+      run_id: runId,
+      fallback_attempted: false,
+    };
+  }
+  await persistRuntimeStore(configDir, store);
+  return snapshotFromStore(store, configDir);
+}
+
+function findAcceptedChannelMessage(
+  store: RuntimeStore,
+  payload: ChannelMessageInput,
+): RuntimeChannelMessageRecord | undefined {
+  return (store.channel_messages ?? []).find(
+    (record) =>
+      record.source === payload.source &&
+      record.role === payload.role &&
+      record.channel_identity === payload.channelIdentity &&
+      record.idempotency_key === payload.message.idempotencyKey &&
+      record.status === "accepted",
+  );
+}
+
+type ChannelMessageInput = {
+  source: "telegram.bridge";
+  role: "gee_direct";
+  channelIdentity: string;
+  message: {
+    idempotencyKey: string;
+    telegramUpdateId?: number | null;
+    chatId: string;
+    messageId: string;
+    fromUserId?: string | null;
+    text: string;
+    attachments: unknown[];
+  };
+  security: {
+    decision: "allowed" | "denied" | "blocked";
+    policyId?: string;
+  };
+  projection: {
+    surface: "telegram";
+    replyTarget: Record<string, unknown>;
+  };
+};
+
+function parseChannelMessageInput(input: unknown): ChannelMessageInput {
+  if (!isRecord(input)) {
+    throw new Error("channel message payload must be an object");
+  }
+  const source = stringField(input, "source");
+  const role = stringField(input, "role");
+  const channelIdentity = stringField(input, "channelIdentity") ?? stringField(input, "channel_identity");
+  const message = isRecord(input.message) ? input.message : null;
+  const security = isRecord(input.security) ? input.security : null;
+  const projection = isRecord(input.projection) ? input.projection : null;
+  if (source !== "telegram.bridge") {
+    throw new Error("channel message source must be `telegram.bridge`");
+  }
+  if (role !== "gee_direct") {
+    throw new Error("channel message role must be `gee_direct`");
+  }
+  if (!channelIdentity) {
+    throw new Error("channel message requires `channelIdentity`");
+  }
+  if (!message) {
+    throw new Error("channel message requires `message`");
+  }
+  if (!security) {
+    throw new Error("channel message requires `security`");
+  }
+  if (!projection) {
+    throw new Error("channel message requires `projection`");
+  }
+  const idempotencyKey = stringField(message, "idempotencyKey") ?? stringField(message, "idempotency_key");
+  const chatId = stringField(message, "chatId") ?? stringField(message, "chat_id");
+  const messageId = stringField(message, "messageId") ?? stringField(message, "message_id");
+  const text = stringField(message, "text") ?? "";
+  const decision = stringField(security, "decision");
+  const surface = stringField(projection, "surface");
+  const replyTarget = isRecord(projection.replyTarget)
+    ? projection.replyTarget
+    : isRecord(projection.reply_target)
+      ? projection.reply_target
+      : null;
+  if (!idempotencyKey) {
+    throw new Error("channel message requires `message.idempotencyKey`");
+  }
+  if (!chatId) {
+    throw new Error("channel message requires `message.chatId`");
+  }
+  if (!messageId) {
+    throw new Error("channel message requires `message.messageId`");
+  }
+  if (!text.trim()) {
+    throw new Error("channel message requires non-empty `message.text`");
+  }
+  if (decision !== "allowed" && decision !== "denied" && decision !== "blocked") {
+    throw new Error("channel message security decision must be allowed, denied, or blocked");
+  }
+  if (surface !== "telegram") {
+    throw new Error("channel message projection surface must be `telegram`");
+  }
+  if (!replyTarget) {
+    throw new Error("channel message requires `projection.replyTarget`");
+  }
+  return {
+    source,
+    role,
+    channelIdentity,
+    message: {
+      idempotencyKey,
+      telegramUpdateId: numberField(message, "telegramUpdateId") ?? numberField(message, "telegram_update_id") ?? null,
+      chatId,
+      messageId,
+      fromUserId: stringField(message, "fromUserId") ?? stringField(message, "from_user_id") ?? null,
+      text,
+      attachments: Array.isArray(message.attachments) ? message.attachments : [],
+    },
+    security: {
+      decision,
+      policyId: stringField(security, "policyId") ?? stringField(security, "policy_id"),
+    },
+    projection: {
+      surface,
+      replyTarget,
+    },
+  };
+}
+
+function ensureChannelBinding(
+  store: RuntimeStore,
+  payload: ChannelMessageInput,
+): NonNullable<RuntimeStore["channel_bindings"]>[number] {
+  const now = currentTimestamp();
+  store.channel_bindings = store.channel_bindings ?? [];
+  const existing = store.channel_bindings.find(
+    (binding) =>
+      binding.source === payload.source &&
+      binding.role === payload.role &&
+      binding.channel_identity === payload.channelIdentity,
+  );
+  if (existing) {
+    existing.updated_at = now;
+    return existing;
+  }
+  const conversation = createConversation(
+    store,
+    channelConversationTitle(payload),
+    ["telegram.bridge", payload.role],
+  );
+  const binding = {
+    source: payload.source,
+    role: payload.role,
+    channel_identity: payload.channelIdentity,
+    conversation_id: conversation.conversation_id,
+    created_at: now,
+    updated_at: now,
+  };
+  store.channel_bindings.unshift(binding);
+  return binding;
+}
+
+function channelConversationTitle(payload: ChannelMessageInput): string {
+  return `Telegram ${summarizePrompt(payload.message.chatId, 24)}`;
+}
+
+function channelIngressRecord(payload: ChannelMessageInput): Record<string, unknown> {
+  return {
+    source: payload.source,
+    role: payload.role,
+    channel_identity: payload.channelIdentity,
+    idempotency_key: payload.message.idempotencyKey,
+    telegram_update_id: payload.message.telegramUpdateId,
+    chat_id: payload.message.chatId,
+    message_id: payload.message.messageId,
+    from_user_id: payload.message.fromUserId,
+    security_decision: payload.security.decision,
+    security_policy_id: payload.security.policyId ?? null,
+    projection_surface: payload.projection.surface,
+    reply_target: payload.projection.replyTarget,
+    fallback_attempted: false,
+  };
+}
+
+function recordChannelMessage(
+  store: RuntimeStore,
+  payload: ChannelMessageInput,
+  runId: string | null,
+): void {
+  const now = currentTimestamp();
+  const record: RuntimeChannelMessageRecord = {
+    source: payload.source,
+    role: payload.role,
+    channel_identity: payload.channelIdentity,
+    idempotency_key: payload.message.idempotencyKey,
+    run_id: runId,
+    status: "accepted",
+    created_at: now,
+    updated_at: now,
+    fallback_attempted: false,
+  };
+  store.channel_messages = [
+    record,
+    ...(store.channel_messages ?? []).filter(
+      (record) =>
+        !(
+          record.source === payload.source &&
+          record.role === payload.role &&
+          record.channel_identity === payload.channelIdentity &&
+          record.idempotency_key === payload.message.idempotencyKey
+        ),
+    ),
+  ].slice(0, 500);
+}
+
+function numberField(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 export async function performTaskAction(
@@ -208,6 +512,7 @@ export async function completeHostActionTurn(
     store,
     runtimeSessionId,
     "native Gear actions completed; returning structured host results to the SDK runtime so the agent can write the user-facing reply",
+    completionContext?.runId,
   );
 
   for (const completion of completions) {
@@ -218,6 +523,8 @@ export async function completeHostActionTurn(
       completion.status,
       completion.summary,
       completion.error,
+      [],
+      completionContext?.runId,
     );
   }
   markHostActionRunsCompleted(store, completions);
@@ -308,6 +615,7 @@ async function applyResumedSdkHostActionTurn(
     recordHostActionRuns(
       store,
       "sdk_same_run",
+      latestRunIdForSession(store, runtimeSessionId),
       runtimeSessionId,
       originatingMessageId,
       sdkTurn.pending_host_actions,
@@ -405,6 +713,7 @@ async function applyUnresumableHostActionCompletions(
       completion.status,
       completion.summary,
       completion.error,
+      completionContext?.runId,
     );
   }
 
@@ -627,6 +936,7 @@ async function applyClaudeSdkTurn(
   route: TurnRoute,
   prepared: PreparedTurnContext,
   text: string,
+  planningDecision?: RuntimePlanningDecision,
 ): Promise<void> {
   store.host_action_intents = [];
   if (route.mode === "quick_prompt" && !prepared.shouldReuseActiveConversation) {
@@ -641,11 +951,16 @@ async function applyClaudeSdkTurn(
 
   const runtimeSessionId = executionSessionIdForConversation(store.active_conversation_id);
   const cursor = beginTurnReplay(store, route.surface, text);
-  const gearBridgeFirst = requiresGeeGearBridgeFirst(text);
-  const runPlan = buildRuntimeRunPlan(
-    text,
-    gearBridgeFirst ? "gear_first" : "default",
-  );
+  const decision =
+    planningDecision ??
+    selectRuntimePlanningMode(
+      text,
+      requiresGeeGearBridgeFirst(text) ? "gear_first" : "default",
+    );
+  const gearBridgeFirst = decision.boundary_mode === "gear_first";
+  const runPlan = decision.should_create_run_plan
+    ? buildRuntimeRunPlan(text, decision.boundary_mode)
+    : null;
   if (runPlan) {
     appendRunPlanForSession(store, cursor.sessionId, runPlan);
     appendCapabilityFocusForSession(store, cursor.sessionId, runPlan);
@@ -858,6 +1173,7 @@ function installClaudeSdkHostActions(
   recordHostActionRuns(
     store,
     "sdk_same_run",
+    cursor.runId,
     cursor.sessionId,
     cursor.userMessageId,
     hostActions,
@@ -927,6 +1243,7 @@ function markHostActionsPending(
 function recordHostActionRuns(
   store: RuntimeStore,
   source: RuntimeHostActionRunSource,
+  runId: string | null,
   sessionId: string,
   userMessageId: string,
   hostActions: RuntimeHostActionIntent[],
@@ -942,6 +1259,7 @@ function recordHostActionRuns(
   );
   const recordedRuns = hostActions.map((action) => ({
     host_action_id: action.host_action_id,
+    run_id: runId ?? latestRunIdForSession(store, sessionId) ?? `run_${sessionId}_unknown`,
     tool_id: action.tool_id,
     session_id: sessionId,
     conversation_id: store.active_conversation_id,
@@ -973,6 +1291,7 @@ function hostActionCompletionContext(
   }
 
   return {
+    runId: record.run_id ?? null,
     sessionId: record.session_id,
     conversationId: record.conversation_id,
     source: record.source,
@@ -1324,7 +1643,7 @@ function stageSummaryCapsuleForTurn(
   const latestUserRequest = userMessageContentForCursor(store, cursor) ?? "";
   const capsule = buildStageSummaryCapsule({
     stage_id: runPlan?.current_stage_id ?? cursor.sessionId,
-    run_id: runPlan?.plan_id ?? cursor.sessionId,
+    run_id: cursor.runId,
     session_id: cursor.sessionId,
     status,
     objective: runPlan?.stages.find((stage) => stage.stage_id === runPlan.current_stage_id)?.objective ??
@@ -1407,6 +1726,7 @@ export const __turnTestHooks = {
   isTransientQuickPrompt,
   markMissingAssistantReplyAsFailure,
   prepareTurnContext,
+  recordHostActionRuns,
   routeQuickPromptToBestConversation,
   stageSummaryCapsuleForTurn,
   successfulToolResultSummaries,

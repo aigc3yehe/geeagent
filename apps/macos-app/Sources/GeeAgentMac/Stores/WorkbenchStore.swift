@@ -51,6 +51,7 @@ final class WorkbenchStore {
                 applyHostActionIntents(snapshot.hostActionIntents)
             }
             applyExternalInvocations(snapshot.externalInvocations)
+            resetRuntimeRunInspectorIfNeeded()
         }
     }
     var lastErrorMessage: String?
@@ -66,7 +67,11 @@ final class WorkbenchStore {
     var isUpdatingHighestAuthorization = false
     var isLoadingChatRoutingSettings = false
     var isSavingChatRoutingSettings = false
+    var isLoadingRuntimeRunInspector = false
     var chatRoutingSettings: ChatRoutingSettings?
+    var selectedRuntimeRunProjection: WorkbenchRuntimeRunProjection?
+    var selectedRuntimeRunWait: WorkbenchRuntimeRunWaitClassification?
+    var runtimeRunInspectorErrorMessage: String?
     var autoConversationRoutingEnabled: Bool {
         didSet {
             UserDefaults.standard.set(autoConversationRoutingEnabled, forKey: PreferenceKey.autoConversationRouting)
@@ -96,6 +101,7 @@ final class WorkbenchStore {
     var selectedConversationID: ConversationThread.ID? {
         didSet {
             normalizeSelectedConversation()
+            resetRuntimeRunInspectorIfNeeded()
         }
     }
     var selectedTaskID: WorkbenchTaskRecord.ID? {
@@ -241,6 +247,10 @@ final class WorkbenchStore {
 
     var selectedConversation: ConversationThread? {
         conversations.first(where: { $0.id == selectedConversationID }) ?? conversations.first
+    }
+
+    var selectedRuntimeRunID: String? {
+        selectedConversation?.runtimeRunSummary?.runID
     }
 
     var selectedDisplayConversation: ConversationThread? {
@@ -905,6 +915,76 @@ final class WorkbenchStore {
                 self.lastErrorMessage = error.localizedDescription
             }
         }
+    }
+
+    func refreshSelectedRuntimeRunInspector(force: Bool = false) {
+        guard let runID = selectedRuntimeRunID else {
+            selectedRuntimeRunProjection = nil
+            selectedRuntimeRunWait = nil
+            runtimeRunInspectorErrorMessage = nil
+            isLoadingRuntimeRunInspector = false
+            return
+        }
+
+        if !force,
+           selectedRuntimeRunProjection?.runID == runID,
+           selectedRuntimeRunWait?.runID == runID {
+            return
+        }
+
+        isLoadingRuntimeRunInspector = true
+        runtimeRunInspectorErrorMessage = nil
+        let runtimeClient = self.runtimeClient
+
+        Task { [weak self, runtimeClient, runID] in
+            do {
+                async let projection = runtimeClient.projectRuntimeRun(runID)
+                async let wait = runtimeClient.classifyRuntimeRunWait(runID)
+                let result = try await (projection, wait)
+                await MainActor.run {
+                    guard let self, self.selectedRuntimeRunID == runID else {
+                        return
+                    }
+                    self.selectedRuntimeRunProjection = result.0
+                    self.selectedRuntimeRunWait = result.1
+                    self.runtimeRunInspectorErrorMessage = nil
+                    self.isLoadingRuntimeRunInspector = false
+                }
+            } catch {
+                await MainActor.run {
+                    guard let self, self.selectedRuntimeRunID == runID else {
+                        return
+                    }
+                    self.selectedRuntimeRunProjection = nil
+                    self.selectedRuntimeRunWait = nil
+                    self.runtimeRunInspectorErrorMessage = error.localizedDescription
+                    self.isLoadingRuntimeRunInspector = false
+                }
+            }
+        }
+    }
+
+    private func resetRuntimeRunInspectorIfNeeded() {
+        guard let runID = selectedRuntimeRunID else {
+            selectedRuntimeRunProjection = nil
+            selectedRuntimeRunWait = nil
+            runtimeRunInspectorErrorMessage = nil
+            isLoadingRuntimeRunInspector = false
+            return
+        }
+        let projectionMatches = selectedRuntimeRunProjection?.runID == runID
+        let waitMatches = selectedRuntimeRunWait?.runID == runID
+        if projectionMatches && waitMatches {
+            return
+        }
+        if !projectionMatches {
+            selectedRuntimeRunProjection = nil
+        }
+        if !waitMatches {
+            selectedRuntimeRunWait = nil
+        }
+        runtimeRunInspectorErrorMessage = nil
+        isLoadingRuntimeRunInspector = false
     }
 
     private static func toolInvocation(for invocation: WorkbenchExternalInvocation) -> ToolInvocation? {

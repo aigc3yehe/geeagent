@@ -16,7 +16,9 @@ import {
 } from "./codex-external-invocations.js";
 import {
   generateCodexPluginPackage,
+  installCodexPluginPackage,
   parseCodexPluginGenerationOptions,
+  parseCodexPluginInstallOptions,
 } from "./codex-plugin.js";
 import { resolveConfigDir } from "./paths.js";
 import {
@@ -36,6 +38,7 @@ import {
 import {
   completeHostActionTurn,
   performTaskAction,
+  submitChannelMessage,
   submitQuickPrompt,
   submitRoutedWorkspaceMessage,
   submitWorkspaceMessage,
@@ -57,6 +60,12 @@ import {
   removeSystemSkillSource,
 } from "./store/skill-sources.js";
 import { loadSnapshot, snapshotFromStore } from "./store/snapshot.js";
+import {
+  classifyRuntimeRunWait,
+  exportRuntimeRun,
+  projectRuntimeRun,
+  projectRuntimeRunReplay,
+} from "./store/run-replay.js";
 import type { RuntimeCommandContext } from "./protocol.js";
 import { invokeTool, type ToolRequest } from "./tools.js";
 
@@ -71,6 +80,24 @@ export async function handleNativeRuntimeCommand(
     case "snapshot":
       assertArgCount(command, args, 0);
       return stringify(await loadSnapshot(configDir));
+    case "export-runtime-run": {
+      assertArgCount(command, args, 1);
+      const store = await loadRuntimeStore(configDir);
+      return stringify(exportRuntimeRun(store, args[0]));
+    }
+    case "project-runtime-run": {
+      assertArgCount(command, args, 1);
+      const store = await loadRuntimeStore(configDir);
+      return stringify(projectRuntimeRun(store, args[0]));
+    }
+    case "classify-runtime-run-wait": {
+      assertArgCount(command, args, 1);
+      const store = await loadRuntimeStore(configDir);
+      return stringify(classifyRuntimeRunWait(store, args[0]));
+    }
+    case "project-runtime-run-replay":
+      assertArgCount(command, args, 1);
+      return stringify(projectRuntimeRunReplay(JSON.parse(args[0]) as unknown));
     case "list-agent-profiles": {
       assertArgCount(command, args, 0);
       const snapshot = await loadSnapshot(configDir);
@@ -159,6 +186,9 @@ export async function handleNativeRuntimeCommand(
     case "submit-routed-workspace-message":
       assertArgCount(command, args, 1);
       return stringify(await submitRoutedWorkspaceMessage(configDir, args[0]));
+    case "submit-channel-message":
+      assertArgCount(command, args, 1);
+      return stringify(await submitChannelMessage(configDir, JSON.parse(args[0]) as unknown));
     case "submit-quick-prompt":
       assertArgCount(command, args, 1);
       return stringify(await submitQuickPrompt(configDir, args[0]));
@@ -199,6 +229,9 @@ export async function handleNativeRuntimeCommand(
     case "codex-export-generate-plugin":
       assertArgCount(command, args, 1);
       return stringify(await generateCodexPluginPackage(parseCodexPluginGenerationOptions(args[0])));
+    case "codex-export-install-plugin":
+      assertArgCount(command, args, 1);
+      return stringify(await installCodexPluginPackage(parseCodexPluginInstallOptions(args[0])));
     case "codex-external-invocation-complete":
       assertArgCount(command, args, 1);
       await completeExternalInvocation(configDir, parseExternalInvocationCompletion(args[0]));

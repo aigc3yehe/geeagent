@@ -294,6 +294,77 @@ private struct RuntimeArtifactRefDTO: Decodable {
     }
 }
 
+private struct RuntimeRunProjectionDTO: Decodable {
+    let runId: String
+    let rowCount: Int
+    let artifactIds: [String]
+    let artifactRefs: [RuntimeRunArtifactRefDTO]
+    let diagnostics: RuntimeRunDiagnosticsDTO
+    let rows: [RuntimeRunProjectionRowDTO]
+}
+
+private struct RuntimeRunProjectionRowDTO: Decodable {
+    let rowId: String
+    let runId: String
+    let sequence: Int
+    let eventId: String?
+    let eventKind: String
+    let projectionKind: String
+    let label: String
+    let status: String?
+    let summary: String
+    let stageId: String?
+    let toolName: String?
+    let projectionScope: String
+    let expandable: Bool
+    let artifactIds: [String]
+}
+
+private struct RuntimeRunArtifactRefDTO: Decodable {
+    let artifactId: String
+    let kind: String?
+    let title: String?
+    let path: String?
+    let summary: String?
+    let sha256: String?
+    let byteCount: Int?
+    let tokenEstimate: Int?
+    let mimeType: String?
+    let sourceEventId: String?
+    let sourceEventSequence: Int?
+    let sourceInvocationId: String?
+    let sourceToolName: String?
+    let sourceHostActionId: String?
+}
+
+private struct RuntimeRunDiagnosticsDTO: Decodable {
+    let duplicateEventIds: [String]
+    let missingParentEventIds: [String]
+    let missingSequenceNumbers: [Int]
+    let outOfOrderEventIds: [String]
+}
+
+private struct RuntimeRunWaitClassificationDTO: Decodable {
+    let runId: String
+    let waitKind: String
+    let status: String
+    let detail: String
+    let evidence: RuntimeRunWaitEvidenceDTO
+}
+
+private struct RuntimeRunWaitEvidenceDTO: Decodable {
+    let runId: String
+    let lastEventKind: String?
+    let lastEventSequence: Int?
+    let lastToolUseId: String?
+    let pendingToolUseId: String?
+    let pendingHostActionIds: [String]
+    let pendingApprovalId: String?
+    let sdkSessionId: String?
+    let gatewayRequestId: String?
+    let diagnostics: RuntimeRunDiagnosticsDTO
+}
+
 private struct RuntimeToolInvocationDTO: Decodable {
     let invocationId: String
     let sessionId: String
@@ -471,6 +542,8 @@ private struct RuntimeTranscriptEventDTO: Decodable {
     let eventId: String
     let sessionId: String
     let parentEventId: String?
+    let runId: String?
+    let sequence: Int?
     let createdAt: String
     let payload: RuntimeTranscriptEventPayloadDTO
 }
@@ -886,6 +959,30 @@ private final class AgentRuntimeProcess {
             )
         }
         return try decodeSnapshot(arguments: ["save-chat-routing-settings", raw])
+    }
+
+    func projectRuntimeRun(_ runID: String) throws -> RuntimeRunProjectionDTO {
+        let data = try run(arguments: ["project-runtime-run", runID])
+        do {
+            return try decoder.decode(RuntimeRunProjectionDTO.self, from: data)
+        } catch {
+            let raw = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+            throw RuntimeProcessError.runtimeInvocation(
+                "The agent runtime returned invalid JSON while projecting run \(runID): \(raw)"
+            )
+        }
+    }
+
+    func classifyRuntimeRunWait(_ runID: String) throws -> RuntimeRunWaitClassificationDTO {
+        let data = try run(arguments: ["classify-runtime-run-wait", runID])
+        do {
+            return try decoder.decode(RuntimeRunWaitClassificationDTO.self, from: data)
+        } catch {
+            let raw = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+            throw RuntimeProcessError.runtimeInvocation(
+                "The agent runtime returned invalid JSON while classifying run \(runID): \(raw)"
+            )
+        }
     }
 
     /// Serialises `invocation` into the tagged JSON the backend expects and
@@ -1792,6 +1889,20 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
         return map(nextSnapshot)
     }
 
+    func projectRuntimeRun(_ runID: String) async throws -> WorkbenchRuntimeRunProjection {
+        let projection = try await runOffMainThread {
+            try self.runtime.projectRuntimeRun(runID)
+        }
+        return mapRuntimeRunProjection(projection)
+    }
+
+    func classifyRuntimeRunWait(_ runID: String) async throws -> WorkbenchRuntimeRunWaitClassification {
+        let classification = try await runOffMainThread {
+            try self.runtime.classifyRuntimeRunWait(runID)
+        }
+        return mapRuntimeRunWaitClassification(classification)
+    }
+
     func invokeTool(_ invocation: ToolInvocation) async throws -> WorkbenchToolOutcome {
         try await runOffMainThread {
             try self.runtime.invokeTool(invocation)
@@ -1930,6 +2041,11 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
         }
         let activeConversationID = snapshot.activeConversation.conversationId
         let activeConversationMessages = projectConversationMessages(from: snapshot)
+        let activeRuntimeRunSummary = runtimeRunSummary(
+            conversationID: activeConversationID,
+            executionSessions: snapshot.executionSessions ?? [],
+            transcriptEvents: snapshot.transcriptEvents ?? []
+        )
         let conversations = summaries.map { summary in
             ConversationThread(
                 id: summary.conversationId,
@@ -1949,7 +2065,10 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
                     ? activeConversationMessages
                     : [],
                 tags: summary.tags ?? [],
-                isActive: summary.isActive
+                isActive: summary.isActive,
+                runtimeRunSummary: summary.conversationId == activeConversationID
+                    ? activeRuntimeRunSummary
+                    : nil
             )
         }
 
@@ -2008,6 +2127,87 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
         }
     }
 
+    private func mapRuntimeRunProjection(_ dto: RuntimeRunProjectionDTO) -> WorkbenchRuntimeRunProjection {
+        WorkbenchRuntimeRunProjection(
+            runID: dto.runId,
+            rowCount: dto.rowCount,
+            artifactIDs: dto.artifactIds,
+            artifactRefs: dto.artifactRefs.map(mapRuntimeRunArtifactRef),
+            diagnostics: mapRuntimeRunDiagnostics(dto.diagnostics),
+            rows: dto.rows.map(mapRuntimeRunProjectionRow)
+        )
+    }
+
+    private func mapRuntimeRunProjectionRow(_ dto: RuntimeRunProjectionRowDTO) -> WorkbenchRuntimeRunProjectionRow {
+        WorkbenchRuntimeRunProjectionRow(
+            rowID: dto.rowId,
+            runID: dto.runId,
+            sequence: dto.sequence,
+            eventID: dto.eventId,
+            eventKind: dto.eventKind,
+            projectionKind: dto.projectionKind,
+            label: dto.label,
+            status: dto.status,
+            summary: dto.summary,
+            stageID: dto.stageId,
+            toolName: dto.toolName,
+            projectionScope: dto.projectionScope,
+            expandable: dto.expandable,
+            artifactIDs: dto.artifactIds
+        )
+    }
+
+    private func mapRuntimeRunArtifactRef(_ dto: RuntimeRunArtifactRefDTO) -> WorkbenchRuntimeRunArtifactRef {
+        WorkbenchRuntimeRunArtifactRef(
+            artifactID: dto.artifactId,
+            kind: dto.kind,
+            title: dto.title,
+            path: dto.path,
+            summary: dto.summary,
+            sha256: dto.sha256,
+            byteCount: dto.byteCount,
+            tokenEstimate: dto.tokenEstimate,
+            mimeType: dto.mimeType,
+            sourceEventID: dto.sourceEventId,
+            sourceEventSequence: dto.sourceEventSequence,
+            sourceInvocationID: dto.sourceInvocationId,
+            sourceToolName: dto.sourceToolName,
+            sourceHostActionID: dto.sourceHostActionId
+        )
+    }
+
+    private func mapRuntimeRunWaitClassification(
+        _ dto: RuntimeRunWaitClassificationDTO
+    ) -> WorkbenchRuntimeRunWaitClassification {
+        WorkbenchRuntimeRunWaitClassification(
+            runID: dto.runId,
+            waitKind: dto.waitKind,
+            status: dto.status,
+            detail: dto.detail,
+            evidence: WorkbenchRuntimeRunWaitEvidence(
+                runID: dto.evidence.runId,
+                lastEventKind: dto.evidence.lastEventKind,
+                lastEventSequence: dto.evidence.lastEventSequence,
+                lastToolUseID: dto.evidence.lastToolUseId,
+                pendingToolUseID: dto.evidence.pendingToolUseId,
+                pendingHostActionIDs: dto.evidence.pendingHostActionIds,
+                pendingApprovalID: dto.evidence.pendingApprovalId,
+                sdkSessionID: dto.evidence.sdkSessionId,
+                gatewayRequestID: dto.evidence.gatewayRequestId,
+                diagnostics: mapRuntimeRunDiagnostics(dto.evidence.diagnostics)
+            )
+        )
+    }
+
+    private func mapRuntimeRunDiagnostics(_ dto: RuntimeRunDiagnosticsDTO) -> WorkbenchRuntimeRunDiagnostics {
+        WorkbenchRuntimeRunDiagnostics(
+            duplicateEventIDs: dto.duplicateEventIds,
+            missingParentEventIDs: dto.missingParentEventIds,
+            missingSequenceNumbers: dto.missingSequenceNumbers,
+            outOfOrderEventIDs: dto.outOfOrderEventIds
+        )
+    }
+
     private func externalInvocations(from dtos: [RuntimeExternalInvocationDTO]?) -> [WorkbenchExternalInvocation] {
         (dtos ?? []).compactMap { dto in
             guard let tool = WorkbenchExternalInvocationTool(rawValue: dto.tool),
@@ -2041,7 +2241,7 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
         case let .int(int):
             return .int(int)
         case let .double(double):
-            return .int(Int(double))
+            return .double(double)
         case let .bool(bool):
             return .bool(bool)
         case let .array(array):
@@ -2209,6 +2409,70 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
             }
         }
         return nil
+    }
+
+    private func runtimeRunSummary(
+        conversationID: String,
+        executionSessions: [RuntimeExecutionSessionDTO],
+        transcriptEvents: [RuntimeTranscriptEventDTO]
+    ) -> ConversationRuntimeRunSummary? {
+        let sessionIDs = Set(
+            executionSessions
+                .filter { $0.conversationId == conversationID }
+                .map(\.sessionId)
+        )
+        guard !sessionIDs.isEmpty else {
+            return nil
+        }
+        let runEvents = transcriptEvents
+            .filter { event in
+                guard sessionIDs.contains(event.sessionId),
+                      let runID = event.runId?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !runID.isEmpty
+                else {
+                    return false
+                }
+                return true
+            }
+        guard let latestRunID = runEvents.last?.runId else {
+            return nil
+        }
+        let latestRunEvents = runEvents.filter { $0.runId == latestRunID }
+        let sequences = latestRunEvents.compactMap(\.sequence)
+        return ConversationRuntimeRunSummary(
+            runID: latestRunID,
+            eventCount: latestRunEvents.count,
+            firstSequence: sequences.min(),
+            lastSequence: sequences.max(),
+            lastEventKind: latestRunEvents.last.map(transcriptEventKind)
+        )
+    }
+
+    private func transcriptEventKind(_ event: RuntimeTranscriptEventDTO) -> String {
+        switch event.payload {
+        case .userMessage:
+            return "user_message"
+        case .assistantMessage:
+            return "assistant_message"
+        case .assistantMessageDelta:
+            return "assistant_message_delta"
+        case .runPlanCreated:
+            return "run_plan_created"
+        case .runPlanUpdated:
+            return "run_plan_updated"
+        case .capabilityFocusLocked:
+            return "capability_focus_locked"
+        case .stageStarted:
+            return "stage_started"
+        case .stageConcluded:
+            return "stage_concluded"
+        case .toolInvocation:
+            return "tool_invocation"
+        case .toolResult:
+            return "tool_result"
+        case .sessionStateChanged:
+            return "session_state_changed"
+        }
     }
 
     private func projectConversationMessages(from snapshot: RuntimeSnapshotDTO) -> [ConversationMessage] {

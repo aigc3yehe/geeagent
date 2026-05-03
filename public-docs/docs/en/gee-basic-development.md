@@ -10,7 +10,7 @@ This section will document basic GeeAgent development workflows, project structu
 
 When system behavior changes, update related public documentation in English, Simplified Chinese, and Japanese.
 
-When Gear or capability behavior changes, also check whether the Codex plugin projection, Gee MCP export schema, generated skills, or plugin metadata need to change. If no Codex export update is needed for a substantial Gear change, say so in the work summary.
+When Gear or capability behavior changes, also check whether the Codex plugin projection, Gee MCP export schema, generated skills, generated capability reference files, or plugin metadata need to change. If no Codex export update is needed for a substantial Gear change, say so in the work summary.
 
 ## Runtime Context Spine
 
@@ -31,5 +31,7 @@ Host-action completion now returns to the same SDK run when that run is still al
 Gear invocation arguments are now normalized and validated at the TypeScript runtime boundary before the native host executes a Gear. Focused runtime plans may supply deterministic stage arguments for the matching capability; missing or conflicting required fields still return structured tool errors so the active agent run can correct the call.
 
 Gear-first runtime plans can also include model-only stages, such as current web research or final synthesis after all Gear storage work is done. When the active stage has no Gear focus or required Gear capability, GeeAgent returns to the normal approved SDK tool policy inside the same run and records those SDK tool results as stage evidence instead of treating them as a fallback path. Final-result validation follows the active plan stage, so a research or synthesis continuation is not rejected merely because that segment did not call another Gear after the earlier Gear stages already completed.
+
+Current Phase 3 planning is adaptive. Ordinary turns use a direct runtime path, light Gear-first turns use the Gear bridge without creating a full deterministic stage plan, and only multi-stage or cross-domain Gear requests enter structured planning. Direct and light turns do not inherit prior stage capsules into the model-facing prompt; detailed runtime events remain available to the transcript, Worked trace, inspector, and replay surfaces instead of being automatically fed back to the model. Conversation previews and final-answer surfaces suppress stage-progress prose such as "Stage complete"; that evidence belongs in Worked and inspector views. New turns also receive a stable `run_id` across transcript events, host actions, approvals, and stage capsules so product projections and replay tooling can group the work without adding more prompt context. Developer replay commands can export a run, reconstruct deterministic projection rows with artifact membership, diagnose malformed event order, and classify run state such as completed, host, tool, approval, session-lost, and event-silence states.
 
 The local SDK gateway now applies the configured chat output budget and temperature from `chat-runtime.toml` before forwarding to the provider. If the upstream provider or model is unavailable or times out, GeeAgent reports that failure directly instead of retrying another provider or model.

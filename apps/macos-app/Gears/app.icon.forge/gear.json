@@ -1,0 +1,104 @@
+{
+  "schema": "gee.gear.v1",
+  "id": "app.icon.forge",
+  "name": "App Icon Forge",
+  "description": "Native macOS icon generator that turns one source image into a rounded, inset app icon set, .icns bundle, and Xcode appiconset.",
+  "developer": "Gee",
+  "version": "0.1.0",
+  "category": "Developer",
+  "kind": "atmosphere",
+  "display_mode": "full_canvas",
+  "entry": {
+    "type": "native",
+    "native_id": "app.icon.forge"
+  },
+  "permissions": [
+    "filesystem.read.user_selected",
+    "filesystem.write.user_selected",
+    "process.spawn"
+  ],
+  "agent": {
+    "enabled": true,
+    "capabilities": [
+      {
+        "id": "app_icon.generate",
+        "title": "Generate macOS app icons",
+        "description": "Generate a rounded, inset macOS app icon package from one local image path, including AppIcon.icns, AppIcon.iconset, AppIcon.appiconset, and a 1024px preview.",
+        "examples": [
+          "Generate a macOS icon package from this image path",
+          "Create AppIcon.icns with rounded corners and safe inset"
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": ["source_path"],
+          "additionalProperties": false,
+          "properties": {
+            "source_path": {
+              "type": "string",
+              "description": "Local image path selected or supplied by the user."
+            },
+            "output_dir": {
+              "type": "string",
+              "description": "Optional output directory. Defaults to App Icon Forge gear data."
+            },
+            "name": {
+              "type": "string",
+              "description": "Output base name. Defaults to AppIcon."
+            },
+            "content_scale": {
+              "type": "number",
+              "minimum": 0.6,
+              "maximum": 0.95,
+              "description": "Visual scale of the rounded icon inside the transparent canvas."
+            },
+            "corner_radius_ratio": {
+              "type": "number",
+              "minimum": 0.08,
+              "maximum": 0.28,
+              "description": "Corner radius as a ratio of the inset icon rect."
+            },
+            "shadow": {
+              "type": "boolean",
+              "description": "Whether to add a subtle macOS-style drop shadow."
+            }
+          }
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "status": { "type": "string", "enum": ["succeeded", "failed"] },
+            "gear_id": { "type": "string" },
+            "capability_id": { "type": "string" },
+            "source_path": { "type": "string" },
+            "output_dir": { "type": "string" },
+            "icns_path": { "type": "string" },
+            "iconset_path": { "type": "string" },
+            "appiconset_path": { "type": "string" },
+            "preview_path": { "type": "string" },
+            "generated_files": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "code": { "type": "string" },
+            "error": { "type": "string" },
+            "recovery": { "type": "string" }
+          }
+        },
+        "side_effect": "filesystem.write.user_selected",
+        "permissions": [
+          "filesystem.read.user_selected",
+          "filesystem.write.user_selected",
+          "process.spawn"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "high",
+            "requires_approval": false,
+            "skill_hint": "Use only when the current user explicitly asks Codex to generate macOS app icons from a local image path. Pass only local source_path/output_dir values supplied by the user or returned by Gee capabilities, and report the returned icns_path/iconset_path/appiconset_path/preview_path exactly as Gee returns them."
+          }
+        }
+      }
+    ]
+  }
+}

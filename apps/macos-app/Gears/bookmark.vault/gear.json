@@ -42,7 +42,35 @@
           "Save this link as a bookmark",
           "Save this media link with imported local files",
           "Bookmark this video URL"
-        ]
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": ["content"],
+          "additionalProperties": false,
+          "properties": {
+            "content": {
+              "type": "string",
+              "description": "Any user-provided content to save. If it contains a URL, Bookmark Vault enriches the bookmark with link metadata when available."
+            },
+            "local_media_paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Optional local media paths associated with this bookmark, usually imported Media Library item paths."
+            }
+          }
+        },
+        "side_effect": "write_gear_data",
+        "permissions": ["gear_data.write", "network.metadata"],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "medium",
+            "requires_approval": false,
+            "skill_hint": "Use when Codex needs to save explicit user-provided text or URLs into GeeAgent Bookmark Vault. Do not use it for media preservation unless local_media_paths were returned by another Gee capability."
+          }
+        }
       }
     ]
   }

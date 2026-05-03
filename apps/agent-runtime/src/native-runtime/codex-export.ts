@@ -29,7 +29,7 @@ export type CodexExportOptions = {
   detail?: string;
 };
 
-type CodexExportIssue = {
+export type CodexExportIssue = {
   code: string;
   message: string;
   path?: string;

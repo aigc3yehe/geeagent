@@ -23,6 +23,7 @@ struct ToolInvocation: Hashable, Sendable {
 indirect enum WorkbenchToolArgumentValue: Hashable, Sendable {
     case string(String)
     case int(Int)
+    case double(Double)
     case bool(Bool)
     case stringArray([String])
     case object([String: WorkbenchToolArgumentValue])
@@ -160,6 +161,8 @@ enum WorkbenchToolArgumentCodec {
                 out[key] = string
             case let .int(int):
                 out[key] = int
+            case let .double(double):
+                out[key] = double
             case let .bool(bool):
                 out[key] = bool
             case let .stringArray(array):

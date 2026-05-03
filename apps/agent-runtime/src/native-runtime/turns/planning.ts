@@ -1,6 +1,14 @@
 import { createHash } from "node:crypto";
 
 export type RuntimePlanPhase = "phase3.6";
+export type RuntimePlanningMode = "direct" | "light" | "structured" | "recovery";
+
+export type RuntimePlanningDecision = {
+  mode: RuntimePlanningMode;
+  boundary_mode: "default" | "gear_first";
+  reason: string;
+  should_create_run_plan: boolean;
+};
 
 export type RuntimePlanStage = {
   stage_id: string;
@@ -25,6 +33,7 @@ export type RuntimeCapabilityFocus = {
 export type RuntimeRunPlan = {
   plan_id: string;
   phase: RuntimePlanPhase;
+  planning_mode: "structured";
   source: "deterministic_runtime_seed";
   user_goal: string;
   success_criteria: string[];
@@ -42,6 +51,37 @@ const COMMON_REOPEN_TRIGGERS = [
   "the active stage is explicitly replanned",
 ];
 
+export function selectRuntimePlanningMode(
+  userRequest: string,
+  boundaryMode: "default" | "gear_first",
+): RuntimePlanningDecision {
+  const trimmed = userRequest.trim();
+  if (!trimmed || boundaryMode === "default") {
+    return {
+      mode: "direct",
+      boundary_mode: boundaryMode,
+      reason: "ordinary SDK turn; no Gear-first runtime boundary was selected",
+      should_create_run_plan: false,
+    };
+  }
+
+  if (isStructuredGearPlanningRequest(trimmed)) {
+    return {
+      mode: "structured",
+      boundary_mode: boundaryMode,
+      reason: "multi-stage Gear or cross-domain request needs stage proof and focused capability disclosure",
+      should_create_run_plan: true,
+    };
+  }
+
+  return {
+    mode: "light",
+    boundary_mode: boundaryMode,
+    reason: "Gear-first task can use the bridge boundary without a full deterministic stage plan",
+    should_create_run_plan: false,
+  };
+}
+
 export function buildRuntimeRunPlan(
   userRequest: string,
   boundaryMode: "default" | "gear_first",
@@ -49,6 +89,11 @@ export function buildRuntimeRunPlan(
   const trimmed = userRequest.trim();
   if (!trimmed || boundaryMode !== "gear_first") {
     return null;
+  }
+
+  const mediaGeneration = mediaGenerationPlan(trimmed);
+  if (mediaGeneration) {
+    return mediaGeneration;
   }
 
   const twitterPlan = twitterBookmarkMediaPlan(trimmed);
@@ -192,8 +237,8 @@ export function renderRuntimeRunPlanForPrompt(plan: RuntimeRunPlan | null): stri
 
   return [
     "[GeeAgent Runtime Plan]",
-    "Treat this plan as deterministic runtime state, not hidden reasoning.",
-    JSON.stringify(plan, null, 2),
+    "Treat this compact plan as deterministic runtime state, not hidden reasoning.",
+    JSON.stringify(compactRuntimeRunPlanForPrompt(plan), null, 2),
     "Execution rules:",
     "- Start with the current stage and its locked capability focus set.",
     "- When the current stage includes `capability_args` for the selected capability, pass those fields inside the direct Gear `args` object.",
@@ -203,6 +248,39 @@ export function renderRuntimeRunPlanForPrompt(plan: RuntimeRunPlan | null): stri
     "- Never claim final completion until the success criteria are satisfied by structured tool results or artifacts.",
     "[/GeeAgent Runtime Plan]",
   ].join("\n");
+}
+
+function compactRuntimeRunPlanForPrompt(plan: RuntimeRunPlan): Record<string, unknown> {
+  const currentStage = currentRuntimePlanStage(plan);
+  return {
+    plan_id: plan.plan_id,
+    phase: plan.phase,
+    planning_mode: plan.planning_mode,
+    user_goal: truncateForPrompt(plan.user_goal, 500),
+    success_criteria: plan.success_criteria.map((item) => truncateForPrompt(item, 220)),
+    current_stage_id: plan.current_stage_id,
+    focus: plan.focus,
+    current_stage: currentStage
+      ? {
+          stage_id: currentStage.stage_id,
+          title: currentStage.title,
+          objective: truncateForPrompt(currentStage.objective, 320),
+          required_capabilities: currentStage.required_capabilities,
+          focus_gear_ids: currentStage.focus_gear_ids ?? [],
+          focus_capability_ids: currentStage.focus_capability_ids ?? [],
+          capability_args: currentStage.capability_args ?? {},
+          input_contract: currentStage.input_contract.map((item) => truncateForPrompt(item, 220)),
+          completion_signal: truncateForPrompt(currentStage.completion_signal, 220),
+          blocked_signal: truncateForPrompt(currentStage.blocked_signal, 220),
+        }
+      : null,
+    stage_order: plan.stages.map((stage) => ({
+      stage_id: stage.stage_id,
+      title: stage.title,
+      required_capabilities: stage.required_capabilities,
+    })),
+    reopen_capability_discovery_when: plan.reopen_capability_discovery_when,
+  };
 }
 
 function twitterBookmarkMediaPlan(userRequest: string): RuntimeRunPlan | null {
@@ -346,6 +424,119 @@ function twitterBookmarkMediaPlan(userRequest: string): RuntimeRunPlan | null {
   });
 }
 
+function mediaGenerationPlan(userRequest: string): RuntimeRunPlan | null {
+  if (!mentionsMediaGenerationRequest(userRequest)) {
+    return null;
+  }
+
+  const args = mediaGenerationCapabilityArgs(userRequest);
+  return planFromStages({
+    userRequest,
+    kind: "media-generation",
+    successCriteria: [
+      "Media Generator receives a structured create_task request through the Gear bridge",
+      "the provider-backed generation task id, status, and artifact references are returned as structured runtime state",
+      "the final answer reports the real task state without claiming completion before Gee returns it",
+    ],
+    stages: [
+      {
+        stage_id: "stage_create_media_generation_task",
+        title: "Create media generation task",
+        objective: "Create the requested image generation task through Media Generator.",
+        required_capabilities: ["media.generator/media_generator.create_task"],
+        capability_args: {
+          "media.generator/media_generator.create_task": args,
+        },
+        input_contract: ["user-provided prompt and generation parameters are available"],
+        completion_signal: "Media Generator returns a task id, status, and any generated artifact references",
+        blocked_signal: "Media Generator or the requested model/provider is unavailable",
+      },
+    ],
+    focusGearIDs: ["media.generator"],
+    focusCapabilityIDs: ["media_generator.create_task"],
+  });
+}
+
+function mediaGenerationCapabilityArgs(userRequest: string): Record<string, unknown> {
+  const text = userRequest.toLowerCase();
+  const args: Record<string, unknown> = {
+    category: "image",
+    model: requestedMediaGenerationModel(text) ?? "nano-banana-pro",
+    prompt: generationPrompt(userRequest),
+    response_format: "url",
+    n: 1,
+    async: true,
+  };
+  const batchCount = requestedMediaGenerationBatchCount(userRequest);
+  if (batchCount) {
+    args.batch_count = batchCount;
+  }
+  const aspectRatio = requestedAspectRatio(userRequest);
+  if (aspectRatio) {
+    args.aspect_ratio = aspectRatio;
+  }
+  const resolution = requestedResolution(userRequest);
+  if (resolution) {
+    args.resolution = resolution;
+  }
+  return args;
+}
+
+function requestedMediaGenerationModel(text: string): string | null {
+  if (/\b(?:gpt[-_\s]*)?image[-_\s]*2\b/.test(text)) {
+    return "gpt-image-2";
+  }
+  if (/nano[-_\s]*banana[-_\s]*pro/.test(text)) {
+    return "nano-banana-pro";
+  }
+  return null;
+}
+
+function requestedMediaGenerationBatchCount(userRequest: string): number | null {
+  const text = userRequest.toLowerCase();
+  const numericMatch = text.match(/(?:^|[^\d])([1-4])\s*(?:images?|imgs?|pictures?|photos?)(?:[^\d]|$)/i);
+  if (numericMatch?.[1]) {
+    return Number(numericMatch[1]);
+  }
+  const wordCounts: Array<[RegExp, number]> = [
+    [/\b(?:two|couple)\s+(?:images?|pictures?|photos?)\b/, 2],
+    [/\bthree\s+(?:images?|pictures?|photos?)\b/, 3],
+    [/\bfour\s+(?:images?|pictures?|photos?)\b/, 4],
+  ];
+  for (const [pattern, count] of wordCounts) {
+    if (pattern.test(text)) {
+      return count;
+    }
+  }
+  return null;
+}
+
+function requestedAspectRatio(text: string): string | null {
+  const match = text.match(/(^|[^\d])(\d{1,2})\s*[:\uFF1A\u00D7x]\s*(\d{1,2})([^\d]|$)/);
+  if (!match?.[2] || !match?.[3]) {
+    return null;
+  }
+  return `${match[2]}:${match[3]}`;
+}
+
+function requestedResolution(text: string): string | null {
+  const match = text.match(/(^|[^\d])([124])\s*k([^\d]|$)/i);
+  return match?.[2] ? `${match[2]}K` : null;
+}
+
+function generationPrompt(userRequest: string): string {
+  const marker = userRequest.match(
+    /(?:prompt)\s*(?:follows|below)?\s*[:\uFF1A]\s*/i,
+  );
+  if (marker?.index !== undefined) {
+    const prompt = userRequest.slice(marker.index + marker[0].length).trim();
+    if (prompt) {
+      return prompt;
+    }
+  }
+  return userRequest.trim();
+}
+
 function weChatReaderPlan(userRequest: string): RuntimeRunPlan | null {
   const url = firstUrl(userRequest);
   if (!url || !/https?:\/\/mp\.weixin\.qq\.com\//i.test(url)) {
@@ -439,6 +630,7 @@ function planFromStages(input: {
   return {
     plan_id: `run_plan_${stableHash(`${input.kind}:${input.userRequest}`)}`,
     phase: "phase3.6",
+    planning_mode: "structured",
     source: "deterministic_runtime_seed",
     user_goal: input.userRequest,
     success_criteria: input.successCriteria,
@@ -452,6 +644,35 @@ function planFromStages(input: {
     },
     reopen_capability_discovery_when: COMMON_REOPEN_TRIGGERS,
   };
+}
+
+function isStructuredGearPlanningRequest(userRequest: string): boolean {
+  const text = userRequest.toLowerCase();
+  if (mentionsMediaGenerationRequest(userRequest)) {
+    return true;
+  }
+  const twitterStatusURL = firstTwitterStatusUrl(userRequest);
+  if (twitterStatusURL) {
+    const wantsBookmark = mentionsBookmark(userRequest);
+    const wantsMedia = mentionsMediaPreservation(userRequest);
+    const wantsResearch = mentionsResearchOrExplanation(userRequest);
+    return (
+      wantsBookmark ||
+      wantsMedia ||
+      mentionsInfoCaptureWorkflow(text)
+    );
+  }
+
+  const url = firstUrl(userRequest);
+  if (url && /https?:\/\/mp\.weixin\.qq\.com\//i.test(url)) {
+    return /summari[sz]e|save|archive|album|article|download|collect/.test(text);
+  }
+
+  return false;
+}
+
+function mentionsInfoCaptureWorkflow(text: string): boolean {
+  return text.includes("info capture") || text.includes("information capture");
 }
 
 function enrichStageFocus(stage: RuntimePlanStage): RuntimePlanStage {
@@ -492,14 +713,44 @@ function parseCapabilityRefs(refs: string[]): {
 }
 
 function mentionsBookmark(text: string): boolean {
-  return /bookmark|favorite|save|store|remember|archive/.test(
-    text.toLowerCase(),
-  );
+  return /bookmark|favorite|save|store|remember|archive/.test(text.toLowerCase());
 }
 
 function mentionsMediaPreservation(text: string): boolean {
-  return /media|video|image|photo|download|browser|library/.test(
-    text.toLowerCase(),
+  return /media|video|image|photo|download|browser|library/.test(text.toLowerCase());
+}
+
+function mentionsMediaGenerationRequest(rawText: string): boolean {
+  const text = rawText.toLowerCase();
+  if (isMediaGenerationInfoQuestion(rawText, text)) {
+    return false;
+  }
+  return (
+    (mentionsMediaGenerationPromptMarker(rawText) && mentionsMediaGenerationProvider(rawText, text)) ||
+    /\b(generate|create|draw|render|make)\b.{0,80}\b(images?|pictures?|illustrations?|posters?|artworks?)\b/.test(text) ||
+    /\b(images?|pictures?|illustrations?|posters?|artworks?)\b.{0,80}\b(generate|create|draw|render|make)\b/.test(text)
+  );
+}
+
+function isMediaGenerationInfoQuestion(rawText: string, text: string): boolean {
+  if (!mentionsMediaGenerationProvider(rawText, text) || mentionsMediaGenerationPromptMarker(rawText)) {
+    return false;
+  }
+  return (
+    /\b(how\s+(?:do|to|can|should)|what(?:'s|\s+is)|why|whether|explain|describe|compare|pricing|price|limits?|parameters?|docs?)\b/.test(text) ||
+    /\b(?:can|does)\s+(?:gpt[-_\s]*image[-_\s]*2|image[-_\s]*2)\b/.test(text)
+  );
+}
+
+function mentionsMediaGenerationPromptMarker(rawText: string): boolean {
+  return /(?:prompt)\s*(?:follows|below)?\s*[:\uFF1A]/i.test(rawText);
+}
+
+function mentionsMediaGenerationProvider(rawText: string, text: string): boolean {
+  return (
+    text.includes("media generator") ||
+    text.includes("image generator") ||
+    /\b(?:gpt[-_\s]*)?image[-_\s]*2\b/.test(text)
   );
 }
 
@@ -531,4 +782,12 @@ function stableHash(value: string): string {
 
 function dedupe(values: string[]): string[] {
   return [...new Set(values.filter((value) => value.trim().length > 0))];
+}
+
+function truncateForPrompt(value: string, limit: number): string {
+  const trimmed = value.trim();
+  if ([...trimmed].length <= limit) {
+    return trimmed;
+  }
+  return `${[...trimmed].slice(0, Math.max(0, limit - 3)).join("")}...`;
 }

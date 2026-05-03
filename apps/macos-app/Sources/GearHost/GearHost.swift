@@ -9,6 +9,8 @@ enum GearHost {
     static let bookmarkVaultWindowID = "bookmark-vault"
     static let weSpyReaderWindowID = "wespy-reader"
     static let mediaGeneratorWindowID = "media-generator"
+    static let appIconForgeWindowID = "app-icon-forge"
+    static let telegramBridgeWindowID = "telegram-bridge"
     static let mediaLibraryWindowDescriptor = GearNativeWindowDescriptor(
         gearID: MediaLibraryGearDescriptor.gearID,
         windowID: mediaLibraryWindowID,
@@ -58,6 +60,20 @@ enum GearHost {
         defaultWidth: 1180,
         defaultHeight: 760
     )
+    static let appIconForgeWindowDescriptor = GearNativeWindowDescriptor(
+        gearID: AppIconForgeGearDescriptor.gearID,
+        windowID: appIconForgeWindowID,
+        title: "App Icon Forge",
+        defaultWidth: 1040,
+        defaultHeight: 700
+    )
+    static let telegramBridgeWindowDescriptor = GearNativeWindowDescriptor(
+        gearID: TelegramBridgeGearDescriptor.gearID,
+        windowID: telegramBridgeWindowID,
+        title: "Telegram Bridge",
+        defaultWidth: 1040,
+        defaultHeight: 700
+    )
     static let nativeWindowDescriptors: [GearNativeWindowDescriptor] = [
         mediaLibraryWindowDescriptor,
         hyperframesStudioWindowDescriptor,
@@ -65,7 +81,9 @@ enum GearHost {
         twitterCaptureWindowDescriptor,
         bookmarkVaultWindowDescriptor,
         weSpyReaderWindowDescriptor,
-        mediaGeneratorWindowDescriptor
+        mediaGeneratorWindowDescriptor,
+        appIconForgeWindowDescriptor,
+        telegramBridgeWindowDescriptor
     ]
 
     private static let manifestFileName = "gear.json"
@@ -168,6 +186,10 @@ enum GearHost {
             return AnyView(WeSpyReaderGearModuleView())
         case MediaGeneratorGearDescriptor.gearID:
             return AnyView(MediaGeneratorGearModuleView())
+        case AppIconForgeGearDescriptor.gearID:
+            return AnyView(AppIconForgeGearModuleView())
+        case TelegramBridgeGearDescriptor.gearID:
+            return AnyView(TelegramBridgeGearModuleView())
         default:
             return nil
         }
@@ -193,6 +215,10 @@ enum GearHost {
             return AnyView(WeSpyReaderGearWindow())
         case MediaGeneratorGearDescriptor.gearID:
             return AnyView(MediaGeneratorGearWindow())
+        case AppIconForgeGearDescriptor.gearID:
+            return AnyView(AppIconForgeGearWindow())
+        case TelegramBridgeGearDescriptor.gearID:
+            return AnyView(TelegramBridgeGearWindow())
         default:
             return AnyView(GearUnavailableWindowView(title: displayTitle(for: gearID)))
         }
@@ -387,6 +413,14 @@ enum WeSpyReaderGearDescriptor {
 
 enum MediaGeneratorGearDescriptor {
     static let gearID = "media.generator"
+}
+
+enum AppIconForgeGearDescriptor {
+    static let gearID = "app.icon.forge"
+}
+
+enum TelegramBridgeGearDescriptor {
+    static let gearID = "telegram.bridge"
 }
 
 struct GearWindowRequest: Equatable, Identifiable {

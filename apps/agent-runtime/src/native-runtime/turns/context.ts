@@ -13,6 +13,7 @@ import {
 import { currentTimestamp } from "../store/defaults.js";
 import type { AgentProfile, RuntimeConversation, RuntimeStore } from "../store/types.js";
 import type { TurnRoute } from "../sdk-turn-runner.js";
+import type { RuntimePlanningMode } from "./planning.js";
 import { isRecord, summarizePrompt } from "./state.js";
 import type { PreparedTurnContext } from "./types.js";
 
@@ -22,11 +23,14 @@ export function prepareTurnContext(
   store: RuntimeStore,
   route: TurnRoute,
   text: string,
+  planningMode: RuntimePlanningMode = "structured",
 ): PreparedTurnContext {
   const workspaceMessages =
     route.mode === "workspace_message" ? workspaceMessagesFromStore(store) : [];
   const stageCapsuleMessages =
-    route.mode === "workspace_message" ? stageCapsuleMessagesFromStore(store) : [];
+    route.mode === "workspace_message" && shouldInjectStageCapsules(planningMode)
+      ? stageCapsuleMessagesFromStore(store)
+      : [];
   const baseProjection = buildContextProjection(workspaceMessages, {
     latestUserRequest: text,
   });
@@ -47,6 +51,10 @@ export function prepareTurnContext(
     shouldReuseActiveConversation:
       route.mode === "quick_prompt" ? false : shouldReuseActiveConversation(store, text),
   };
+}
+
+function shouldInjectStageCapsules(planningMode: RuntimePlanningMode): boolean {
+  return planningMode === "structured" || planningMode === "recovery";
 }
 
 export function composeClaudeSdkTurnPrompt(

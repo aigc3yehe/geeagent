@@ -50,6 +50,10 @@ export function routeLocalGearIntent(
     return null;
   }
 
+  if (mentionsMediaImport(rawText, text)) {
+    return routeMediaLibraryImportIntent(rawText, text);
+  }
+
   const runID = uniqueHostActionRunID();
   const extensions = requestedExtensions(text);
   const mediaKind = requestedMediaKind(text, extensions);
@@ -85,12 +89,40 @@ export function routeLocalGearIntent(
   };
 }
 
+function routeMediaLibraryImportIntent(rawText: string, text: string): RoutedGearIntent | null {
+  const paths = requestedLocalMediaPaths(rawText);
+  if (paths.length === 0) {
+    return null;
+  }
+
+  const runID = uniqueHostActionRunID();
+  return {
+    hostActions: [
+      {
+        host_action_id: hostActionID("open_media_library", text, runID),
+        tool_id: "gee.app.openSurface",
+        arguments: { gear_id: "media.library" },
+      },
+      {
+        host_action_id: hostActionID("media_import_files", text, runID),
+        tool_id: "gee.gear.invoke",
+        arguments: {
+          gear_id: "media.library",
+          capability_id: "media.import_files",
+          args: { paths },
+        },
+      },
+    ],
+  };
+}
+
 export function requiresGeeGearBridgeFirst(prompt: string): boolean {
   const rawText = prompt.trim();
   const text = rawText.toLowerCase();
   const url = firstURL(rawText);
   return (
     shouldDeferToAgentPlannedGearWorkflow(rawText, text) ||
+    mentionsMediaGeneration(rawText, text) ||
     mentionsTwitterCapture(text) ||
     mentionsBookmarkVault(text) ||
     mentionsMediaLibrary(text) ||
@@ -134,9 +166,7 @@ function mentionsCollectionWorkflow(rawText: string, text: string): boolean {
 }
 
 function mentionsMediaAcquisitionWorkflow(rawText: string, text: string): boolean {
-  return (
-    /\b(download|media|video|audio|mp4|mov)\b/.test(text)
-  );
+  return /\b(download|media|video|audio|mp4|mov)\b/.test(text);
 }
 
 function routeBookmarkVaultIntent(rawText: string, text: string): RoutedGearIntent | null {
@@ -175,7 +205,9 @@ function mentionsBookmarkVault(text: string): boolean {
   return (
     text.includes("bookmark") ||
     text.includes("favorite") ||
-    (hasURL && /\b(save|store|remember|archive|capture)\b/.test(text))
+    (hasURL && (
+      /\b(save|store|remember|archive|capture)\b/.test(text)
+    ))
   );
 }
 
@@ -379,11 +411,98 @@ function mentionsMediaLibrary(text: string): boolean {
   );
 }
 
+function mentionsMediaImport(rawText: string, text: string): boolean {
+  return /\b(import|add|copy|put)\b/.test(text);
+}
+
+function mentionsMediaGeneration(rawText: string, text: string): boolean {
+  return (
+    mentionsMediaGenerationRequest(rawText, text) ||
+    mentionsMediaGeneratorSurface(rawText, text)
+  );
+}
+
+function mentionsMediaGenerationRequest(rawText: string, text: string): boolean {
+  if (isMediaGenerationInfoQuestion(rawText, text)) {
+    return false;
+  }
+  return (
+    (mentionsMediaGenerationPromptMarker(rawText) && mentionsMediaGenerationProvider(rawText, text)) ||
+    /\b(generate|create|draw|render|make)\b.{0,80}\b(images?|pictures?|illustrations?|posters?|artworks?)\b/.test(text) ||
+    /\b(images?|pictures?|illustrations?|posters?|artworks?)\b.{0,80}\b(generate|create|draw|render|make)\b/.test(text)
+  );
+}
+
+function isMediaGenerationInfoQuestion(rawText: string, text: string): boolean {
+  if (!mentionsMediaGenerationProvider(rawText, text) || mentionsMediaGenerationPromptMarker(rawText)) {
+    return false;
+  }
+  return (
+    /\b(how\s+(?:do|to|can|should)|what(?:'s|\s+is)|why|whether|explain|describe|compare|pricing|price|limits?|parameters?|docs?)\b/.test(text) ||
+    /\b(?:can|does)\s+(?:gpt[-_\s]*image[-_\s]*2|image[-_\s]*2)\b/.test(text)
+  );
+}
+
+function mentionsMediaGeneratorSurface(rawText: string, text: string): boolean {
+  const wantsSurface = /\b(open|show|launch|view|go\s+to)\b/.test(text);
+  return wantsSurface && mentionsMediaGenerationProvider(rawText, text);
+}
+
+function mentionsMediaGenerationPromptMarker(rawText: string): boolean {
+  return /(?:prompt)\s*(?:follows|below)?\s*[:\uFF1A]/i.test(rawText);
+}
+
+function mentionsMediaGenerationProvider(rawText: string, text: string): boolean {
+  return (
+    text.includes("media generator") ||
+    text.includes("image generator") ||
+    /\b(?:gpt[-_\s]*)?image[-_\s]*2\b/.test(text)
+  );
+}
+
 function requestedExtensions(text: string): string[] {
   return Object.keys(MEDIA_EXTENSION_KIND).filter((ext) => {
     const escaped = ext.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, "i").test(text);
   });
+}
+
+function requestedLocalMediaPaths(rawText: string): string[] {
+  const pathCandidates = new Set<string>();
+  for (const match of rawText.matchAll(/["'“”‘’]([^"'“”‘’]+)["'“”‘’]/g)) {
+    addPathCandidate(pathCandidates, match[1]);
+  }
+  for (const match of rawText.matchAll(/(?:file:\/\/[^\s,，。！？、；)）\]}】]+|~?\/[^\s,，。！？、；)）\]}】]+|[A-Za-z]:\\[^\s,，。！？、；)）\]}】]+)/g)) {
+    addPathCandidate(pathCandidates, match[0]);
+  }
+  return [...pathCandidates];
+}
+
+function addPathCandidate(paths: Set<string>, value: string | undefined): void {
+  const normalized = normalizeLocalPath(value);
+  if (!normalized) {
+    return;
+  }
+  const extension = normalized.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
+  if (!extension || !MEDIA_EXTENSION_KIND[extension]) {
+    return;
+  }
+  paths.add(normalized);
+}
+
+function normalizeLocalPath(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (trimmed.startsWith("file://")) {
+    try {
+      return decodeURIComponent(new URL(trimmed).pathname);
+    } catch {
+      return trimmed;
+    }
+  }
+  return trimmed;
 }
 
 function requestedMediaKind(

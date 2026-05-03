@@ -81,6 +81,7 @@ apps/macos-app/Gears/
 ├── twitter.capture/
 ├── bookmark.vault/
 ├── wespy.reader/
+├── app.icon.forge/
 ├── btc.price/
 └── system.monitor/
 ```
@@ -95,6 +96,7 @@ apps/macos-app/Sources/GeeAgentMac/Modules/SmartYTMedia/
 apps/macos-app/Sources/GeeAgentMac/Modules/TwitterCapture/
 apps/macos-app/Sources/GeeAgentMac/Modules/BookmarkVault/
 apps/macos-app/Sources/GeeAgentMac/Modules/WeSpyReader/
+apps/macos-app/Sources/GeeAgentMac/Modules/AppIconForge/
 apps/macos-app/Sources/GeeAgentMac/Views/Content/HomeWidgetsView.swift
 ```
 
@@ -114,8 +116,10 @@ Current capabilities already present:
 - First V1 host bridge surface for `gee.app.openSurface`, progressive Gear capability disclosure, and shared Gear invocation.
 - `bookmark.vault` is a current first-party Gear app. It saves arbitrary text or URLs into `gear-data/bookmark.vault`, enriches media URLs through the same `yt-dlp` metadata family used by `smartyt.media`, enriches Twitter/X tweet URLs through an embed metadata path, and falls back to basic web metadata fetch for other sites.
 - `wespy.reader` is a current first-party Gear app. It wraps the MIT-licensed WeSpy Python package to fetch WeChat public-account articles, WeChat albums, and general article pages into Markdown-first local task files.
+- `app.icon.forge` is a current first-party Gear app. It converts one local source image into a macOS app icon package with rounded safe-area rendering, `AppIcon.icns`, `AppIcon.iconset`, `AppIcon.appiconset`, and a 1024px preview.
+- `telegram.bridge` is a current first-party Gear. It provides a native Telegram Bridge surface, GearHost/Keychain-backed push-only Telegram delivery, a worker polling service for Codex remote control and GeeAgent direct chat, and Phase 3 channel ingress for Gee direct messages. Codex export is enabled for status/list/send push capabilities; channel creation remains Gee-native setup because bot token binding and target confirmation are local configuration steps.
 - Transitional host action intents let first-party runtime turns hand native Gear actions back to GeeAgentMac while full SDK/MCP tool exposure is still being completed.
-- External Codex calls now use the generated `geeagent-codex` plugin plus the Gee MCP server to create shared-store external invocations. GeeAgentMac polls that queue and drains `gee_invoke_capability` / `gee_open_surface` through the same GearHost bridge used by the runtime, then Codex reads results with `gee_get_invocation`. The first exported built-in capabilities are low-risk `media.generator` model/task queries and `media.library` view filtering/folder focus.
+- External Codex calls now use the generated `geeagent-codex` plugin plus the Gee MCP server to create shared-store external invocations. GeeAgentMac polls that queue and drains `gee_invoke_capability` / `gee_open_surface` through the same GearHost bridge used by the runtime, then Codex reads results with `gee_get_invocation`. The exported built-in capabilities include low-risk `media.generator` model/task queries, high-risk explicit-user `media.generator/media_generator.create_task` image task or batch creation, `media.library` view filtering/folder focus plus explicit local file import, high-risk explicit-user `app.icon.forge/app_icon.generate` icon package generation, medium-risk `bookmark.vault/bookmark.save` for Gear-owned bookmark writes, and medium-risk `telegram.bridge/telegram_push.send_message` for configured push-only Telegram channels.
 - Home widget direction for `btc.price` and `system.monitor`.
 
 Current gaps:
@@ -124,7 +128,8 @@ Current gaps:
 - Gear package folders are not yet the full implementation boundary.
 - Third-party gear import is not implemented yet.
 - Full agent-runtime SDK/MCP tool injection for every Gear capability is not complete yet.
-- Broad external Codex coverage is intentionally narrow. Only capabilities with explicit `exports.codex.enabled: true` are visible, and provider-generating, download, import, user-file, and high-side-effect capabilities remain hidden or explicitly disabled until their approval, artifact, and failure semantics are audited end to end.
+- Broad external Codex coverage is intentionally narrow. Only capabilities with explicit `exports.codex.enabled: true` are visible, and additional provider-generating, download, import, user-file, and high-side-effect capabilities remain hidden or explicitly disabled until their approval, artifact, and failure semantics are audited end to end.
+- `telegram.bridge` still needs production daemon management and broader setup polish, but its current bridge already includes native GearHost push delivery, Keychain token lookup, push-channel creation, worker polling, Codex remote commands, and Phase 3 direct-chat ingress.
 - `GearKit` and `GearHost` have not been split into separate SwiftPM targets yet.
 
 ## Target Architecture
@@ -748,7 +753,7 @@ This does not convert Gears into Codex plugins. Gear remains the authoritative p
 
 The core export standard lives in `docs/planning/gee-capability-export-standard-v0.md`.
 
-Current implementation status: the agent runtime has manifest-backed export status/list/describe commands, a Codex-facing MCP stdio server, a shared-store external invocation queue, and a local `geeagent-codex` plugin generator. The generator can refresh a local Codex marketplace entry when the caller passes an explicit `marketplace_path`; it does not write marketplace state by default. `gee_status`, `gee_list_capabilities`, and `gee_describe_capability` are backed by manifest projection. `gee_invoke_capability` and `gee_open_surface` create external invocations that GeeAgentMac drains through the live GearHost bridge; `gee_get_invocation` returns the recorded status/result. If GeeAgentMac is not running or cannot drain the queue, Codex gets a pending/failed/blocked/degraded structured result with `fallback_attempted: false`; the MCP server does not execute Gear business logic or run fallback scripts.
+Current implementation status: the agent runtime has manifest-backed export status/list/describe commands, a Codex-facing MCP stdio server, a shared-store external invocation queue, a local `geeagent-codex` plugin generator, and a home-local install command. The generated `gee-capabilities` skill is Codex's first entry point: it explains the GeeAgent plugin, points to a generated capability index and per-Gear reference files, and requires live MCP discovery/description before invocation. The install command writes `~/plugins/geeagent-codex` and refreshes `~/.agents/plugins/marketplace.json` by default. `gee_status`, `gee_list_capabilities`, and `gee_describe_capability` are backed by manifest projection. `gee_invoke_capability` and `gee_open_surface` create external invocations that GeeAgentMac drains through the live GearHost bridge; `gee_get_invocation` returns the recorded status/result. `media.generator/media_generator.create_task` is exported for explicit user-requested image generation, including `batch_count` 1-4 fan-out, and returns task or batch status/artifact references through that same queue. `telegram.bridge/telegram_push.send_message` is exported for configured push-only Telegram channels and returns real Telegram delivery metadata or structured failure/degraded state. If GeeAgentMac is not running or cannot drain the queue, Codex gets a pending/failed/blocked/degraded structured result with `fallback_attempted: false`; stale `running` invocations degrade with manual-retry recovery instead of being retried automatically. The MCP server does not execute Gear business logic or run fallback scripts.
 
 Target Codex-facing package shape:
 
@@ -758,6 +763,11 @@ geeagent-codex/
 │   └── plugin.json
 ├── .mcp.json
 ├── skills/
+│   └── gee-capabilities/
+│       ├── SKILL.md
+│       └── references/
+│           ├── capability-index.md
+│           └── <gear-id>.md
 └── assets/
 ```
 
@@ -770,7 +780,7 @@ Target Gee MCP export tools:
 - `gee_open_surface`
 - `gee_get_invocation`
 
-The generated plugin package contains `.codex-plugin/plugin.json`, `.mcp.json`, and `skills/gee-capabilities/SKILL.md`. The `.mcp.json` entry points Codex at `native-runtime codex-mcp`; installed Gear availability remains live data from the MCP server, not static plugin metadata.
+The generated plugin package contains `.codex-plugin/plugin.json`, `.mcp.json`, `skills/gee-capabilities/SKILL.md`, `references/capability-index.md`, and generated per-Gear reference files. The references are an offline orientation snapshot; `.mcp.json` points Codex at `native-runtime codex-mcp`, and installed Gear availability remains live data from the MCP server, not static plugin metadata.
 
 Only ready, enabled, policy-allowed, export-eligible Gear capabilities are visible to Codex. Disabled, failed, installing, invalid, blocked, or explicitly non-exported Gears are invisible. The export bridge must not create one Codex tool per Gear feature, duplicate Gear business logic, store provider secrets, or call package-local fallback scripts.
 
@@ -840,7 +850,7 @@ First-party gears should gradually move into real package boundaries.
 - Package includes manifest, README, assets, setup metadata, storage notes, and future capability declarations.
 - Native Swift implementation may remain host-compiled during migration, but the business boundary must move out of the main app.
 - Folder management, filtering, starring, Quick Look, Finder handoff, video / gif hover playback, and live presentation mode belong to the media gear, not the main workbench.
-- Agent capabilities include `media.filter`, `media.focus_folder`, and `media.import_files`. `media.import_files` imports local media paths into the authorized media library, restores saved access when possible, and returns item proof for multi-Gear workflows. New files appear in `imported_items`; duplicate files are treated as idempotent success with `action: "import_noop"`, `existing_items`, and `duplicate_paths`; source files that cannot be found appear in `missing_paths`; unsupported files appear in `unsupported_paths`. If no supported imported or existing media item is available, the capability returns structured failure with `code: "gear.media.no_supported_files"` instead of reporting success with `imported_count: 0`. If authorization is missing, it keeps readable paths as `pending_paths`, opens the Media Library surface, and returns a structured failure for the active agent/LLM to explain.
+- Agent capabilities include `media.filter`, `media.focus_folder`, and `media.import_files`. `media.import_files` is available to both GeeAgent root-agent conversations and Codex conversations when the current user explicitly asks to import local files. It imports local media paths into the authorized media library, restores saved access when possible, and returns item proof for multi-Gear workflows. New files appear in `imported_items`; duplicate files are treated as idempotent success with `action: "import_noop"`, `existing_items`, and `duplicate_paths`; source files that cannot be found appear in `missing_paths`; unsupported files appear in `unsupported_paths`. If no supported imported or existing media item is available, the capability returns structured failure with `code: "gear.media.no_supported_files"` instead of reporting success with `imported_count: 0`. If authorization is missing, it keeps readable paths as `pending_paths`, opens the Media Library surface, and returns a structured failure for the active agent/LLM to explain.
 
 `hyperframes.studio`:
 
@@ -852,19 +862,21 @@ First-party gears should gradually move into real package boundaries.
 `media.generator`:
 
 - Target: native media generation Gear adapted from the Dailystarter generator module.
-- The Gear supports image generation first through the global Xenodia channel. The current enabled models are `nano-banana-pro` and `gpt-image-2`.
+- The Gear supports image generation first through the global Xenodia channel. The current enabled models are `nano-banana-pro` and `gpt-image-2`; `image-2` is accepted as a user-facing alias for `gpt-image-2`.
 - Nano Banana Pro exposes `n=1`, `async`, `response_format=url`, `aspect_ratio`, `resolution`, `output_format`, and reference images. GPT Image-2 exposes `n=1`, `async`, `response_format=url`, `aspect_ratio`, `resolution`, and reference images; do not send `output_format` or `nsfw_checker` for GPT Image-2.
+- Multi-image generation uses Gear-level `batch_count` from 1 to 4. Gee creates one persisted Xenodia `n=1` task per requested image, groups those child tasks under one `batch_id`, and the native task list shows that batch as one row with a grid of results.
 - Reference image limits are model-specific: Nano Banana Pro allows up to 8 total inputs, and GPT Image-2 allows up to 16 total inputs. Local references must be JPEG, PNG, or WebP and 30MB or smaller.
 - Video and audio generation are present as product surfaces and capability placeholders, but V1 must not connect the reference project's non-Xenodia providers. They should return structured unsupported-category results until Xenodia-backed endpoints are available through the global provider channel.
 - Reference image upload must not use Qiniu from the reference project. Local references should flow through the Xenodia request or a future global Xenodia storage upload endpoint owned by the main app runtime.
-- Task state belongs in `~/Library/Application Support/GeeAgent/gear-data/media.generator/tasks/<task-id>/task.json`.
+- Task state belongs in `~/Library/Application Support/GeeAgent/gear-data/media.generator/tasks/<task-id>/task.json`. Batch rows are projections over child task records, not a replacement storage path. Current batch task records use schema version 2; older task history may be cleared during this schema cutover.
 - Generated results should be cached under `~/Library/Application Support/GeeAgent/gear-data/media.generator/tasks/<task-id>/outputs/` when possible. Preview and download should prefer the Gear-owned local artifact while preserving the remote URL as a fallback.
 - Reusable quick prompts belong in `~/Library/Application Support/GeeAgent/gear-data/media.generator/quick-prompts.json`; users can add, edit, delete, and reset them from the native Gear UI.
 - Recent reference images from pasted URLs and local files belong in `~/Library/Application Support/GeeAgent/gear-data/media.generator/image-history.json`. The History sheet reuses those references without opening a file picker; generated results remain in task records and output caches instead of being added to reference history automatically.
 - Async task polling must resume for `running` or `queued` tasks when the Gear opens or reloads history. Polling should treat Xenodia `success` as completed, `fail` as failed, and read generated URLs from the normalized `result` payload.
 - Xenodia image generation is long-running: create, multipart, and task-status requests must use a minimum 30-minute timeout floor. A timed-out status request should keep the local task `running` and continue polling instead of marking the task failed while the provider is still generating.
+- The native Generate button must stay available for new prompts after a task row is queued locally. Provider creation, result caching, and polling continue as background task state rather than monopolizing the creation control.
 - The native task workbench supports status filters, model filters, search, starred results, local-cache badges, Finder reveal, large preview, URL copy, user-chosen download, task Apply that restores prompt/model/parameters/references, separate reuse-as-reference, and confirmed task-history deletion.
-- Agent capabilities are `media_generator.list_models`, `media_generator.create_task`, and `media_generator.get_task`. Each returns structured task/model data for the active agent/LLM to summarize.
+- Agent capabilities are `media_generator.list_models`, `media_generator.create_task`, and `media_generator.get_task`. `media_generator.create_task` can be triggered from both GeeAgent root-agent conversations and Codex conversations, accepts `batch_count` 1-4 for multi-image requests while keeping provider `n=1`, and returns structured task or batch/model data for the active agent/LLM to summarize.
 
 `smartyt.media`:
 
@@ -903,6 +915,14 @@ First-party gears should gradually move into real package boundaries.
 - Agent capabilities are `wespy.fetch_article`, `wespy.list_album`, and `wespy.fetch_album`. Each capability returns structured task data, article counts, generated file paths, article metadata, and structured errors for the active agent/LLM to summarize.
 - Missing Python packages, changed site structure, blocked source pages, and network failures must be returned as structured task failures. The Gear must not fake successful article capture.
 
+`app.icon.forge`:
+
+- Target: native macOS app icon production Gear.
+- The Gear accepts one user-selected local image, center-crops it to a square, renders the source inside a rounded safe-area on a transparent 1024px canvas, and exports the complete icon package.
+- Generated artifacts include `<name>.icns`, `<name>.iconset`, `<name>.appiconset`, `preview-1024.png`, and `icon-export.json`.
+- Agent capability `app_icon.generate` accepts `source_path`, optional `output_dir`, `name`, `content_scale`, `corner_radius_ratio`, and `shadow`, then returns structured artifact paths and generation specs.
+- The capability is available to GeeAgent root-agent conversations and Codex conversations through the GearHost bridge. Codex callers must pass only explicit user-provided local paths and report the returned artifact paths without running package-local image scripts.
+
 Information capture workflow:
 
 - Pure text should go straight to `bookmark.save`.
@@ -940,6 +960,7 @@ apps/macos-app/
 │   ├── twitter.capture/
 │   ├── bookmark.vault/
 │   ├── wespy.reader/
+│   ├── app.icon.forge/
 │   ├── btc.price/
 │   └── system.monitor/
 └── Sources/

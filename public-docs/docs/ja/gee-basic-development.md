@@ -10,7 +10,7 @@
 
 system behavior が変わる場合、English、Simplified Chinese、Japanese の関連する公開 docs を同期して更新します。
 
-Gear または capability behavior が変わる場合、Codex plugin projection、Gee MCP export schema、generated skills、plugin metadata も更新が必要か確認します。Substantial Gear change に Codex export update が不要な場合は、work summary でそれを明示します。
+Gear または capability behavior が変わる場合、Codex plugin projection、Gee MCP export schema、generated skills、generated capability reference files、plugin metadata も更新が必要か確認します。Substantial Gear change に Codex export update が不要な場合は、work summary でそれを明示します。
 
 ## Runtime Context Spine
 
@@ -31,5 +31,7 @@ Host-action completion は、同じ SDK run がまだ生きている場合はそ
 Gear invocation arguments は、native host が Gear を実行する前に TypeScript runtime boundary で normalize と validate されます。Focused runtime plan は matching capability に deterministic stage arguments を提供できます。Missing or conflicting required fields still return structured tool errors so the active agent run can correct the call。
 
 Gear-first runtime plan can also include model-only stages, such as current web research or final synthesis after all Gear storage work is done。Active stage に Gear focus も required Gear capability もない場合、GeeAgent は同じ run の中で normal approved SDK tool policy に戻り、それらの SDK tool results を fallback path ではなく stage evidence として記録します。Final-result validation は active plan stage に従うため、同じ run で先行する Gear stages が完了していれば、research または synthesis continuation は、その segment で追加の Gear call がないことだけでは reject されません。
+
+現在の Phase 3 planning は adaptive です。Ordinary turn は direct runtime path を使い、light Gear-first turn は full deterministic stage plan を作らずに Gear bridge を使います。Multi-stage または cross-domain Gear request だけが structured planning に入ります。Direct と light turn は historical stage capsules を model-facing prompt に注入しません。詳細な runtime events は transcript、Worked trace、inspector、replay surfaces に残り、model に自動的に戻されません。Conversation preview と final-answer surface は `Stage complete` のような stage-progress prose を抑制します。その evidence は Worked と inspector views に残します。New turn は transcript event、host action、approval、stage capsule にまたがる stable `run_id` も受け取り、product projection と replay tooling が prompt context を増やさずに同じ work を group できるようにします。Developer replay commands は run export、artifact membership 付きの deterministic projection row reconstruction、malformed event order diagnostics、completed/host/tool/approval/session-lost/event-silence state classification を提供します。
 
 Local SDK gateway は、provider に転送する前に `chat-runtime.toml` の chat output budget と temperature を適用します。Upstream provider または model が unavailable または timeout した場合、GeeAgent は別の provider や model を retry せず、その failure を直接報告します。

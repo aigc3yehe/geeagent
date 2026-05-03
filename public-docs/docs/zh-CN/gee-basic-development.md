@@ -10,7 +10,7 @@
 
 当系统行为发生变化时，需要同步更新英文、简体中文、日文三种公开文档中相关的表述。
 
-当 Gear 或 capability 行为发生变化时，也需要检查 Codex plugin projection、Gee MCP export schema、生成的 skills 或 plugin metadata 是否需要同步更新。如果一次实质性 Gear 改动不需要更新 Codex export，应在工作总结里明确说明。
+当 Gear 或 capability 行为发生变化时，也需要检查 Codex plugin projection、Gee MCP export schema、生成的 skills、生成的 capability reference 文件或 plugin metadata 是否需要同步更新。如果一次实质性 Gear 改动不需要更新 Codex export，应在工作总结里明确说明。
 
 ## Runtime Context Spine
 
@@ -31,5 +31,7 @@ Host-action completion 现在会在同一个 SDK run 仍然存活时回到该 ru
 Gear invocation 参数现在会先在 TypeScript runtime 边界完成规范化和校验，再交给 native host 执行。已聚焦的 runtime plan 可以为匹配的 capability 提供确定性阶段参数；缺失或冲突的必填字段仍会作为结构化 tool error 返回，使 active agent run 可以修正调用。
 
 Gear-first runtime plan 也可以包含 model-only stage，例如 Gear 存储工作完成后的联网研究或最终综合解释。当 active stage 没有 Gear focus、也没有 required Gear capability 时，GeeAgent 会在同一个 run 内回到正常的已批准 SDK tool policy，并把这些 SDK tool results 记录为 stage evidence，而不是把它们当作 fallback path。最终结果校验会跟随 active plan stage；如果同一个 run 已经完成前面的 Gear 阶段，research 或 synthesis continuation 不会因为本段没有再次调用 Gear 而被拒绝。
+
+当前 Phase 3 planning 是弹性的。普通 turn 走 direct runtime path；轻量 Gear-first turn 会使用 Gear bridge，但不会创建完整 deterministic stage plan；只有多阶段或跨领域 Gear 请求才进入 structured planning。Direct 和 light turn 不会把历史 stage capsule 注入 model-facing prompt；详细 runtime events 会留在 transcript、Worked trace、inspector 和 replay surface 中，而不是自动回灌给模型。会话预览和最终答案表面会抑制 `Stage complete` 这类阶段进度文案；这些证据应留在 Worked 和 inspector 视图中。新的 turn 也会在 transcript event、host action、approval 和 stage capsule 中使用稳定的 `run_id`，让产品投影和 replay 工具能按同一轮工作分组，而不增加 prompt 上下文。开发者 replay 命令可以导出某个 run、重建带 artifact 归属的确定性 projection rows、诊断异常事件顺序，并分类 completed、host、tool、approval、session-lost 和 event-silence 等运行状态。
 
 本地 SDK gateway 现在会先应用 `chat-runtime.toml` 中配置的 chat 输出预算和 temperature，再转发给 provider。如果上游 provider 或 model 不可用或超时，GeeAgent 会直接报告失败，而不是重试另一个 provider 或 model。

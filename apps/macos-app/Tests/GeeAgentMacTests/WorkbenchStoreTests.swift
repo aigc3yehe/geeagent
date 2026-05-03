@@ -105,6 +105,84 @@ final class WorkbenchStoreTests: XCTestCase {
         XCTAssertEqual(store.activeAgentProfileID, "companion")
     }
 
+    func testRuntimeRunInspectorResetClearsOnlyMismatchedCachedState() throws {
+        var snapshot = PreviewWorkbenchRuntimeClient().loadSnapshot()
+        snapshot.conversations[0].runtimeRunSummary = ConversationRuntimeRunSummary(
+            runID: "run_current",
+            eventCount: 2,
+            firstSequence: 1,
+            lastSequence: 2,
+            lastEventKind: "assistant_message"
+        )
+        let store = WorkbenchStore(runtimeClient: FixedSnapshotRuntimeClient(snapshot: snapshot))
+        store.selectedConversationID = snapshot.conversations[0].id
+        store.selectedRuntimeRunProjection = WorkbenchRuntimeRunProjection(
+            runID: "run_current",
+            rowCount: 0,
+            artifactIDs: [],
+            artifactRefs: [],
+            diagnostics: .empty,
+            rows: []
+        )
+        store.selectedRuntimeRunWait = WorkbenchRuntimeRunWaitClassification(
+            runID: "run_old",
+            waitKind: "model_wait",
+            status: "waiting",
+            detail: "Stale wait state.",
+            evidence: WorkbenchRuntimeRunWaitEvidence(
+                runID: "run_old",
+                lastEventKind: nil,
+                lastEventSequence: nil,
+                lastToolUseID: nil,
+                pendingToolUseID: nil,
+                pendingHostActionIDs: [],
+                pendingApprovalID: nil,
+                sdkSessionID: nil,
+                gatewayRequestID: nil,
+                diagnostics: .empty
+            )
+        )
+
+        store.snapshot = snapshot
+
+        XCTAssertEqual(store.selectedRuntimeRunProjection?.runID, "run_current")
+        XCTAssertNil(store.selectedRuntimeRunWait)
+    }
+
+    func testConversationPreviewFallsBackFromStageProgressToFinalChat() {
+        let messages = [
+            ConversationMessage(
+                id: "user",
+                role: .user,
+                content: "Save this tweet.",
+                timestampLabel: "Now"
+            ),
+            ConversationMessage(
+                id: "assistant",
+                role: .assistant,
+                content: "Done - saved and verified.",
+                timestampLabel: "Now"
+            )
+        ]
+        var conversation = ConversationThread(
+            id: "conv_preview",
+            title: "Preview",
+            participantLabel: "GeeAgent",
+            previewText: "Stage complete: fetched the tweet and found media.",
+            statusLabel: "live",
+            lastActivityLabel: "Now",
+            unreadCount: 0,
+            linkedTaskTitle: nil,
+            linkedAppName: nil,
+            messages: messages
+        )
+
+        XCTAssertEqual(conversation.displayPreviewText, "Done - saved and verified.")
+
+        conversation.previewText = "Stage conclusion: saved media."
+        XCTAssertEqual(conversation.displayPreviewText, "saved media.")
+    }
+
     // MARK: - Plan 2: persona-driven appearance
 
     func testFreshInstallEffectiveAppearanceFollowsActivePersona() throws {
@@ -532,6 +610,27 @@ final class WorkbenchStoreTests: XCTestCase {
         XCTAssertEqual(schemaPayload["gear_id"] as? String, "media.library")
         XCTAssertEqual(schemaPayload["capability_id"] as? String, "media.filter")
         XCTAssertNotNil(schemaPayload["args_schema"])
+
+        store.invokeTool(
+            ToolInvocation(
+                toolID: "gee.gear.listCapabilities",
+                arguments: [
+                    "detail": .string("schema"),
+                    "gear_id": .string("media.generator"),
+                    "capability_id": .string("media_generator.create_task")
+                ]
+            )
+        )
+        try await waitUntil(timeout: 2.0) { !store.isInvokingTool }
+
+        guard case let .completed(_, mediaGeneratorSchemaPayload)? = store.lastToolOutcome else {
+            return XCTFail("Expected Media Generator schema payload, got \(String(describing: store.lastToolOutcome))")
+        }
+        let argsSchema = try XCTUnwrap(mediaGeneratorSchemaPayload["args_schema"] as? [String: Any])
+        let properties = try XCTUnwrap(argsSchema["properties"] as? [String: Any])
+        XCTAssertNil(properties["nsfw_checker"])
+        XCTAssertEqual((properties["reference_urls"] as? [String: Any])?["maxItems"] as? Int, 16)
+        XCTAssertEqual((properties["reference_paths"] as? [String: Any])?["maxItems"] as? Int, 16)
     }
 
     func testInvokeGeeGearMediaFilterAppliesToMediaLibraryStore() async throws {
@@ -1014,17 +1113,20 @@ final class WorkbenchStoreTests: XCTestCase {
                 gearID: "media.generator",
                 capabilityID: "media_generator.list_models",
                 surfaceID: nil,
-                args: [:]
+                args: [
+                    "content_scale": .double(0.95)
+                ]
             )
         ]
         let runtimeClient = ExternalInvocationRuntimeClient(snapshot: snapshot)
         let store = WorkbenchStore(runtimeClient: runtimeClient)
 
         try await waitUntil(timeout: 1.0) {
-            runtimeClient.completedInvocationIDs.contains("gee_ext_test")
+            runtimeClient.completedInvocationStatuses.contains(.success)
         }
 
         XCTAssertEqual(runtimeClient.invokedToolIDs, ["gee.gear.invoke"])
+        XCTAssertEqual(runtimeClient.invokedToolInvocations.first?.arguments["args"], .object(["content_scale": .double(0.95)]))
         XCTAssertEqual(runtimeClient.completedInvocationStatuses, [.running, .success])
         XCTAssertEqual(runtimeClient.statusesAtInvoke, [.running])
         XCTAssertEqual(store.snapshot.externalInvocations.first?.status, .success)
@@ -1164,6 +1266,7 @@ private struct FixedSnapshotRuntimeClient: WorkbenchRuntimeClient {
 private final class ExternalInvocationRuntimeClient: WorkbenchRuntimeClient, @unchecked Sendable {
     private var storedSnapshot: WorkbenchSnapshot
     private(set) var invokedToolIDs: [String] = []
+    private(set) var invokedToolInvocations: [ToolInvocation] = []
     private(set) var completedInvocationIDs: [String] = []
     private(set) var completedInvocationStatuses: [WorkbenchExternalInvocationStatus] = []
     private(set) var statusesAtInvoke: [WorkbenchExternalInvocationStatus?] = []
@@ -1236,6 +1339,7 @@ private final class ExternalInvocationRuntimeClient: WorkbenchRuntimeClient, @un
     func invokeTool(_ invocation: ToolInvocation) async throws -> WorkbenchToolOutcome {
         statusesAtInvoke.append(storedSnapshot.externalInvocations.first?.status)
         invokedToolIDs.append(invocation.toolID)
+        invokedToolInvocations.append(invocation)
         return .completed(
             toolID: invocation.toolID,
             payload: [
