@@ -260,6 +260,118 @@
         }
       },
       {
+        "id": "telegram_push.send_file",
+        "title": "Send push-only Telegram file",
+        "description": "Send a validated local file path to a named push-only Telegram channel. Images and videos use Telegram media endpoints when supported; other files are sent as documents.",
+        "examples": [
+          "Send /tmp/report.pdf to the morning_news Telegram channel",
+          "Push this generated image file to Telegram"
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": ["channel_id", "file_path", "idempotency_key"],
+          "additionalProperties": false,
+          "properties": {
+            "channel_id": {
+              "type": "string",
+              "description": "Configured push-only channel id, such as morning_news."
+            },
+            "file_path": {
+              "type": "string",
+              "description": "Readable local file path to send. Absolute paths are preferred."
+            },
+            "caption": {
+              "type": "string",
+              "description": "Optional Telegram caption."
+            },
+            "idempotency_key": {
+              "type": "string",
+              "description": "Caller-provided key used to avoid duplicate file sends."
+            },
+            "title": {
+              "type": "string",
+              "description": "Optional delivery title for audit and activity UI."
+            },
+            "artifact_refs": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Optional Gee artifact refs related to the local file."
+            }
+          }
+        },
+        "output_schema": {
+          "type": "object",
+          "required": ["status", "fallback_attempted", "error"],
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": ["success", "partial", "blocked", "degraded", "failed"]
+            },
+            "fallback_attempted": { "type": "boolean" },
+            "channelId": { "type": "string" },
+            "accountId": { "type": "string" },
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": { "type": "string" },
+                "redacted": { "type": "string" }
+              }
+            },
+            "file": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": { "type": "string" },
+                "name": { "type": "string" }
+              }
+            },
+            "delivery": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "telegramMessageId": { "type": "string" },
+                "sentAt": { "type": "string" },
+                "idempotencyKey": { "type": "string" },
+                "reused": { "type": "boolean" }
+              }
+            },
+            "error": {
+              "oneOf": [
+                { "type": "null" },
+                {
+                  "type": "object",
+                  "required": ["code", "message"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": { "type": "string" },
+                    "message": { "type": "string" },
+                    "retryAfterMs": { "type": "number" }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "side_effect": "network.telegram.send_file",
+        "permissions": [
+          "filesystem.read.user_selected",
+          "network.telegram",
+          "secret.telegram.read",
+          "gear_data.read",
+          "gear_data.write"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "high",
+            "requires_approval": false,
+            "skill_hint": "Use only when the current user explicitly asks to send a specific local file to an existing configured push-only Telegram channel. Never invent a target or read unrelated files."
+          }
+        }
+      },
+      {
         "id": "telegram_direct.send_file",
         "title": "Send local file to the active Gee Direct Telegram chat",
         "description": "Send a local file path to a Gee Direct Telegram conversation. The native Gear resolves the current Telegram chat from explicit account/chat args or the latest inbound Gee Direct thread, validates the local file, sends it through Telegram Bot API, and records the outbound message in the Telegram conversation log.",

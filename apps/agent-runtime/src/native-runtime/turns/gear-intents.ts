@@ -126,6 +126,7 @@ export function requiresGeeGearBridgeFirst(prompt: string): boolean {
     mentionsTwitterCapture(text) ||
     mentionsBookmarkVault(text) ||
     mentionsMediaLibrary(text) ||
+    mentionsTodoManager(text) ||
     (url !== null && isWeChatReaderURL(url))
   );
 }
@@ -208,6 +209,16 @@ function mentionsBookmarkVault(text: string): boolean {
     (hasURL && (
       /\b(save|store|remember|archive|capture)\b/.test(text)
     ))
+  );
+}
+
+function mentionsTodoManager(text: string): boolean {
+  return (
+    text.includes("todo") ||
+    text.includes("to-do") ||
+    text.includes("task list") ||
+    /\b(remind me|set a reminder|schedule a reminder)\b/.test(text) ||
+    /\b(add|create|update|delete|complete|show|list|find|set|schedule)\b.{0,48}\b(tasks?|todos?|to-dos?|reminders?)\b/.test(text)
   );
 }
 
@@ -320,7 +331,7 @@ function mentionsTwitterCapture(text: string): boolean {
 
 function firstURL(text: string): string | null {
   const match = text.match(/https?:\/\/[^\s"'<>]+/);
-  return match?.[0]?.replace(/[.,;:!?)\]\uFF0C\u3002\uFF1B\uFF1A\uFF01\uFF09\u3011]+$/, "") ?? null;
+  return match?.[0]?.replace(/[.,;:!?)\]]+$/, "") ?? null;
 }
 
 function requestedLimit(text: string): number {

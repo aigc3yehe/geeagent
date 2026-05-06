@@ -29,9 +29,13 @@ variables.
   Send `/new` to start a fresh GeeAgent conversation for the same Telegram
   chat and clear the previous runtime history. When a Gee Direct run needs to
   return a local file, it can use `telegram_direct.send_file`; the native
-  Gear validates the local path and sends it to the active Telegram chat.
+  Gear validates the local path and sends it to the active Telegram chat. If
+  the Phase 3 runtime fails before producing a reply projection, the native
+  bridge sends that failure back to the same Telegram chat and records it as
+  `runtime_failed`.
 - `push_only`: one-way Telegram delivery channel for scheduled reports and
-  notifications.
+  notifications. It can send text through `telegram_push.send_message` and
+  readable local files through `telegram_push.send_file`.
 
 Push-only accounts do not poll Telegram, do not accept webhooks, do not parse
 commands, do not require inbound user allowlists, and do not create GeeAgent
@@ -42,7 +46,9 @@ saved channel row. The Test action sends a short message through
 binding, Telegram target, and delivery path used by Codex/Gee pushes. Long
 plain-text push messages are split into multiple Telegram messages; long
 messages that request a Telegram parse mode remain blocked so formatting tags
-are not split into invalid chunks.
+are not split into invalid chunks. Push file delivery validates the local path,
+uses Telegram photo/video/animation endpoints for common image, video, and GIF
+files, and sends other readable files as documents.
 
 Inbound accounts enforce configured Telegram user and chat allowlists. Group
 messages default to `deny`; `mention_required` accepts only messages that
@@ -71,16 +77,18 @@ for:
 - `telegram_push.list_channels`
 - `telegram_push.upsert_channel`
 - `telegram_push.send_message`
+- `telegram_push.send_file`
 - `telegram_direct.send_file` (native GearHost bridge only)
 
 The native GearHost bridge exposes `telegram_bridge.status`,
 `telegram_push.list_channels`, `telegram_push.upsert_channel`, and
-`telegram_push.send_message`, plus contextual `telegram_direct.send_file` for
-Gee Direct conversations, to GeeAgent. Codex export is enabled for status,
-list, and push send. `upsert_channel` stays Gee-native only because target
-confirmation and bot token binding are local setup steps. Direct file send is
-not exported to detached Codex pushes because it depends on the active Gee
-Direct Telegram chat.
+`telegram_push.send_message`, and `telegram_push.send_file`, plus contextual
+`telegram_direct.send_file` for Gee Direct conversations, to GeeAgent. Codex
+export is enabled for status, list, push text send, and push file send.
+`upsert_channel` stays Gee-native only because target confirmation and bot
+token binding are local setup steps. Direct file send is not exported to
+detached Codex pushes because it depends on the active Gee Direct Telegram
+chat.
 
 ## Standalone Worker
 
@@ -93,6 +101,18 @@ npm run cli -- upsert-push-channel \
   --account news_push \
   --target-kind chat_id \
   --target-value 777
+```
+
+Send a local file to a push-only channel:
+
+```bash
+TELEGRAM_BRIDGE_TOKENS_JSON='{"news_push":"<bot-token>"}' \
+npm run cli -- send-push-file \
+  --config ~/Library/Application\ Support/GeeAgent/gear-data/telegram.bridge/config.json \
+  --channel morning_news \
+  --file /tmp/report.pdf \
+  --caption "Daily report" \
+  --idempotency-key report-2026-05-06
 ```
 
 Run one polling pass:

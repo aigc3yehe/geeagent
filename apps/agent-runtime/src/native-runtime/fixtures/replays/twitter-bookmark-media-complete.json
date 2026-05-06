@@ -1,0 +1,506 @@
+{
+  "schema_version": 1,
+  "run_id": "run_golden_twitter_bookmark_media",
+  "exported_at": "2026-05-07T00:00:00.000Z",
+  "event_count": 26,
+  "conversation_ids": ["conv_golden_phase3"],
+  "execution_session_ids": ["session_golden_phase3"],
+  "sdk_session_ids": ["sdk_golden_phase3"],
+  "parent_run_ids": [],
+  "host_action_runs": [
+    {
+      "run_id": "run_golden_twitter_bookmark_media",
+      "session_id": "session_golden_phase3",
+      "host_action_id": "host_fetch_tweet",
+      "tool_id": "gee.gear.invoke",
+      "status": "completed"
+    },
+    {
+      "run_id": "run_golden_twitter_bookmark_media",
+      "session_id": "session_golden_phase3",
+      "host_action_id": "host_download_media",
+      "tool_id": "gee.gear.invoke",
+      "status": "completed"
+    },
+    {
+      "run_id": "run_golden_twitter_bookmark_media",
+      "session_id": "session_golden_phase3",
+      "host_action_id": "host_import_media",
+      "tool_id": "gee.gear.invoke",
+      "status": "completed"
+    },
+    {
+      "run_id": "run_golden_twitter_bookmark_media",
+      "session_id": "session_golden_phase3",
+      "host_action_id": "host_save_bookmark",
+      "tool_id": "gee.gear.invoke",
+      "status": "completed"
+    }
+  ],
+  "approval_requests": [],
+  "artifact_ids": [],
+  "artifact_refs": [],
+  "diagnostics": {
+    "duplicate_event_ids": [],
+    "missing_parent_event_ids": [],
+    "missing_sequence_numbers": [],
+    "out_of_order_event_ids": []
+  },
+  "events": [
+    {
+      "event_id": "evt_golden_001_user",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": null,
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 1,
+      "payload": {
+        "kind": "user_message",
+        "content": "Save this X/Twitter post to bookmarks and import its media into Media Library.",
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_002_plan",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_001_user",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 2,
+      "payload": {
+        "kind": "run_plan_created",
+        "summary": "Plan tweet fetch, media download, media import, and bookmark save in the active run.",
+        "plan_id": "plan_golden_twitter_bookmark_media",
+        "current_stage_id": "stage_fetch_tweet",
+        "stage_count": 4,
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_003_focus_fetch",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_002_plan",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 3,
+      "payload": {
+        "kind": "capability_focus_locked",
+        "stage_id": "stage_fetch_tweet",
+        "summary": "Focused on twitter.capture/twitter.fetch_tweet.",
+        "focus_capability_ids": ["twitter.fetch_tweet"],
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_004_stage_fetch_started",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_003_focus_fetch",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 4,
+      "payload": {
+        "kind": "stage_started",
+        "stage_id": "stage_fetch_tweet",
+        "title": "Fetch tweet",
+        "summary": "Fetch structured tweet metadata and media candidates.",
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_005_tool_fetch",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_004_stage_fetch_started",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 5,
+      "payload": {
+        "kind": "tool_invocation",
+        "stage_id": "stage_fetch_tweet",
+        "invocation": {
+          "invocation_id": "toolu_fetch_tweet",
+          "tool_name": "gee.gear.invoke",
+          "status": "running",
+          "input_summary": "twitter.capture/twitter.fetch_tweet"
+        },
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_006_result_fetch",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_005_tool_fetch",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 6,
+      "payload": {
+        "kind": "tool_result",
+        "stage_id": "stage_fetch_tweet",
+        "invocation_id": "toolu_fetch_tweet",
+        "host_action_id": "host_fetch_tweet",
+        "status": "succeeded",
+        "summary": "Fetched tweet text and two media URLs.",
+        "result_json": {
+          "kind": "execution",
+          "tool_id": "gee.gear.invoke",
+          "status": "succeeded",
+          "gear_id": "twitter.capture",
+          "capability_id": "twitter.fetch_tweet",
+          "tweet_id": "2049100073481716076",
+          "media_urls": [
+            "https://video.twimg.com/ext_tw_video/demo/pu/vid/720x720/demo.mp4",
+            "https://pbs.twimg.com/media/demo.jpg"
+          ]
+        },
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_007_stage_fetch_done",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_006_result_fetch",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 7,
+      "payload": {
+        "kind": "stage_concluded",
+        "stage_id": "stage_fetch_tweet",
+        "status": "completed",
+        "summary": "Tweet metadata and media candidates are available.",
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_008_plan_download",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_007_stage_fetch_done",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 8,
+      "payload": {
+        "kind": "run_plan_updated",
+        "summary": "Advance to media download.",
+        "plan_id": "plan_golden_twitter_bookmark_media",
+        "current_stage_id": "stage_download_media",
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_009_focus_download",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_008_plan_download",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 9,
+      "payload": {
+        "kind": "capability_focus_locked",
+        "stage_id": "stage_download_media",
+        "summary": "Focused on smartyt.media/smartyt.download_now.",
+        "focus_capability_ids": ["smartyt.download_now"],
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_010_stage_download_started",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_009_focus_download",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 10,
+      "payload": {
+        "kind": "stage_started",
+        "stage_id": "stage_download_media",
+        "title": "Download media",
+        "summary": "Download the tweet media as local files.",
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_011_tool_download",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_010_stage_download_started",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 11,
+      "payload": {
+        "kind": "tool_invocation",
+        "stage_id": "stage_download_media",
+        "invocation": {
+          "invocation_id": "toolu_download_media",
+          "tool_name": "gee.gear.invoke",
+          "status": "running",
+          "input_summary": "smartyt.media/smartyt.download_now"
+        },
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_012_result_download",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_011_tool_download",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 12,
+      "payload": {
+        "kind": "tool_result",
+        "stage_id": "stage_download_media",
+        "invocation_id": "toolu_download_media",
+        "host_action_id": "host_download_media",
+        "status": "succeeded",
+        "summary": "Downloaded two media files.",
+        "artifacts": [
+          {
+            "artifact_id": "artifact_downloaded_media_manifest",
+            "kind": "tool_result_artifact",
+            "title": "Downloaded media manifest",
+            "path": "/tmp/geeagent/golden/twitter-media-manifest.json",
+            "summary": "Two downloaded tweet media files.",
+            "sha256": "2d8c9c2d7eb0b0da4f6e2a0c6d6a0011b5a5a4b0000000000000000000000000",
+            "byte_count": 512,
+            "token_estimate": 96,
+            "mime_type": "application/json"
+          }
+        ],
+        "result_json": {
+          "kind": "execution",
+          "tool_id": "gee.gear.invoke",
+          "status": "succeeded",
+          "gear_id": "smartyt.media",
+          "capability_id": "smartyt.download_now",
+          "output_paths": [
+            "/tmp/geeagent/golden/demo.mp4",
+            "/tmp/geeagent/golden/demo.jpg"
+          ]
+        },
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_013_stage_download_done",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_012_result_download",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 13,
+      "payload": {
+        "kind": "stage_concluded",
+        "stage_id": "stage_download_media",
+        "status": "completed",
+        "summary": "Local media files are available for import.",
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_014_plan_import",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_013_stage_download_done",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 14,
+      "payload": {
+        "kind": "run_plan_updated",
+        "summary": "Advance to Media Library import.",
+        "plan_id": "plan_golden_twitter_bookmark_media",
+        "current_stage_id": "stage_import_media",
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_015_focus_import",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_014_plan_import",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 15,
+      "payload": {
+        "kind": "capability_focus_locked",
+        "stage_id": "stage_import_media",
+        "summary": "Focused on media.library/media.import_files.",
+        "focus_capability_ids": ["media.import_files"],
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_016_stage_import_started",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_015_focus_import",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 16,
+      "payload": {
+        "kind": "stage_started",
+        "stage_id": "stage_import_media",
+        "title": "Import media",
+        "summary": "Import downloaded files into the authorized Media Library.",
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_017_tool_import",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_016_stage_import_started",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 17,
+      "payload": {
+        "kind": "tool_invocation",
+        "stage_id": "stage_import_media",
+        "invocation": {
+          "invocation_id": "toolu_import_media",
+          "tool_name": "gee.gear.invoke",
+          "status": "running",
+          "input_summary": "media.library/media.import_files"
+        },
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_018_result_import",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_017_tool_import",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 18,
+      "payload": {
+        "kind": "tool_result",
+        "stage_id": "stage_import_media",
+        "invocation_id": "toolu_import_media",
+        "host_action_id": "host_import_media",
+        "status": "succeeded",
+        "summary": "Imported two media files into Media Library.",
+        "artifacts": [
+          {
+            "artifact_id": "artifact_imported_media_record",
+            "kind": "tool_result_artifact",
+            "title": "Imported media record",
+            "path": "/tmp/geeagent/golden/media-library-import.json",
+            "summary": "Media Library item proof for two imports.",
+            "sha256": "9a4e56c7b71f4f3a9878d3208a93e2aa00000000000000000000000000000000",
+            "byte_count": 768,
+            "token_estimate": 120,
+            "mime_type": "application/json"
+          }
+        ],
+        "result_json": {
+          "kind": "execution",
+          "tool_id": "gee.gear.invoke",
+          "status": "succeeded",
+          "gear_id": "media.library",
+          "capability_id": "media.import_files",
+          "available_count": 2,
+          "imported_items": [
+            { "id": "media_demo_mp4", "path": "/Media Library/demo.mp4" },
+            { "id": "media_demo_jpg", "path": "/Media Library/demo.jpg" }
+          ]
+        },
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_019_stage_import_done",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_018_result_import",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 19,
+      "payload": {
+        "kind": "stage_concluded",
+        "stage_id": "stage_import_media",
+        "status": "completed",
+        "summary": "Media Library import proof is available.",
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_020_plan_bookmark",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_019_stage_import_done",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 20,
+      "payload": {
+        "kind": "run_plan_updated",
+        "summary": "Advance to bookmark save.",
+        "plan_id": "plan_golden_twitter_bookmark_media",
+        "current_stage_id": "stage_save_bookmark",
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_021_focus_bookmark",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_020_plan_bookmark",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 21,
+      "payload": {
+        "kind": "capability_focus_locked",
+        "stage_id": "stage_save_bookmark",
+        "summary": "Focused on bookmark.vault/bookmark.save.",
+        "focus_capability_ids": ["bookmark.save"],
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_022_stage_bookmark_started",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_021_focus_bookmark",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 22,
+      "payload": {
+        "kind": "stage_started",
+        "stage_id": "stage_save_bookmark",
+        "title": "Save bookmark",
+        "summary": "Save the tweet bookmark with imported local media references.",
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_023_tool_bookmark",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_022_stage_bookmark_started",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 23,
+      "payload": {
+        "kind": "tool_invocation",
+        "stage_id": "stage_save_bookmark",
+        "invocation": {
+          "invocation_id": "toolu_save_bookmark",
+          "tool_name": "gee.gear.invoke",
+          "status": "running",
+          "input_summary": "bookmark.vault/bookmark.save"
+        },
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_024_result_bookmark",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_023_tool_bookmark",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 24,
+      "payload": {
+        "kind": "tool_result",
+        "stage_id": "stage_save_bookmark",
+        "invocation_id": "toolu_save_bookmark",
+        "host_action_id": "host_save_bookmark",
+        "status": "succeeded",
+        "summary": "Saved bookmark with imported media references.",
+        "result_json": {
+          "kind": "execution",
+          "tool_id": "gee.gear.invoke",
+          "status": "succeeded",
+          "gear_id": "bookmark.vault",
+          "capability_id": "bookmark.save",
+          "bookmark_id": "bookmark_golden_twitter",
+          "local_media_item_ids": ["media_demo_mp4", "media_demo_jpg"]
+        },
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_025_stage_bookmark_done",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_024_result_bookmark",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 25,
+      "payload": {
+        "kind": "stage_concluded",
+        "stage_id": "stage_save_bookmark",
+        "status": "completed",
+        "summary": "Bookmark and local media references are saved.",
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    },
+    {
+      "event_id": "evt_golden_026_assistant",
+      "session_id": "session_golden_phase3",
+      "parent_event_id": "evt_golden_025_stage_bookmark_done",
+      "run_id": "run_golden_twitter_bookmark_media",
+      "sequence": 26,
+      "payload": {
+        "kind": "assistant_message",
+        "content": "Saved the tweet bookmark and imported two media items into Media Library.",
+        "run_id": "run_golden_twitter_bookmark_media"
+      }
+    }
+  ]
+}

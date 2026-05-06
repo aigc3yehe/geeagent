@@ -8,6 +8,7 @@ import {
   type UpsertPushChannelResult,
 } from "./channels.js";
 import {
+  sendPushFile,
   sendPushMessage,
   type PushSendDependencies,
   type PushSendResult,
@@ -98,6 +99,11 @@ export async function handleTelegramBridgeCommand(
         capabilityID,
         await sendPushMessage(validation.config, sendRequestFromArgs(command.args), dependencies),
       );
+    case "telegram_push.send_file":
+      return sendCommandResult(
+        capabilityID,
+        await sendPushFile(validation.config, sendFileRequestFromArgs(command.args), dependencies),
+      );
   }
   return commandFailure(
     capabilityID,
@@ -111,6 +117,7 @@ function isSupportedCapability(capabilityID: string): boolean {
     "telegram_push.list_channels",
     "telegram_push.upsert_channel",
     "telegram_push.send_message",
+    "telegram_push.send_file",
   ].includes(capabilityID);
 }
 
@@ -206,6 +213,25 @@ function sendRequestFromArgs(args: unknown): {
     title: stringValue(record.title),
     parseMode: parseModeValue(record.parse_mode ?? record.parseMode),
     disableWebPreview: booleanValue(record.disable_web_preview ?? record.disableWebPreview),
+    artifactRefs: stringArrayValue(record.artifact_refs ?? record.artifactRefs),
+  };
+}
+
+function sendFileRequestFromArgs(args: unknown): {
+  channelId: string;
+  filePath: string;
+  idempotencyKey: string;
+  caption?: string;
+  title?: string;
+  artifactRefs?: string[];
+} {
+  const record = isRecord(args) ? args : {};
+  return {
+    channelId: stringValue(record.channel_id) ?? stringValue(record.channelId) ?? "",
+    filePath: stringValue(record.file_path) ?? stringValue(record.filePath) ?? stringValue(record.path) ?? "",
+    idempotencyKey: stringValue(record.idempotency_key) ?? stringValue(record.idempotencyKey) ?? "",
+    caption: rawStringValue(record.caption),
+    title: stringValue(record.title),
     artifactRefs: stringArrayValue(record.artifact_refs ?? record.artifactRefs),
   };
 }

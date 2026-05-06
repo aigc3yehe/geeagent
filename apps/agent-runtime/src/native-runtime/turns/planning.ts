@@ -469,7 +469,6 @@ function mediaGenerationCapabilityArgs(userRequest: string): Record<string, unkn
   if (category === "image") {
     args.response_format = "url";
     args.n = 1;
-    args.async = true;
   }
   const batchCount = requestedMediaGenerationBatchCount(userRequest);
   if (batchCount) {

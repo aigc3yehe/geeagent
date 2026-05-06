@@ -1,8 +1,12 @@
 import type {
+  TelegramFileSendClient,
+  TelegramLocalFileInput,
   TelegramSendClient,
   TelegramSendInput,
   TelegramSendResult,
 } from "./send.js";
+import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 
 type FetchResponseLike = {
   ok: boolean;
@@ -15,7 +19,7 @@ export type FetchLike = (
   init: {
     method: "POST";
     headers: Record<string, string>;
-    body: string;
+    body: string | FormData;
   },
 ) => Promise<FetchResponseLike>;
 
@@ -70,7 +74,7 @@ type TelegramApiFailureResult = {
 
 export function createTelegramBotApiClient(
   options: TelegramBotApiClientOptions = {},
-): TelegramSendClient & {
+): TelegramSendClient & TelegramFileSendClient & {
   getUpdates(input: TelegramGetUpdatesInput): Promise<TelegramGetUpdatesResult>;
 } {
   const apiBaseUrl = options.apiBaseUrl ?? "https://api.telegram.org";
@@ -112,6 +116,71 @@ export function createTelegramBotApiClient(
             ok: false,
             code: "telegram_malformed_response",
             message: "Telegram sendMessage response did not include message_id and date.",
+          };
+        }
+        return {
+          ok: true,
+          telegramMessageId,
+          sentAt: telegramDate(sentAtSeconds),
+        };
+      }
+
+      return apiFailure(response.status, payload, input.token);
+    },
+    async sendLocalFile(input: TelegramLocalFileInput): Promise<TelegramSendResult> {
+      const upload = uploadEndpoint(input.filePath);
+      const url = `${apiBaseUrl}/bot${input.token}/${upload.endpoint}`;
+      const form = new FormData();
+      form.set("chat_id", input.target.value);
+      const caption = input.caption?.trim();
+      if (caption) {
+        form.set("caption", caption);
+      }
+      let fileData: Buffer;
+      try {
+        fileData = await readFile(input.filePath);
+      } catch (error) {
+        return {
+          ok: false,
+          code: "file_not_readable",
+          message: sanitizeMessage(errorMessage(error), input.token),
+        };
+      }
+      form.set(
+        upload.fieldName,
+        new Blob([new Uint8Array(fileData)], { type: mimeType(input.filePath) }),
+        basename(input.filePath),
+      );
+      let response: FetchResponseLike;
+      try {
+        response = await fetchImpl(url, {
+          method: "POST",
+          headers: {},
+          body: form,
+        });
+      } catch (error) {
+        return {
+          ok: false,
+          code: "network_unavailable",
+          message: sanitizeMessage(errorMessage(error), input.token),
+        };
+      }
+
+      let payload: TelegramSendPayload = {};
+      try {
+        payload = (await response.json()) as TelegramSendPayload;
+      } catch {
+        payload = {};
+      }
+
+      if (response.ok && payload.ok === true) {
+        const telegramMessageId = telegramMessageID(payload.result?.message_id);
+        const sentAtSeconds = numberValue(payload.result?.date);
+        if (!telegramMessageId || sentAtSeconds === undefined) {
+          return {
+            ok: false,
+            code: "telegram_malformed_response",
+            message: "Telegram file upload response did not include message_id and date.",
           };
         }
         return {
@@ -211,6 +280,65 @@ function messageBody(input: TelegramSendInput): Record<string, unknown> {
   return body;
 }
 
+function uploadEndpoint(filePath: string): { endpoint: string; fieldName: string } {
+  switch (extension(filePath)) {
+    case "jpg":
+    case "jpeg":
+    case "png":
+    case "webp":
+      return { endpoint: "sendPhoto", fieldName: "photo" };
+    case "gif":
+      return { endpoint: "sendAnimation", fieldName: "animation" };
+    case "mp4":
+    case "m4v":
+    case "mov":
+    case "webm":
+      return { endpoint: "sendVideo", fieldName: "video" };
+    default:
+      return { endpoint: "sendDocument", fieldName: "document" };
+  }
+}
+
+function mimeType(filePath: string): string {
+  switch (extension(filePath)) {
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "png":
+      return "image/png";
+    case "webp":
+      return "image/webp";
+    case "gif":
+      return "image/gif";
+    case "mp4":
+    case "m4v":
+      return "video/mp4";
+    case "mov":
+      return "video/quicktime";
+    case "webm":
+      return "video/webm";
+    case "pdf":
+      return "application/pdf";
+    case "txt":
+    case "log":
+    case "md":
+      return "text/plain";
+    case "json":
+      return "application/json";
+    case "csv":
+      return "text/csv";
+    case "zip":
+      return "application/zip";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function extension(filePath: string): string {
+  const index = filePath.lastIndexOf(".");
+  return index >= 0 ? filePath.slice(index + 1).toLowerCase() : "";
+}
+
 function withoutUndefined(value: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
 }
@@ -285,7 +413,7 @@ async function globalFetch(
   init: {
     method: "POST";
     headers: Record<string, string>;
-    body: string;
+    body: string | FormData;
   },
 ): Promise<FetchResponseLike> {
   return fetch(url, init);

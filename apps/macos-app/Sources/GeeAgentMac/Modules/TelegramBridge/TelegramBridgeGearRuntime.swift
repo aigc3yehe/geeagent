@@ -190,6 +190,29 @@ enum TelegramBridgeGearError: LocalizedError {
 }
 
 @MainActor
+protocol TelegramBridgeSending {
+    func getUpdates(token: String, offset: Int?, limit: Int, timeout: Int) async throws -> [TelegramBridgeSender.Update]
+    func latestChatID(token: String) async throws -> String
+    func latestUserID(token: String) async throws -> String
+    func sendMessage(
+        token: String,
+        target: TelegramBridgePushTargetConfig,
+        text: String,
+        parseMode: String?,
+        disableWebPreview: Bool?,
+        replyMarkup: TelegramBridgeReplyMarkup?
+    ) async throws -> TelegramBridgeSender.Result
+    func sendLocalFile(
+        token: String,
+        target: TelegramBridgePushTargetConfig,
+        fileURL: URL,
+        caption: String?
+    ) async throws -> TelegramBridgeSender.Result
+    func setMyCommands(token: String, commands: [TelegramBridgeBotCommand]) async throws
+    func answerCallbackQuery(token: String, callbackQueryID: String, text: String?) async throws
+}
+
+@MainActor
 final class TelegramBridgeGearStore: ObservableObject {
     static let shared = TelegramBridgeGearStore()
 
@@ -199,7 +222,7 @@ final class TelegramBridgeGearStore: ObservableObject {
 
     private let database: TelegramBridgeFileDatabase
     private let tokenStore: TelegramBridgeTokenStore
-    private let sender: TelegramBridgeSender
+    private let sender: any TelegramBridgeSending
     private let codexRemote: TelegramCodexRemoteBridge
     private var inboundTask: Task<Void, Never>?
     private var configuredCommandMenuAccountIDs: Set<String> = []
@@ -207,7 +230,7 @@ final class TelegramBridgeGearStore: ObservableObject {
     init(
         database: TelegramBridgeFileDatabase = TelegramBridgeFileDatabase(),
         tokenStore: TelegramBridgeTokenStore = TelegramBridgeTokenStore(),
-        sender: TelegramBridgeSender = TelegramBridgeSender(),
+        sender: any TelegramBridgeSending = TelegramBridgeSender(),
         codexRemote: TelegramCodexRemoteBridge = TelegramCodexRemoteBridge()
     ) {
         self.database = database
@@ -300,7 +323,7 @@ final class TelegramBridgeGearStore: ObservableObject {
         return try await sender.latestUserID(token: token)
     }
 
-    private func pollInboundOnce(
+    func pollInboundOnce(
         runtimeHandler: @escaping @MainActor (TelegramChannelMessagePayload) async throws -> String?
     ) async {
         let accounts: [TelegramBridgeAccountConfig]
@@ -415,20 +438,17 @@ final class TelegramBridgeGearStore: ObservableObject {
                     let reply: String?
                     do {
                         reply = try await runtimeHandler(payload)
-                    } catch {
-                        recordConversationMessage(
-                            accountID: account.id,
-                            accountRole: account.role,
+                    } catch let runtimeError {
+                        await sendRuntimeFailureReply(
+                            account: account,
+                            token: token,
                             chatID: message.chat.id.value,
-                            direction: "outbound",
-                            text: error.localizedDescription,
-                            messageID: nil,
                             updateID: update.updateId,
-                            status: "runtime_failed"
+                            error: runtimeError
                         )
                         state.offsets[account.id] = nextOffset
                         try database.savePollingState(state)
-                        lastStatusMessage = error.localizedDescription
+                        lastStatusMessage = runtimeError.localizedDescription
                         continue
                     }
                     guard let rawReplyText = reply?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -496,6 +516,75 @@ final class TelegramBridgeGearStore: ObservableObject {
                 lastStatusMessage = error.localizedDescription
             }
         }
+    }
+
+    private func sendRuntimeFailureReply(
+        account: TelegramBridgeAccountConfig,
+        token: String,
+        chatID: String,
+        updateID: Int,
+        error: Error
+    ) async {
+        let replyText = runtimeFailureTelegramReplyText(for: error, token: token)
+        do {
+            let sendResult = try await sendTelegramMessageChunks(
+                token: token,
+                target: .init(kind: "chat_id", value: chatID),
+                text: replyText,
+                parseMode: nil,
+                disableWebPreview: nil,
+                replyMarkup: nil
+            )
+            switch sendResult {
+            case .success(let telegramMessageID, _):
+                recordConversationMessage(
+                    accountID: account.id,
+                    accountRole: account.role,
+                    chatID: chatID,
+                    direction: "outbound",
+                    text: replyText,
+                    messageID: telegramMessageID,
+                    updateID: updateID,
+                    status: "runtime_failed"
+                )
+            case .failure(_, let code, let failureMessage, _):
+                recordConversationMessage(
+                    accountID: account.id,
+                    accountRole: account.role,
+                    chatID: chatID,
+                    direction: "outbound",
+                    text: failureMessage,
+                    messageID: nil,
+                    updateID: updateID,
+                    status: code
+                )
+            }
+        } catch {
+            recordConversationMessage(
+                accountID: account.id,
+                accountRole: account.role,
+                chatID: chatID,
+                direction: "outbound",
+                text: error.localizedDescription,
+                messageID: nil,
+                updateID: updateID,
+                status: "telegram_send_failed"
+            )
+            lastStatusMessage = error.localizedDescription
+        }
+    }
+
+    func runtimeFailureTelegramReplyText(for error: Error, token: String) -> String {
+        let message = sanitizeSensitiveText(error.localizedDescription, token: token)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let detail = message.isEmpty ? "The runtime did not provide a failure reason." : message
+        return normalizedTelegramReply(
+            [
+                "GeeAgent runtime failed before it could produce a reply.",
+                "",
+                detail
+            ].joined(separator: "\n")
+        )
     }
 
     private func ensureBotCommandMenu(account: TelegramBridgeAccountConfig, token: String) async {
@@ -955,6 +1044,8 @@ final class TelegramBridgeGearStore: ObservableObject {
                 return try upsertChannelPayload(args: args)
             case "telegram_push.send_message":
                 return await sendMessagePayload(args: args)
+            case "telegram_push.send_file":
+                return await sendPushFilePayload(args: args)
             case "telegram_direct.send_file":
                 return await sendFilePayload(args: args)
             default:
@@ -1164,6 +1255,76 @@ final class TelegramBridgeGearStore: ObservableObject {
         }
     }
 
+    private func sendPushFilePayload(args: [String: Any]) async -> [String: Any] {
+        let capabilityID = "telegram_push.send_file"
+        let channelID = stringArg(args, "channel_id") ?? stringArg(args, "channelId") ?? ""
+        let rawFilePath = stringArg(args, "file_path") ?? stringArg(args, "filePath") ?? stringArg(args, "path") ?? ""
+        let caption = rawStringArg(args, "caption")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let idempotencyKey = stringArg(args, "idempotency_key") ?? stringArg(args, "idempotencyKey") ?? ""
+        guard !channelID.isEmpty else {
+            return failurePayload(status: "failed", code: "channel_id_missing", message: "`channel_id` is required.", capabilityID: capabilityID)
+        }
+        guard !rawFilePath.isEmpty else {
+            return failurePayload(status: "failed", code: "file_path_missing", message: "`file_path` is required.", capabilityID: capabilityID, channelID: channelID)
+        }
+        guard !idempotencyKey.isEmpty else {
+            return failurePayload(status: "blocked", code: "idempotency_key_missing", message: "`idempotency_key` is required.", capabilityID: capabilityID, channelID: channelID, filePath: rawFilePath)
+        }
+
+        let fileURL = localFileURL(from: rawFilePath)
+        var isDirectory = ObjCBool(false)
+        guard FileManager.default.fileExists(atPath: fileURL.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+            return failurePayload(status: "failed", code: "file_not_found", message: "Local file `\(fileURL.path)` was not found.", capabilityID: capabilityID, channelID: channelID, filePath: fileURL.path)
+        }
+        guard FileManager.default.isReadableFile(atPath: fileURL.path) else {
+            return failurePayload(status: "failed", code: "file_not_readable", message: "Local file `\(fileURL.path)` is not readable by GeeAgent.", capabilityID: capabilityID, channelID: channelID, filePath: fileURL.path)
+        }
+
+        do {
+            let config = try database.loadConfig()
+            guard let channel = config.pushChannels.first(where: { $0.id == channelID }) else {
+                return failurePayload(status: "failed", code: "channel_not_found", message: "Push-only channel `\(channelID)` was not found.", capabilityID: capabilityID, channelID: channelID, filePath: fileURL.path)
+            }
+            guard channel.enabled else {
+                return failurePayload(status: "failed", code: "channel_disabled", message: "Push-only channel `\(channelID)` is disabled.", capabilityID: capabilityID, channelID: channelID, filePath: fileURL.path)
+            }
+            guard let account = config.accounts.first(where: { $0.id == channel.accountId }) else {
+                return failurePayload(status: "failed", code: "account_not_found", message: "Push-only channel `\(channelID)` references a missing account.", capabilityID: capabilityID, channelID: channelID, filePath: fileURL.path)
+            }
+            guard account.role == "push_only", account.transport.mode == "outbound_only", account.push?.acceptInbound == false else {
+                return failurePayload(status: "failed", code: "account_not_push_only", message: "Channel `\(channelID)` must use a push_only outbound_only account with inbound disabled.", capabilityID: capabilityID, channelID: channelID, filePath: fileURL.path)
+            }
+            if let existing = try database.delivery(idempotencyKey: idempotencyKey) {
+                return successPushFilePayload(channel: channel, fileURL: fileURL, delivery: existing, reused: true)
+            }
+            guard let token = try tokenStore.token(accountID: account.id), !token.isEmpty else {
+                return failurePayload(status: "failed", code: "token_missing", message: "Telegram bot token is missing for account `\(account.id)`.", capabilityID: capabilityID, channelID: channelID, accountID: account.id, target: channel.target, filePath: fileURL.path)
+            }
+            let response = try await sender.sendLocalFile(
+                token: token,
+                target: channel.target,
+                fileURL: fileURL,
+                caption: caption?.nilIfEmpty
+            )
+            switch response {
+            case .success(let telegramMessageID, let sentAt):
+                let delivery = TelegramBridgeDeliveryRecord(
+                    channelId: channel.id,
+                    accountId: account.id,
+                    telegramMessageId: telegramMessageID,
+                    sentAt: sentAt,
+                    idempotencyKey: idempotencyKey
+                )
+                try database.saveDelivery(delivery)
+                return successPushFilePayload(channel: channel, fileURL: fileURL, delivery: delivery, reused: false)
+            case .failure(let status, let code, let message, let retryAfterMs):
+                return failurePayload(status: status, code: code, message: message, capabilityID: capabilityID, channelID: channelID, accountID: account.id, target: channel.target, filePath: fileURL.path, retryAfterMs: retryAfterMs)
+            }
+        } catch {
+            return failurePayload(status: "failed", code: "telegram_push_file_failed", message: error.localizedDescription, capabilityID: capabilityID, channelID: channelID, filePath: fileURL.path)
+        }
+    }
+
     private func sendFilePayload(args: [String: Any]) async -> [String: Any] {
         let accountID = stringArg(args, "account_id") ?? stringArg(args, "accountId")
         let chatID = stringArg(args, "chat_id") ?? stringArg(args, "chatId")
@@ -1296,6 +1457,34 @@ final class TelegramBridgeGearStore: ObservableObject {
                 "telegramMessageId": delivery.telegramMessageId,
                 "telegramMessageIds": delivery.telegramMessageId.split(separator: ",").map(String.init),
                 "messageCount": max(delivery.telegramMessageId.split(separator: ",").count, 1),
+                "sentAt": delivery.sentAt,
+                "idempotencyKey": delivery.idempotencyKey,
+                "reused": reused
+            ],
+            "error": NSNull()
+        ]
+    }
+
+    private func successPushFilePayload(
+        channel: TelegramBridgePushChannelConfig,
+        fileURL: URL,
+        delivery: TelegramBridgeDeliveryRecord,
+        reused: Bool
+    ) -> [String: Any] {
+        [
+            "gear_id": TelegramBridgeGearRuntimeConstants.gearID,
+            "capability_id": "telegram_push.send_file",
+            "status": "success",
+            "fallback_attempted": false,
+            "channelId": channel.id,
+            "accountId": channel.accountId,
+            "target": redactedTarget(channel.target),
+            "file": [
+                "path": fileURL.path,
+                "name": fileURL.lastPathComponent
+            ],
+            "delivery": [
+                "telegramMessageId": delivery.telegramMessageId,
                 "sentAt": delivery.sentAt,
                 "idempotencyKey": delivery.idempotencyKey,
                 "reused": reused
@@ -1964,6 +2153,10 @@ struct TelegramBridgeSender {
         switch fileURL.pathExtension.lowercased() {
         case "jpg", "jpeg", "png", "webp":
             return ("sendPhoto", "photo")
+        case "gif":
+            return ("sendAnimation", "animation")
+        case "mp4", "m4v", "mov", "webm":
+            return ("sendVideo", "video")
         default:
             return ("sendDocument", "document")
         }
@@ -2010,6 +2203,12 @@ struct TelegramBridgeSender {
             return "image/webp"
         case "gif":
             return "image/gif"
+        case "mp4", "m4v":
+            return "video/mp4"
+        case "mov":
+            return "video/quicktime"
+        case "webm":
+            return "video/webm"
         case "pdf":
             return "application/pdf"
         case "txt", "log", "md":
@@ -2025,6 +2224,8 @@ struct TelegramBridgeSender {
         }
     }
 }
+
+extension TelegramBridgeSender: TelegramBridgeSending {}
 
 struct TelegramCodexRemoteReply: Hashable, Sendable {
     var status: String

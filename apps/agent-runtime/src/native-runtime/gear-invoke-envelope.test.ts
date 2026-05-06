@@ -181,4 +181,75 @@ describe("Gee Gear invoke envelope normalization", () => {
       },
     });
   });
+
+  it("validates Todo Manager write capabilities require stable identifiers", () => {
+    const missingCreate = geeGearInvoke({
+      tool_id: "gee.gear.invoke",
+      arguments: {
+        gear_id: "todo.manager",
+        capability_id: "todo.create",
+        args: {
+          priority: 5,
+        },
+      },
+    });
+
+    assert.equal(missingCreate.kind, "error");
+    assert.equal(missingCreate.kind === "error" ? missingCreate.code : "", "gear.args.title");
+
+    const validCreate = geeGearInvoke({
+      tool_id: "gee.gear.invoke",
+      arguments: {
+        gear_id: "todo.manager",
+        capability_id: "todo.create",
+        args: {
+          title: "Review the Todo Manager gear",
+          tags: ["work"],
+          priority: 5,
+        },
+      },
+    });
+
+    assert.equal(validCreate.kind, "completed");
+    assert.deepEqual(validCreate.kind === "completed" ? validCreate.payload : {}, {
+      intent: "gear.invoke",
+      gear_id: "todo.manager",
+      capability_id: "todo.create",
+      args: {
+        title: "Review the Todo Manager gear",
+        tags: ["work"],
+        priority: 5,
+      },
+    });
+
+    const missingUpdate = geeGearInvoke({
+      tool_id: "gee.gear.invoke",
+      arguments: {
+        gear_id: "todo.manager",
+        capability_id: "todo.update",
+        args: {
+          completed: true,
+        },
+      },
+    });
+
+    assert.equal(missingUpdate.kind, "error");
+    assert.equal(missingUpdate.kind === "error" ? missingUpdate.code : "", "gear.args.task_id");
+
+    const validDelete = geeGearInvoke({
+      tool_id: "gee.gear.invoke",
+      arguments: {
+        gear_id: "todo.manager",
+        capability_id: "todo.delete",
+        args: {
+          taskId: "todo_123",
+        },
+      },
+    });
+
+    assert.equal(validDelete.kind, "completed");
+    assert.deepEqual(validDelete.kind === "completed" ? validDelete.payload.args : undefined, {
+      taskId: "todo_123",
+    });
+  });
 });

@@ -247,6 +247,156 @@ final class WorkbenchStoreTests: XCTestCase {
         XCTAssertEqual(reply, "I am Nyko.")
     }
 
+    @MainActor
+    func testTelegramChannelReplyDoesNotReuseAssistantBeforeCurrentMessage() async throws {
+        var snapshot = PreviewWorkbenchRuntimeClient().loadSnapshot()
+        let currentMessage = "https://example.com/article\nPlease inspect the library mentioned in this article."
+        snapshot.quickReply = "Running the Gear action in the native host."
+        snapshot.conversations = [
+            ConversationThread(
+                id: "telegram",
+                title: "Telegram 7973901539",
+                participantLabel: "GeeAgent",
+                previewText: "https://example.com/article",
+                statusLabel: "live",
+                lastActivityLabel: "Just now",
+                unreadCount: 0,
+                linkedTaskTitle: nil,
+                linkedAppName: nil,
+                messages: [
+                    ConversationMessage(
+                        id: "old-user",
+                        role: .user,
+                        content: "/new",
+                        timestampLabel: "36m ago"
+                    ),
+                    ConversationMessage(
+                        id: "old-assistant",
+                        role: .assistant,
+                        kind: .chat,
+                        content: "Started a new Telegram conversation. Previous Telegram context has been cleared.",
+                        timestampLabel: "36m ago"
+                    ),
+                    ConversationMessage(
+                        id: "current-user",
+                        role: .user,
+                        content: currentMessage,
+                        timestampLabel: "Just now"
+                    )
+                ],
+                tags: ["telegram.bridge", "gee_direct"],
+                isActive: true
+            )
+        ]
+        let store = WorkbenchStore(runtimeClient: FixedSnapshotRuntimeClient(snapshot: snapshot))
+
+        let reply = try await store.submitTelegramChannelMessage(
+            TelegramChannelMessagePayload(
+                channelIdentity: "telegram:gee_direct_default:chat:7973901539",
+                message: .init(
+                    idempotencyKey: "telegram:update:491738610",
+                    telegramUpdateId: 491738610,
+                    chatId: "7973901539",
+                    messageId: "36",
+                    fromUserId: "7973901539",
+                    text: currentMessage,
+                    attachments: []
+                ),
+                security: .init(decision: "allowed", policyId: "telegram.allowlist"),
+                projection: .init(
+                    surface: "telegram",
+                    replyTarget: .init(chatId: "7973901539", messageId: "36")
+                )
+            )
+        )
+
+        XCTAssertEqual(reply, "Running the Gear action in the native host.")
+    }
+
+    @MainActor
+    func testTelegramChannelMessageWaitsForHostActionCompletionReply() async throws {
+        let currentMessage = "https://example.com/article\nPlease inspect the library mentioned in this article."
+        var intermediateSnapshot = PreviewWorkbenchRuntimeClient().loadSnapshot()
+        intermediateSnapshot.quickReply = "Running the Gear action in the native host."
+        intermediateSnapshot.hostActionIntents = [
+            WorkbenchHostActionIntent(
+                id: "host_action_wespy",
+                toolID: "gee.gear.invoke",
+                arguments: [
+                    "gear_id": .string("wespy.reader"),
+                    "capability_id": .string("wespy.article"),
+                    "args": .object(["url": .string("https://example.com/article")])
+                ]
+            )
+        ]
+        intermediateSnapshot.conversations = [
+            ConversationThread(
+                id: "telegram",
+                title: "Telegram 7973901539",
+                participantLabel: "GeeAgent",
+                previewText: "https://example.com/article",
+                statusLabel: "live",
+                lastActivityLabel: "Just now",
+                unreadCount: 0,
+                linkedTaskTitle: nil,
+                linkedAppName: nil,
+                messages: [
+                    ConversationMessage(
+                        id: "current-user",
+                        role: .user,
+                        content: currentMessage,
+                        timestampLabel: "Just now"
+                    )
+                ],
+                tags: ["telegram.bridge", "gee_direct"],
+                isActive: true
+            )
+        ]
+
+        var finalSnapshot = intermediateSnapshot
+        finalSnapshot.quickReply = "The article analysis is ready."
+        finalSnapshot.hostActionIntents = []
+        finalSnapshot.conversations[0].messages.append(
+            ConversationMessage(
+                id: "assistant-final",
+                role: .assistant,
+                kind: .chat,
+                content: "The article analysis is ready.",
+                timestampLabel: "Just now"
+            )
+        )
+        let client = TelegramHostActionRuntimeClient(
+            intermediateSnapshot: intermediateSnapshot,
+            finalSnapshot: finalSnapshot
+        )
+        let store = WorkbenchStore(runtimeClient: client)
+
+        let reply = try await store.submitTelegramChannelMessage(
+            TelegramChannelMessagePayload(
+                channelIdentity: "telegram:gee_direct_default:chat:7973901539",
+                message: .init(
+                    idempotencyKey: "telegram:update:491738612",
+                    telegramUpdateId: 491738612,
+                    chatId: "7973901539",
+                    messageId: "40",
+                    fromUserId: "7973901539",
+                    text: currentMessage,
+                    attachments: []
+                ),
+                security: .init(decision: "allowed", policyId: "telegram.allowlist"),
+                projection: .init(
+                    surface: "telegram",
+                    replyTarget: .init(chatId: "7973901539", messageId: "40")
+                )
+            )
+        )
+
+        XCTAssertEqual(reply, "The article analysis is ready.")
+        XCTAssertEqual(client.invokedToolIDs, ["gee.gear.invoke"])
+        XCTAssertEqual(client.completedHostActionIDs, ["host_action_wespy"])
+        XCTAssertTrue(store.snapshot.hostActionIntents.isEmpty)
+    }
+
     // MARK: - Plan 2: persona-driven appearance
 
     func testFreshInstallEffectiveAppearanceFollowsActivePersona() throws {
@@ -1188,7 +1338,8 @@ final class WorkbenchStoreTests: XCTestCase {
         let store = WorkbenchStore(runtimeClient: runtimeClient)
 
         try await waitUntil(timeout: 1.0) {
-            runtimeClient.completedInvocationStatuses.contains(.success)
+            runtimeClient.completedInvocationStatuses.contains(.success) &&
+                store.snapshot.externalInvocations.first?.status == .success
         }
 
         XCTAssertEqual(runtimeClient.invokedToolIDs, [])
@@ -1377,6 +1528,100 @@ private struct FixedSnapshotRuntimeClient: WorkbenchRuntimeClient {
 
     func invokeTool(_ invocation: ToolInvocation) async throws -> WorkbenchToolOutcome {
         .completed(toolID: invocation.toolID, payload: [:])
+    }
+}
+
+private final class TelegramHostActionRuntimeClient: WorkbenchRuntimeClient, @unchecked Sendable {
+    private let intermediateSnapshot: WorkbenchSnapshot
+    private let finalSnapshot: WorkbenchSnapshot
+    private(set) var invokedToolIDs: [String] = []
+    private(set) var completedHostActionIDs: [String] = []
+
+    init(
+        intermediateSnapshot: WorkbenchSnapshot,
+        finalSnapshot: WorkbenchSnapshot
+    ) {
+        self.intermediateSnapshot = intermediateSnapshot
+        self.finalSnapshot = finalSnapshot
+    }
+
+    func loadSnapshot() -> WorkbenchSnapshot { PreviewWorkbenchRuntimeClient().loadSnapshot() }
+    func loadLiveSnapshot() -> WorkbenchSnapshot { finalSnapshot }
+    func createConversation(in snapshot: WorkbenchSnapshot) async throws -> WorkbenchSnapshot { snapshot }
+    func activateConversation(
+        _ conversationID: ConversationThread.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func deleteConversation(
+        _ conversationID: ConversationThread.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func sendMessage(
+        _ message: String,
+        in snapshot: WorkbenchSnapshot,
+        conversationID: ConversationThread.ID,
+        allowAutoRouting: Bool
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func performTaskAction(
+        _ action: WorkbenchTaskAction,
+        in snapshot: WorkbenchSnapshot,
+        taskID: WorkbenchTaskRecord.ID
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func setActiveAgentProfile(
+        _ profileID: AgentProfileRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func installAgentPack(
+        at packPath: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func reloadAgentProfile(
+        _ profileID: AgentProfileRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func deleteAgentProfile(
+        _ profileID: AgentProfileRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func deleteTerminalPermissionRule(
+        _ ruleID: TerminalPermissionRuleRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func setHighestAuthorizationEnabled(
+        _ enabled: Bool,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func loadChatRoutingSettings() async throws -> ChatRoutingSettings {
+        try await PreviewWorkbenchRuntimeClient().loadChatRoutingSettings()
+    }
+    func saveChatRoutingSettings(
+        _ settings: ChatRoutingSettings,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func submitQuickPrompt(
+        _ prompt: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func submitChannelMessage(
+        _ payload: TelegramChannelMessagePayload,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { intermediateSnapshot }
+    func completeHostActionTurn(
+        _ completions: [WorkbenchHostActionCompletion],
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        completedHostActionIDs.append(contentsOf: completions.map(\.hostActionID))
+        return finalSnapshot
+    }
+    func invokeTool(_ invocation: ToolInvocation) async throws -> WorkbenchToolOutcome {
+        invokedToolIDs.append(invocation.toolID)
+        return .completed(
+            toolID: invocation.toolID,
+            payload: [
+                "status": "succeeded",
+                "article_id": "article_fixture"
+            ]
+        )
     }
 }
 

@@ -230,13 +230,6 @@ private struct MediaGeneratorGearRootView: View {
                     }
                 }
             }
-            if store.category == .image {
-                MediaGeneratorCheckboxRow(
-                    title: "Async task",
-                    helpText: "When enabled, Gee asks Xenodia to create a background task and polls until the generated image is ready. When disabled, Gee asks Xenodia for a synchronous response; if the provider supports it, the result can return directly, but long generations are more likely to hit request timeouts.",
-                    isOn: $store.useAsync
-                )
-            }
             if store.selectedModel.isSeedance {
                 LazyVGrid(
                     columns: [
@@ -571,7 +564,7 @@ private struct MediaGeneratorGearRootView: View {
                             .font(.system(size: 30, weight: .medium))
                         Text(store.tasks.isEmpty ? "No generation tasks yet" : "No matching tasks")
                             .font(.subheadline.weight(.semibold))
-                        Text(store.tasks.isEmpty ? "Generated images, videos, and async status will appear here." : "Try another status, model, or search keyword.")
+                        Text(store.tasks.isEmpty ? "Generated images, videos, and task status will appear here." : "Try another status, model, or search keyword.")
                             .font(.caption)
                             .foregroundStyle(.white.opacity(0.44))
                     }

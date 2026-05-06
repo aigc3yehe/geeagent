@@ -1,11 +1,27 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { runtimeSecurityPath, runtimeStorePath } from "../paths.js";
 import { defaultAgentProfile, defaultRuntimeStore } from "./defaults.js";
 import { syncConversationStatuses } from "./conversations.js";
-import type { RuntimeSecurityPreferences, RuntimeStore } from "./types.js";
+import type {
+  RuntimeExternalInvocationRecord,
+  RuntimeExternalInvocationStatus,
+  RuntimeSecurityPreferences,
+  RuntimeStore,
+} from "./types.js";
+
+const RUNTIME_STORE_WRITE_LOCK_TIMEOUT_MS = 10_000;
+const RUNTIME_STORE_WRITE_LOCK_STALE_MS = 30_000;
+const EXTERNAL_INVOCATION_HISTORY_LIMIT = 200;
+const TERMINAL_EXTERNAL_INVOCATION_STATUSES = new Set<RuntimeExternalInvocationStatus>([
+  "success",
+  "partial",
+  "blocked",
+  "failed",
+  "degraded",
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -58,16 +74,25 @@ export async function persistRuntimeStore(
   configDir: string,
   store: RuntimeStore,
 ): Promise<void> {
-  const path = runtimeStorePath(configDir);
-  await mkdir(dirname(path), { recursive: true });
-  const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(tempPath, `${JSON.stringify(store, null, 2)}\n`, "utf8");
-    await rename(tempPath, path);
-  } catch (error) {
-    await rm(tempPath, { force: true }).catch(() => undefined);
-    throw error;
-  }
+  await withRuntimeStoreWriteLock(configDir, async () => {
+    const path = runtimeStorePath(configDir);
+    await mkdir(dirname(path), { recursive: true });
+    const current = await loadRuntimeStore(configDir).catch((error) => {
+      if (isMissingFileError(error)) {
+        return defaultRuntimeStore();
+      }
+      throw error;
+    });
+    const next = mergeRuntimeStoreForPersist(store, current);
+    const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(tempPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+      await rename(tempPath, path);
+    } catch (error) {
+      await rm(tempPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
+  });
 }
 
 export async function loadSecurityPreferences(
@@ -157,6 +182,149 @@ function isRetryableRuntimeStoreReadError(error: unknown): boolean {
 
 function sleep(delayMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+async function withRuntimeStoreWriteLock<T>(
+  configDir: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const storePath = runtimeStorePath(configDir);
+  const lockDir = `${storePath}.lock`;
+  const deadline = Date.now() + RUNTIME_STORE_WRITE_LOCK_TIMEOUT_MS;
+
+  await mkdir(dirname(storePath), { recursive: true });
+
+  while (true) {
+    try {
+      await mkdir(lockDir);
+      await writeFile(
+        join(lockDir, "owner"),
+        JSON.stringify({
+          pid: process.pid,
+          created_at: new Date().toISOString(),
+        }),
+        "utf8",
+      ).catch(() => undefined);
+      try {
+        return await operation();
+      } finally {
+        await rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    } catch (error) {
+      if (!isExistingFileError(error)) {
+        throw error;
+      }
+      if (await removeStaleRuntimeStoreWriteLock(lockDir)) {
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `timed out waiting for runtime store write lock at ${lockDir}`,
+        );
+      }
+      await sleep(25);
+    }
+  }
+}
+
+async function removeStaleRuntimeStoreWriteLock(lockDir: string): Promise<boolean> {
+  try {
+    const info = await stat(lockDir);
+    if (Date.now() - info.mtimeMs <= RUNTIME_STORE_WRITE_LOCK_STALE_MS) {
+      return false;
+    }
+    await rm(lockDir, { recursive: true, force: true });
+    return true;
+  } catch (error) {
+    return isMissingFileError(error);
+  }
+}
+
+function mergeRuntimeStoreForPersist(
+  next: RuntimeStore,
+  current: RuntimeStore,
+): RuntimeStore {
+  return {
+    ...next,
+    external_invocations: mergeExternalInvocationRecords(
+      next.external_invocations ?? [],
+      current.external_invocations ?? [],
+    ),
+  };
+}
+
+function mergeExternalInvocationRecords(
+  nextRecords: RuntimeExternalInvocationRecord[],
+  currentRecords: RuntimeExternalInvocationRecord[],
+): RuntimeExternalInvocationRecord[] {
+  const byID = new Map<string, RuntimeExternalInvocationRecord>();
+  for (const record of [...currentRecords, ...nextRecords]) {
+    const id = typeof record.external_invocation_id === "string"
+      ? record.external_invocation_id
+      : "";
+    if (!id) {
+      continue;
+    }
+    const existing = byID.get(id);
+    byID.set(id, existing ? preferredExternalInvocationRecord(existing, record) : record);
+  }
+  return [...byID.values()]
+    .sort((left, right) => compareExternalInvocationRecords(right, left))
+    .slice(0, EXTERNAL_INVOCATION_HISTORY_LIMIT);
+}
+
+function preferredExternalInvocationRecord(
+  existing: RuntimeExternalInvocationRecord,
+  candidate: RuntimeExternalInvocationRecord,
+): RuntimeExternalInvocationRecord {
+  const existingUpdatedAt = timestampMs(existing.updated_at);
+  const candidateUpdatedAt = timestampMs(candidate.updated_at);
+  if (candidateUpdatedAt > existingUpdatedAt) {
+    return candidate;
+  }
+  if (candidateUpdatedAt < existingUpdatedAt) {
+    return existing;
+  }
+  const existingTerminal = isTerminalExternalInvocationStatus(existing.status);
+  const candidateTerminal = isTerminalExternalInvocationStatus(candidate.status);
+  if (candidateTerminal && !existingTerminal) {
+    return candidate;
+  }
+  if (existingTerminal && !candidateTerminal) {
+    return existing;
+  }
+  return candidate;
+}
+
+function compareExternalInvocationRecords(
+  left: RuntimeExternalInvocationRecord,
+  right: RuntimeExternalInvocationRecord,
+): number {
+  const createdDelta = timestampMs(left.created_at) - timestampMs(right.created_at);
+  if (createdDelta !== 0) {
+    return createdDelta;
+  }
+  return timestampMs(left.updated_at) - timestampMs(right.updated_at);
+}
+
+function timestampMs(value: string): number {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isTerminalExternalInvocationStatus(
+  status: RuntimeExternalInvocationStatus,
+): boolean {
+  return TERMINAL_EXTERNAL_INVOCATION_STATUSES.has(status);
+}
+
+function isExistingFileError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "EEXIST"
+  );
 }
 
 function pruneOrphanConversationRuntimeHistory(store: RuntimeStore): void {

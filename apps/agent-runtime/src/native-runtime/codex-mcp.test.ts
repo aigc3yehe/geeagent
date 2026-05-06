@@ -7,7 +7,9 @@ import { join } from "node:path";
 import readline from "node:readline";
 import { describe, it } from "node:test";
 
+import { createExternalInvocation } from "./codex-external-invocations.js";
 import { handleNativeRuntimeCommand } from "./commands.js";
+import { loadRuntimeStore, persistRuntimeStore } from "./store/persistence.js";
 
 type JsonRpcResponse = {
   jsonrpc: "2.0";
@@ -397,6 +399,43 @@ describe("Codex MCP export server", () => {
     });
   });
 
+  it("preserves a queued external invocation when a stale store write lands later", async () => {
+    const configDir = await mkdtemp(join(tmpdir(), "geeagent-codex-config-"));
+    const staleStore = await loadRuntimeStore(configDir);
+    const queued = await createExternalInvocation(configDir, {
+      tool: "gee_invoke_capability",
+      capability_ref: "codex.safe/safe.query",
+      gear_id: "codex.safe",
+      capability_id: "safe.query",
+      args: { key: "new" },
+    });
+
+    staleStore.external_invocations = [
+      {
+        external_invocation_id: "gee_ext_old",
+        tool: "gee_invoke_capability",
+        status: "success",
+        created_at: "2026-05-06T00:00:00.000Z",
+        updated_at: "2026-05-06T00:00:01.000Z",
+        capability_ref: "codex.safe/safe.query",
+        gear_id: "codex.safe",
+        capability_id: "safe.query",
+        args: { key: "old" },
+        result: { value: "old" },
+        fallback_attempted: false,
+      },
+    ];
+
+    await persistRuntimeStore(configDir, staleStore);
+
+    const reloaded = await loadRuntimeStore(configDir);
+    const ids = new Set(
+      reloaded.external_invocations?.map((record) => record.external_invocation_id),
+    );
+    assert.equal(ids.has(queued.external_invocation_id), true);
+    assert.equal(ids.has("gee_ext_old"), true);
+  });
+
   it("returns completed external invocation results through gee_get_invocation", async () => {
     const configDir = await mkdtemp(join(tmpdir(), "geeagent-codex-config-"));
     const root = await mkdtemp(join(tmpdir(), "geeagent-codex-mcp-"));
@@ -679,6 +718,7 @@ describe("Codex plugin package generation", () => {
       "utf8",
     );
     assert.match(index, /telegram\.bridge\/telegram_push\.send_message/);
+    assert.match(index, /telegram\.bridge\/telegram_push\.send_file/);
     assert.match(index, /media\.generator\/media_generator\.create_task/);
 
     const telegram = await readFile(
@@ -686,6 +726,7 @@ describe("Codex plugin package generation", () => {
       "utf8",
     );
     assert.match(telegram, /telegram\.bridge\/telegram_push\.send_message/);
+    assert.match(telegram, /telegram\.bridge\/telegram_push\.send_file/);
     assert.match(telegram, /idempotency_key/);
     assert.match(telegram, /configured push-only Telegram channels/i);
 
@@ -703,6 +744,7 @@ describe("Codex plugin package generation", () => {
       [
         "telegram_bridge.status",
         "telegram_push.list_channels",
+        "telegram_push.send_file",
         "telegram_push.send_message",
       ],
     );
@@ -720,6 +762,7 @@ describe("Codex plugin package generation", () => {
       [
         "telegram.bridge/telegram_bridge.status",
         "telegram.bridge/telegram_push.list_channels",
+        "telegram.bridge/telegram_push.send_file",
         "telegram.bridge/telegram_push.send_message",
       ],
     );

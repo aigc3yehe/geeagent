@@ -20,7 +20,7 @@ import {
 import { createCodexRemoteClient } from "./codex.js";
 import { pollTelegramBridgeOnce } from "./polling.js";
 import { createNativeRuntimeChannelClient } from "./runtime-client.js";
-import { sendPushMessage } from "./send.js";
+import { sendPushFile, sendPushMessage } from "./send.js";
 import { createTelegramBotApiClient } from "./telegram.js";
 
 type ParsedArgs = {
@@ -45,6 +45,8 @@ export async function runTelegramBridgeCli(argv: string[]): Promise<number> {
       return printJson(await upsertPushChannelCommand(parsed));
     case "send-push":
       return printJson(await sendPushCommand(parsed));
+    case "send-push-file":
+      return printJson(await sendPushFileCommand(parsed));
     case "poll-once":
       return printJson(await pollOnceCommand(parsed));
     case "poll-loop":
@@ -128,6 +130,27 @@ async function sendPushCommand(parsed: ParsedArgs): Promise<Record<string, unkno
       idempotencyKey: requiredOption(parsed, "idempotency-key"),
       parseMode: parseModeOption(parsed, "parse-mode"),
       disableWebPreview: booleanOption(parsed, "disable-web-preview"),
+    },
+    {
+      tokenProvider: createEnvironmentTokenProvider(),
+      telegramClient,
+    },
+  );
+  return result;
+}
+
+async function sendPushFileCommand(parsed: ParsedArgs): Promise<Record<string, unknown>> {
+  const config = await loadBridgeConfigFile(configPath(parsed));
+  const telegramClient = createTelegramBotApiClient({
+    apiBaseUrl: stringOption(parsed, "telegram-api-base-url"),
+  });
+  const result = await sendPushFile(
+    config,
+    {
+      channelId: requiredOption(parsed, "channel"),
+      filePath: requiredOption(parsed, "file"),
+      caption: stringOption(parsed, "caption"),
+      idempotencyKey: requiredOption(parsed, "idempotency-key"),
     },
     {
       tokenProvider: createEnvironmentTokenProvider(),
@@ -345,6 +368,7 @@ function printUsage(): void {
       "  list-channels --config <config.json>",
       "  upsert-push-channel --channel <id> --account <account_id> --target-kind <chat_id|group_id|channel_id|channel_username> --target-value <target>",
       "  send-push --channel <id> --message <text> --idempotency-key <key>",
+      "  send-push-file --channel <id> --file <path> --idempotency-key <key> [--caption <text>]",
       "  poll-once --config <config.json> --state <polling-state.json> --runtime-entry <native-runtime/index.mjs>",
       "  poll-loop --config <config.json> --state <polling-state.json> --runtime-entry <native-runtime/index.mjs>",
       "",

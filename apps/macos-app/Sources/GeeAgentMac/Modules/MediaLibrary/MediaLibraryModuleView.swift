@@ -500,8 +500,10 @@ struct MediaLibraryModuleView: View {
 
     private func updateDynamicVisibility(itemID: MediaLibraryItem.ID, isVisible: Bool) {
         if isVisible {
+            guard !visibleDynamicItemIDs.contains(itemID) else { return }
             visibleDynamicItemIDs.insert(itemID)
         } else {
+            guard visibleDynamicItemIDs.contains(itemID) else { return }
             visibleDynamicItemIDs.remove(itemID)
         }
     }
@@ -1185,6 +1187,8 @@ private struct MediaLibraryVisibilityReporter: View {
     let coordinateSpaceName: String
     var onVisibilityChange: (MediaLibraryItem.ID, Bool) -> Void
 
+    @State private var lastReportedVisibility: Bool?
+
     var body: some View {
         GeometryReader { proxy in
             let frame = proxy.frame(in: .named(coordinateSpaceName))
@@ -1199,19 +1203,21 @@ private struct MediaLibraryVisibilityReporter: View {
                     report(frame)
                 }
                 .onDisappear {
-                    onVisibilityChange(itemID, false)
+                    report(false)
                 }
         }
     }
 
     private func report(_ frame: CGRect) {
-        guard isEnabled else {
-            onVisibilityChange(itemID, false)
-            return
-        }
         let viewport = CGRect(origin: .zero, size: viewportSize)
             .insetBy(dx: -24, dy: -96)
-        onVisibilityChange(itemID, frame.intersects(viewport))
+        report(isEnabled && frame.intersects(viewport))
+    }
+
+    private func report(_ isVisible: Bool) {
+        guard lastReportedVisibility != isVisible else { return }
+        lastReportedVisibility = isVisible
+        onVisibilityChange(itemID, isVisible)
     }
 }
 
@@ -1538,22 +1544,13 @@ private struct MediaLibraryPreview: View {
 
     var body: some View {
         ZStack {
-            if dynamicPlayback, item.mediaKind == .video {
-                MediaLibraryVideoAutoplayView(url: item.fileURL)
-            } else if dynamicPlayback, item.ext.lowercased() == "gif" {
+            if dynamicPlayback, item.ext.lowercased() == "gif" {
                 MediaLibraryAnimatedImageView(url: item.fileURL)
-            } else if let thumbnailURL = item.thumbnailURL, let image = NSImage(contentsOf: thumbnailURL) {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFill()
             } else {
-                VStack(spacing: 6) {
-                    Image(systemName: item.mediaKind == .video ? "film" : "photo")
-                        .font(.system(size: 26))
-                    Text(item.ext.uppercased())
-                        .font(.geeDisplaySemibold(10))
+                MediaLibraryThumbnailView(item: item)
+                if dynamicPlayback, item.mediaKind == .video {
+                    MediaLibraryVideoAutoplayView(url: item.fileURL)
                 }
-                .foregroundStyle(.secondary)
             }
 
             if item.mediaKind == .video, !dynamicPlayback {
@@ -1566,6 +1563,54 @@ private struct MediaLibraryPreview: View {
             }
         }
         .clipped()
+    }
+}
+
+private struct MediaLibraryThumbnailView: View {
+    let item: MediaLibraryItem
+    @State private var image: NSImage?
+    @State private var loadedURL: URL?
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                VStack(spacing: 6) {
+                    Image(systemName: item.mediaKind == .video ? "film" : "photo")
+                        .font(.system(size: 26))
+                    Text(item.ext.uppercased())
+                        .font(.geeDisplaySemibold(10))
+                }
+                .foregroundStyle(.secondary)
+            }
+        }
+        .task(id: item.thumbnailURL) {
+            await loadThumbnail(from: item.thumbnailURL)
+        }
+    }
+
+    @MainActor
+    private func loadThumbnail(from url: URL?) async {
+        loadedURL = url
+        image = nil
+        guard let url else { return }
+
+        let data = await MediaLibraryThumbnailLoader.loadData(from: url)
+        guard !Task.isCancelled, loadedURL == url, let data else { return }
+        image = NSImage(data: data)
+    }
+}
+
+private enum MediaLibraryThumbnailLoader {
+    static func loadData(from url: URL) async -> Data? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: try? Data(contentsOf: url))
+            }
+        }
     }
 }
 
@@ -1614,34 +1659,30 @@ private struct MediaLibraryVideoAutoplayView: NSViewRepresentable {
             return
         }
 
+        context.coordinator.tearDown()
         context.coordinator.url = url
-        context.coordinator.player?.pause()
-        if let observer = context.coordinator.observer {
-            NotificationCenter.default.removeObserver(observer)
-            context.coordinator.observer = nil
-        }
-        let player = AVPlayer(url: url)
+        view.prepareForPlayback()
+
+        let item = AVPlayerItem(url: url)
+        item.preferredForwardBufferDuration = 1
+        let player = AVQueuePlayer()
         player.isMuted = true
-        player.actionAtItemEnd = .none
-        player.automaticallyWaitsToMinimizeStalling = false
+        player.automaticallyWaitsToMinimizeStalling = true
         context.coordinator.player = player
-        context.coordinator.observer = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime,
-            object: player.currentItem,
-            queue: .main
-        ) { _ in
-            player.seek(to: .zero)
-            player.play()
-        }
+        context.coordinator.looper = AVPlayerLooper(player: player, templateItem: item)
         view.playerLayer.player = player
+        context.coordinator.readyForDisplayObservation = view.playerLayer.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak view] layer, _ in
+            guard layer.isReadyForDisplay else { return }
+            DispatchQueue.main.async {
+                view?.showPlayerLayer()
+            }
+        }
         player.play()
     }
 
     static func dismantleNSView(_ view: PlayerContainerView, coordinator: Coordinator) {
-        coordinator.player?.pause()
-        if let observer = coordinator.observer {
-            NotificationCenter.default.removeObserver(observer)
-        }
+        coordinator.tearDown()
+        view.prepareForPlayback()
     }
 
     func makeCoordinator() -> Coordinator {
@@ -1650,8 +1691,17 @@ private struct MediaLibraryVideoAutoplayView: NSViewRepresentable {
 
     final class Coordinator {
         var url: URL?
-        var player: AVPlayer?
-        var observer: NSObjectProtocol?
+        var player: AVQueuePlayer?
+        var looper: AVPlayerLooper?
+        var readyForDisplayObservation: NSKeyValueObservation?
+
+        func tearDown() {
+            readyForDisplayObservation = nil
+            player?.pause()
+            player?.removeAllItems()
+            looper = nil
+            player = nil
+        }
     }
 
     final class PlayerContainerView: NSView {
@@ -1661,6 +1711,9 @@ private struct MediaLibraryVideoAutoplayView: NSViewRepresentable {
             super.init(frame: frameRect)
             wantsLayer = true
             layer = CALayer()
+            layer?.backgroundColor = NSColor.clear.cgColor
+            playerLayer.backgroundColor = NSColor.clear.cgColor
+            playerLayer.opacity = 0
             layer?.addSublayer(playerLayer)
         }
 
@@ -1672,6 +1725,19 @@ private struct MediaLibraryVideoAutoplayView: NSViewRepresentable {
         override func layout() {
             super.layout()
             playerLayer.frame = bounds
+        }
+
+        func prepareForPlayback() {
+            playerLayer.player = nil
+            playerLayer.opacity = 0
+        }
+
+        func showPlayerLayer() {
+            guard playerLayer.opacity < 1 else { return }
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(0.16)
+            playerLayer.opacity = 1
+            CATransaction.commit()
         }
     }
 }

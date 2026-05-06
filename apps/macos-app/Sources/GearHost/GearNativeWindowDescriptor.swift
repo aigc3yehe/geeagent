@@ -82,6 +82,14 @@ struct GearHostNativeWindowScenes: Scene {
             width: GearHost.telegramBridgeWindowDescriptor.defaultWidth,
             height: GearHost.telegramBridgeWindowDescriptor.defaultHeight
         )
+
+        Window(GearHost.todoManagerWindowDescriptor.title, id: GearHost.todoManagerWindowDescriptor.windowID) {
+            GearHost.makeNativeWindowView(for: GearHost.todoManagerWindowDescriptor.gearID)
+        }
+        .defaultSize(
+            width: GearHost.todoManagerWindowDescriptor.defaultWidth,
+            height: GearHost.todoManagerWindowDescriptor.defaultHeight
+        )
     }
 }
 

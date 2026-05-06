@@ -68,6 +68,36 @@ final class MediaGeneratorGearTests: XCTestCase {
         XCTAssertFalse(XenodiaImageGenerationClient.isRetryableStatusPollError(URLError(.notConnectedToInternet)))
     }
 
+    func testXenodiaCreationResponseRequiresTaskID() throws {
+        let data = Data("""
+        {
+          "task_id": "task_123",
+          "object": "task",
+          "model": "nano-banana-pro",
+          "type": "image",
+          "state": "waiting",
+          "created_at": 1760000000,
+          "poll_url": "/v1/tasks/task_123"
+        }
+        """.utf8)
+
+        XCTAssertEqual(try XenodiaImageGenerationClient.parseCreationTaskID(data), "task_123")
+
+        let directResultData = Data("""
+        {
+          "result": {
+            "data": [
+              { "url": "https://cdn.xenodia.xyz/generated/legacy.png" }
+            ]
+          }
+        }
+        """.utf8)
+
+        XCTAssertThrowsError(try XenodiaImageGenerationClient.parseCreationTaskID(directResultData)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("task_id"))
+        }
+    }
+
     func testXenodiaTaskResponseParsesOfficialSuccessPayload() throws {
         let data = Data("""
         {
@@ -701,8 +731,7 @@ final class MediaGeneratorGearTests: XCTestCase {
             parameters: [
                 "aspect_ratio": "16:9",
                 "resolution": "2K",
-                "n": "1",
-                "async": "false"
+                "n": "1"
             ],
             references: [
                 MediaGeneratorReference(
@@ -722,7 +751,6 @@ final class MediaGeneratorGearTests: XCTestCase {
         XCTAssertEqual(store.aspectRatio, .landscape)
         XCTAssertEqual(store.resolution, .twoK)
         XCTAssertEqual(store.imageCount, 1)
-        XCTAssertFalse(store.useAsync)
         XCTAssertEqual(store.references.map(\.url), ["https://cdn.example/ref.png"])
         XCTAssertEqual(store.selectedTaskID, "apply-task")
     }
@@ -760,6 +788,12 @@ final class MediaGeneratorGearTests: XCTestCase {
         XCTAssertTrue(gptFields?.contains("resolution") == true)
         XCTAssertFalse(gptFields?.contains("nsfw_checker") == true)
         XCTAssertFalse(gptFields?.contains("output_format") == true)
+        let gptValues = models?.first { $0["model"] as? String == "gpt-image-2" }?["supported_values"] as? [String: Any]
+        XCTAssertEqual(gptValues?["resolution"] as? [String], ["1K", "2K", "4K"])
+        let gptResolutionMatrix = gptValues?["resolution_by_aspect_ratio"] as? [String: [String]]
+        XCTAssertEqual(gptResolutionMatrix?["auto"], ["1K"])
+        XCTAssertEqual(gptResolutionMatrix?["1:1"], ["1K", "2K"])
+        XCTAssertEqual(gptResolutionMatrix?["16:9"], ["1K", "2K", "4K"])
         let veoFields = models?.first { $0["model"] as? String == "veo3.1_fast" }?["supported_fields"] as? [String]
         XCTAssertTrue(veoFields?.contains("batch_count") == true)
         XCTAssertTrue(veoFields?.contains("generation_type") == true)
@@ -824,6 +858,7 @@ final class MediaGeneratorGearTests: XCTestCase {
         XCTAssertEqual(Set(store.tasks.compactMap(\.batchID)).count, 1)
         XCTAssertEqual(Set(store.tasks.map(\.batchCount)), [4])
         XCTAssertEqual(Set(store.tasks.compactMap { $0.parameters["n"] }), ["1"])
+        XCTAssertTrue(store.tasks.allSatisfy { $0.parameters["async"] == nil })
         let payloadTasks = payload["tasks"] as? [[String: Any]]
         XCTAssertEqual(payloadTasks?.count, 4)
     }

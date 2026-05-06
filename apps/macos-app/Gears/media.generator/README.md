@@ -8,10 +8,15 @@ not inside this Gear package.
 
 Current Xenodia image models:
 
-- `nano-banana-pro`: supports `n=1`, `async`, `response_format=url`,
+- `nano-banana-pro`: supports `n=1`, `response_format=url`,
   `aspect_ratio`, `resolution`, `output_format`, and reference images.
-- `gpt-image-2`: supports `n=1`, `async`, `response_format=url`,
+- `gpt-image-2`: supports `n=1`, `response_format=url`,
   `aspect_ratio`, `resolution`, and reference images.
+
+`media_generator.list_models` reports each model's full top-level supported
+values, plus `resolution_by_aspect_ratio` for aspect-ratio-specific resolution
+constraints such as GPT Image-2 `auto` only accepting `1K` while landscape and
+portrait ratios also expose higher resolutions.
 
 Current Xenodia video models:
 
@@ -39,12 +44,12 @@ upload local references through the configured global Xenodia
 `storage_upload_url` before passing the returned public URL or `asset://` ID to
 the video request.
 
-Image generation is treated as a long-running provider task. Xenodia create,
-multipart, and task-status requests use a minimum 30-minute timeout floor. A
-timed-out status request keeps the local task `running` so polling can continue
-instead of marking the task failed while the provider is still generating.
-Video generation uses the same long-running task handling and normalized
-Xenodia task retrieval path.
+Image and video generation are treated as long-running provider tasks. Xenodia
+image create, multipart, video create, and task-status requests use a minimum
+30-minute timeout floor. A timed-out status request keeps the local task
+`running` so polling can continue instead of marking the task failed while the
+provider is still generating. Both image and video creation return task IDs and
+use the normalized Xenodia task retrieval path.
 
 The native workbench keeps reusable quick prompts in
 `~/Library/Application Support/GeeAgent/gear-data/media.generator/quick-prompts.json`.

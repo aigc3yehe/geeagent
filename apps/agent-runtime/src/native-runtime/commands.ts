@@ -292,11 +292,80 @@ function parseHostActionCompletions(raw: string): RuntimeHostActionCompletion[] 
 }
 
 function parseSettings(raw: string): ChatRoutingSettings {
-  const parsed = JSON.parse(raw) as ChatRoutingSettings;
-  if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.routeClasses)) {
+  const parsed = JSON.parse(raw) as unknown;
+  if (!parsed || typeof parsed !== "object") {
     throw new Error("chat routing settings JSON is invalid");
   }
-  return parsed;
+  const record = parsed as Record<string, unknown>;
+  const routeClasses = record.routeClasses ?? record.route_classes;
+  const profiles = record.profiles;
+  if (!Array.isArray(routeClasses) || !Array.isArray(profiles)) {
+    throw new Error("chat routing settings JSON is invalid");
+  }
+  return {
+    defaultRouteClass: stringSetting(record, "defaultRouteClass", "default_route_class"),
+    allowUserOverrides: booleanSetting(record, "allowUserOverrides", "allow_user_overrides"),
+    providerChoices: stringArraySetting(record, "providerChoices", "provider_choices"),
+    routeClasses: routeClasses.map((routeClass) => {
+      const routeRecord = requireSettingsRecord(routeClass);
+      return {
+        name: stringSetting(routeRecord, "name", "name"),
+        provider: stringSetting(routeRecord, "provider", "provider"),
+        model: stringSetting(routeRecord, "model", "model"),
+        reasoningEffort: stringSetting(routeRecord, "reasoningEffort", "reasoning_effort"),
+      };
+    }),
+    profiles: profiles.map((profile) => {
+      const profileRecord = requireSettingsRecord(profile);
+      return {
+        name: stringSetting(profileRecord, "name", "name"),
+        defaultRouteClass: stringSetting(profileRecord, "defaultRouteClass", "default_route_class"),
+      };
+    }),
+  };
+}
+
+function requireSettingsRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("chat routing settings JSON is invalid");
+  }
+  return value as Record<string, unknown>;
+}
+
+function stringSetting(
+  record: Record<string, unknown>,
+  camelKey: string,
+  snakeKey: string,
+): string {
+  const value = record[camelKey] ?? record[snakeKey];
+  if (typeof value !== "string") {
+    throw new Error("chat routing settings JSON is invalid");
+  }
+  return value;
+}
+
+function booleanSetting(
+  record: Record<string, unknown>,
+  camelKey: string,
+  snakeKey: string,
+): boolean {
+  const value = record[camelKey] ?? record[snakeKey];
+  if (typeof value !== "boolean") {
+    throw new Error("chat routing settings JSON is invalid");
+  }
+  return value;
+}
+
+function stringArraySetting(
+  record: Record<string, unknown>,
+  camelKey: string,
+  snakeKey: string,
+): string[] {
+  const value = record[camelKey] ?? record[snakeKey];
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error("chat routing settings JSON is invalid");
+  }
+  return [...value];
 }
 
 function parseToolRequest(raw: string): ToolRequest {

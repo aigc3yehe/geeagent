@@ -319,6 +319,8 @@ enum GeeHostToolRouter {
             return invokeAppIconForge(toolID: toolID, capabilityID: capabilityID, args: args)
         case TelegramBridgeGearDescriptor.gearID:
             return await invokeTelegramBridge(toolID: toolID, capabilityID: capabilityID, args: args)
+        case TodoManagerGearDescriptor.gearID:
+            return await invokeTodoManager(toolID: toolID, capabilityID: capabilityID, args: args)
         default:
             return .error(
                 toolID: toolID,
@@ -370,6 +372,7 @@ enum GeeHostToolRouter {
             "telegram_push.list_channels",
             "telegram_push.upsert_channel",
             "telegram_push.send_message",
+            "telegram_push.send_file",
             "telegram_direct.send_file"
         ].contains(capabilityID) else {
             return .error(
@@ -385,6 +388,52 @@ enum GeeHostToolRouter {
                 args: args
             )
         )
+    }
+
+    private static func invokeTodoManager(
+        toolID: String,
+        capabilityID: String,
+        args: [String: Any]
+    ) async -> WorkbenchToolOutcome {
+        switch capabilityID {
+        case "todo.create":
+            guard let title = stringArg(args, "title", "quick_add_text", "quickAddText"),
+                  !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else {
+                return .error(toolID: toolID, code: "gear.args.title", message: "`title` is required.")
+            }
+            return .completed(
+                toolID: toolID,
+                payload: await TodoManagerGearStore.shared.createAgentTodo(args: args)
+            )
+        case "todo.query":
+            return .completed(
+                toolID: toolID,
+                payload: TodoManagerGearStore.shared.queryAgentTodos(args: args)
+            )
+        case "todo.update":
+            guard let taskID = stringArg(args, "task_id", "taskId", "id"), !taskID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return .error(toolID: toolID, code: "gear.args.task_id", message: "`task_id` is required.")
+            }
+            return .completed(
+                toolID: toolID,
+                payload: await TodoManagerGearStore.shared.updateAgentTodo(args: args)
+            )
+        case "todo.delete":
+            guard let taskID = stringArg(args, "task_id", "taskId", "id"), !taskID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return .error(toolID: toolID, code: "gear.args.task_id", message: "`task_id` is required.")
+            }
+            return .completed(
+                toolID: toolID,
+                payload: await TodoManagerGearStore.shared.deleteAgentTodo(args: args)
+            )
+        default:
+            return .error(
+                toolID: toolID,
+                code: "gear.todo.capability_unsupported",
+                message: "todo.manager does not support `\(capabilityID)` yet."
+            )
+        }
     }
 
     private static func invokeMediaGenerator(
@@ -906,6 +955,18 @@ enum GeeHostToolRouter {
                     "disable_web_preview": ["type": "boolean"]
                 ]
             ]
+        case (TelegramBridgeGearDescriptor.gearID, "telegram_push.send_file"):
+            return [
+                "type": "object",
+                "required": ["channel_id", "file_path", "idempotency_key"],
+                "additionalProperties": false,
+                "properties": [
+                    "channel_id": ["type": "string"],
+                    "file_path": ["type": "string"],
+                    "caption": ["type": "string"],
+                    "idempotency_key": ["type": "string"]
+                ]
+            ]
         case (TelegramBridgeGearDescriptor.gearID, "telegram_direct.send_file"):
             return [
                 "type": "object",
@@ -917,6 +978,79 @@ enum GeeHostToolRouter {
                     "idempotency_key": ["type": "string"],
                     "account_id": ["type": "string"],
                     "chat_id": ["type": "string"]
+                ]
+            ]
+        case (TodoManagerGearDescriptor.gearID, "todo.create"):
+            return [
+                "type": "object",
+                "required": ["title"],
+                "additionalProperties": false,
+                "properties": [
+                    "title": ["type": "string"],
+                    "content": ["type": "string"],
+                    "list_id": ["type": "string"],
+                    "list_name": ["type": "string"],
+                    "tags": ["type": "array", "items": ["type": "string"]],
+                    "priority": ["type": "integer", "enum": [0, 1, 3, 5]],
+                    "start_at": ["type": "string"],
+                    "due_at": ["type": "string"],
+                    "timezone": ["type": "string"],
+                    "is_all_day": ["type": "boolean"],
+                    "reminders": ["type": "array", "items": ["type": "object"]],
+                    "repeat_rrule": ["type": "string"],
+                    "checklist_items": ["type": "array", "items": ["type": "string"]]
+                ]
+            ]
+        case (TodoManagerGearDescriptor.gearID, "todo.query"):
+            return [
+                "type": "object",
+                "additionalProperties": false,
+                "properties": [
+                    "status": ["type": "string", "enum": ["open", "completed", "deleted", "all"]],
+                    "list_id": ["type": "string"],
+                    "list_name": ["type": "string"],
+                    "tags": ["type": "array", "items": ["type": "string"]],
+                    "priority": ["type": "array", "items": ["type": "integer", "enum": [0, 1, 3, 5]]],
+                    "due": ["type": "string", "enum": ["today", "upcoming", "overdue", "none", "any"]],
+                    "start_at": ["type": "string"],
+                    "end_at": ["type": "string"],
+                    "search_text": ["type": "string"],
+                    "limit": ["type": "integer", "minimum": 1, "maximum": 200]
+                ]
+            ]
+        case (TodoManagerGearDescriptor.gearID, "todo.update"):
+            return [
+                "type": "object",
+                "required": ["task_id"],
+                "additionalProperties": false,
+                "properties": [
+                    "task_id": ["type": "string"],
+                    "title": ["type": "string"],
+                    "content": ["type": "string"],
+                    "list_id": ["type": "string"],
+                    "list_name": ["type": "string"],
+                    "tags": ["type": "array", "items": ["type": "string"]],
+                    "priority": ["type": "integer", "enum": [0, 1, 3, 5]],
+                    "status": ["type": "string", "enum": ["open", "completed"]],
+                    "completed": ["type": "boolean"],
+                    "start_at": ["type": "string"],
+                    "due_at": ["type": "string"],
+                    "clear_start": ["type": "boolean"],
+                    "clear_due": ["type": "boolean"],
+                    "timezone": ["type": "string"],
+                    "is_all_day": ["type": "boolean"],
+                    "reminders": ["type": "array", "items": ["type": "object"]],
+                    "repeat_rrule": ["type": "string"],
+                    "checklist_items": ["type": "array", "items": ["type": "string"]]
+                ]
+            ]
+        case (TodoManagerGearDescriptor.gearID, "todo.delete"):
+            return [
+                "type": "object",
+                "required": ["task_id"],
+                "additionalProperties": false,
+                "properties": [
+                    "task_id": ["type": "string"]
                 ]
             ]
         case (MediaLibraryGearDescriptor.gearID, "media.filter"):
@@ -1315,8 +1449,13 @@ enum GeeHostToolRouter {
         }
     }
 
-    private static func stringArg(_ args: [String: Any], _ key: String) -> String? {
-        args[key] as? String
+    private static func stringArg(_ args: [String: Any], _ keys: String...) -> String? {
+        for key in keys {
+            if let value = args[key] as? String {
+                return value
+            }
+        }
+        return nil
     }
 
     private static func boolArg(_ args: [String: Any], _ key: String) -> Bool? {

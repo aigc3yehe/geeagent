@@ -95,10 +95,6 @@
               "maximum": 4,
               "description": "Gear-level fan-out for image and video. Gee creates one Xenodia task per requested result and returns one grouped batch result."
             },
-            "async": {
-              "type": "boolean",
-              "description": "Image task switch. Video generation is task-only and always polls Xenodia task retrieval."
-            },
             "response_format": {
               "type": "string",
               "enum": [
@@ -294,7 +290,7 @@
             "enabled": true,
             "risk": "high",
             "requires_approval": false,
-            "skill_hint": "Use only when the current user message explicitly asks Codex to create a media generation task. Preserve the user's prompt, map image-2 to gpt-image-2, use batch_count 1-4 for multi-result image or video requests, prefer async=true for images, and report the returned task_id or batch_id/artifact references instead of claiming the media is finished before Gee returns it."
+            "skill_hint": "Use only when the current user message explicitly asks Codex to create a media generation task. Preserve the user's prompt, map image-2 to gpt-image-2, use batch_count 1-4 for multi-result image or video requests, and report the returned task_id or batch_id/artifact references instead of claiming the media is finished before Gee returns it."
           }
         }
       },

@@ -1,0 +1,301 @@
+{
+  "schema": "gee.gear.v1",
+  "id": "todo.manager",
+  "name": "Todo Manager",
+  "description": "Local-first task manager for quick capture, lists, tags, priorities, reminders, and structured agent control.",
+  "developer": "Gee",
+  "version": "0.1.0",
+  "category": "Productivity",
+  "kind": "atmosphere",
+  "display_mode": "full_canvas",
+  "entry": {
+    "type": "native",
+    "native_id": "todo.manager"
+  },
+  "permissions": [
+    "filesystem.read.gear_storage",
+    "filesystem.write.gear_storage",
+    "notification.schedule"
+  ],
+  "dependencies": {
+    "install_strategy": "on_open",
+    "items": []
+  },
+  "agent": {
+    "enabled": true,
+    "capabilities": [
+      {
+        "id": "todo.create",
+        "title": "Create todo",
+        "description": "Create a local todo item with list, tags, priority, dates, checklist items, reminders, and optional repeat metadata.",
+        "examples": [
+          "Create a todo to review the release notes tomorrow",
+          "Add a high-priority todo tagged work",
+          "Create a checklist todo in Inbox"
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": ["title"],
+          "additionalProperties": false,
+          "properties": {
+            "title": {
+              "type": "string",
+              "description": "Todo title."
+            },
+            "content": {
+              "type": "string",
+              "description": "Long-form note or task body."
+            },
+            "list_id": {
+              "type": "string"
+            },
+            "list_name": {
+              "type": "string",
+              "description": "Existing list name. Defaults to Inbox when omitted."
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "priority": {
+              "type": "integer",
+              "enum": [0, 1, 3, 5],
+              "description": "TickTick-style priority: none 0, low 1, medium 3, high 5."
+            },
+            "start_at": {
+              "type": "string",
+              "description": "ISO-8601 start date/time."
+            },
+            "due_at": {
+              "type": "string",
+              "description": "ISO-8601 due date/time."
+            },
+            "timezone": {
+              "type": "string"
+            },
+            "is_all_day": {
+              "type": "boolean"
+            },
+            "reminders": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              },
+              "description": "Reminder objects with trigger_at or minutes_before_due."
+            },
+            "repeat_rrule": {
+              "type": "string",
+              "description": "Stored RRULE metadata, for example RRULE:FREQ=DAILY;INTERVAL=1."
+            },
+            "checklist_items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "side_effect": "write_gear_data",
+        "permissions": ["gear_data.write", "notification.schedule"],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "medium",
+            "requires_approval": false,
+            "skill_hint": "Use when Codex needs to create a local GeeAgent Todo Manager task from an explicit user request. Pass structured dates, tags, and priority when the user supplies them; report reminder authorization warnings exactly as Gee returns them."
+          }
+        }
+      },
+      {
+        "id": "todo.query",
+        "title": "Query todos",
+        "description": "Read local todos by status, list, tags, priority, date range, due bucket, or search text.",
+        "examples": [
+          "Show today's open todos",
+          "Find high-priority work todos",
+          "List completed todos from this week"
+        ],
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": ["open", "completed", "deleted", "all"]
+            },
+            "list_id": {
+              "type": "string"
+            },
+            "list_name": {
+              "type": "string"
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "priority": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "enum": [0, 1, 3, 5]
+              }
+            },
+            "due": {
+              "type": "string",
+              "enum": ["today", "upcoming", "overdue", "none", "any"]
+            },
+            "start_at": {
+              "type": "string"
+            },
+            "end_at": {
+              "type": "string"
+            },
+            "search_text": {
+              "type": "string"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            }
+          }
+        },
+        "side_effect": "read_only",
+        "permissions": ["gear_data.read"],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "low",
+            "requires_approval": false,
+            "skill_hint": "Use when Codex needs to query GeeAgent Todo Manager without changing task state."
+          }
+        }
+      },
+      {
+        "id": "todo.update",
+        "title": "Update todo",
+        "description": "Change a local todo's title, notes, list, tags, priority, dates, reminders, checklist items, or completion state.",
+        "examples": [
+          "Mark this todo completed",
+          "Move the todo to Work and make it high priority",
+          "Change the due date to Friday"
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": ["task_id"],
+          "additionalProperties": false,
+          "properties": {
+            "task_id": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "content": {
+              "type": "string"
+            },
+            "list_id": {
+              "type": "string"
+            },
+            "list_name": {
+              "type": "string"
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "priority": {
+              "type": "integer",
+              "enum": [0, 1, 3, 5]
+            },
+            "status": {
+              "type": "string",
+              "enum": ["open", "completed"]
+            },
+            "completed": {
+              "type": "boolean"
+            },
+            "start_at": {
+              "type": "string"
+            },
+            "due_at": {
+              "type": "string"
+            },
+            "clear_start": {
+              "type": "boolean"
+            },
+            "clear_due": {
+              "type": "boolean"
+            },
+            "timezone": {
+              "type": "string"
+            },
+            "is_all_day": {
+              "type": "boolean"
+            },
+            "reminders": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "repeat_rrule": {
+              "type": "string"
+            },
+            "checklist_items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "side_effect": "write_gear_data",
+        "permissions": ["gear_data.write", "notification.schedule"],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "medium",
+            "requires_approval": false,
+            "skill_hint": "Use when Codex needs to change a specific GeeAgent Todo Manager task identified by task_id. Return the structured task result and warnings."
+          }
+        }
+      },
+      {
+        "id": "todo.delete",
+        "title": "Delete todo",
+        "description": "Soft-delete a local todo item and cancel its scheduled notifications.",
+        "examples": [
+          "Delete this todo",
+          "Remove the task from Todo Manager"
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": ["task_id"],
+          "additionalProperties": false,
+          "properties": {
+            "task_id": {
+              "type": "string"
+            }
+          }
+        },
+        "side_effect": "write_gear_data",
+        "permissions": ["gear_data.write", "notification.schedule"],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "high",
+            "requires_approval": false,
+            "skill_hint": "Use only when the current user explicitly asks to delete a specific GeeAgent Todo Manager task. The capability soft-deletes and returns proof; do not claim permanent removal."
+          }
+        }
+      }
+    ]
+  }
+}

@@ -8,6 +8,8 @@ Current implementation status:
 - Manifest and package metadata live in this folder.
 - Native Swift implementation is currently compiled from
   `Sources/GeeAgentMac/Modules/MediaLibrary/`.
+- Video hover/live previews keep thumbnails visible until the player has a
+  displayable frame, then loop through `AVPlayerLooper` for smoother playback.
 - Video items expose an `Edit Video` action from the tile context menu and the
   inspector, opening the media library's internal native video editor window.
 - The target package standard is to move the gear implementation, assets, setup

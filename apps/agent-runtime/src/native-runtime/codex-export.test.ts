@@ -123,6 +123,7 @@ describe("Codex capability export projection", () => {
         requires_approval?: boolean;
         side_effect?: string;
         input_schema?: Record<string, unknown>;
+        output_schema?: Record<string, unknown>;
         permissions?: string[];
       }>;
     };
@@ -140,7 +141,12 @@ describe("Codex capability export projection", () => {
     assert.equal(refs.has("telegram.bridge/telegram_bridge.status"), true);
     assert.equal(refs.has("telegram.bridge/telegram_push.list_channels"), true);
     assert.equal(refs.has("telegram.bridge/telegram_push.send_message"), true);
+    assert.equal(refs.has("telegram.bridge/telegram_push.send_file"), true);
     assert.equal(refs.has("telegram.bridge/telegram_push.upsert_channel"), false);
+    assert.equal(refs.has("todo.manager/todo.create"), true);
+    assert.equal(refs.has("todo.manager/todo.query"), true);
+    assert.equal(refs.has("todo.manager/todo.update"), true);
+    assert.equal(refs.has("todo.manager/todo.delete"), true);
 
     const focusFolder = result.capabilities.find(
       (capability) => capability.capability_ref === "media.library/media.focus_folder",
@@ -172,6 +178,28 @@ describe("Codex capability export projection", () => {
     assert.equal(bookmarkSave?.side_effect, "write_gear_data");
     assert.deepEqual(bookmarkSave?.input_schema?.required, ["content"]);
     assert.deepEqual(bookmarkSave?.permissions, ["gear_data.write", "network.metadata"]);
+
+    const todoCreate = result.capabilities.find(
+      (capability) => capability.capability_ref === "todo.manager/todo.create",
+    );
+    assert.equal(todoCreate?.risk, "medium");
+    assert.equal(todoCreate?.requires_approval, false);
+    assert.equal(todoCreate?.side_effect, "write_gear_data");
+    assert.deepEqual(todoCreate?.input_schema?.required, ["title"]);
+    assert.deepEqual(todoCreate?.permissions, ["gear_data.write", "notification.schedule"]);
+
+    const todoQuery = result.capabilities.find(
+      (capability) => capability.capability_ref === "todo.manager/todo.query",
+    );
+    assert.equal(todoQuery?.risk, "low");
+    assert.equal(todoQuery?.side_effect, "read_only");
+    assert.deepEqual(todoQuery?.permissions, ["gear_data.read"]);
+
+    const todoDelete = result.capabilities.find(
+      (capability) => capability.capability_ref === "todo.manager/todo.delete",
+    );
+    assert.equal(todoDelete?.risk, "high");
+    assert.deepEqual(todoDelete?.input_schema?.required, ["task_id"]);
 
     const createTask = result.capabilities.find(
       (capability) => capability.capability_ref === "media.generator/media_generator.create_task",
@@ -241,6 +269,30 @@ describe("Codex capability export projection", () => {
       "idempotency_key",
     ]);
     assert.deepEqual(telegramPush?.permissions, [
+      "network.telegram",
+      "secret.telegram.read",
+      "gear_data.read",
+      "gear_data.write",
+    ]);
+
+    const telegramPushFile = result.capabilities.find(
+      (capability) => capability.capability_ref === "telegram.bridge/telegram_push.send_file",
+    );
+    assert.equal(telegramPushFile?.risk, "high");
+    assert.equal(telegramPushFile?.requires_approval, false);
+    assert.equal(telegramPushFile?.side_effect, "network.telegram.send_file");
+    assert.deepEqual(telegramPushFile?.input_schema?.required, [
+      "channel_id",
+      "file_path",
+      "idempotency_key",
+    ]);
+    assert.deepEqual(telegramPushFile?.output_schema?.required, [
+      "status",
+      "fallback_attempted",
+      "error",
+    ]);
+    assert.deepEqual(telegramPushFile?.permissions, [
+      "filesystem.read.user_selected",
       "network.telegram",
       "secret.telegram.read",
       "gear_data.read",

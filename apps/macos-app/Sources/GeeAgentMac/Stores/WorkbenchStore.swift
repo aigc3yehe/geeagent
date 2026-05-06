@@ -762,48 +762,15 @@ final class WorkbenchStore {
         }
         scheduledHostActionBatches.insert(batchID)
 
-        let runtimeClient = self.runtimeClient
         let currentSnapshot = snapshot
-        Task { [weak self, runtimeClient, intents, currentSnapshot] in
-            var completions: [WorkbenchHostActionCompletion] = []
-            for intent in intents {
-                let invocation = ToolInvocation(
-                    toolID: intent.toolID,
-                    arguments: intent.arguments
-                )
-                do {
-                    let rawOutcome = try await runtimeClient.invokeTool(invocation)
-                    let outcome = await GeeHostToolRouter.resolveCompletedIntent(rawOutcome) ?? rawOutcome
-                    completions.append(Self.hostActionCompletion(for: intent, outcome: outcome))
-                    await MainActor.run {
-                        guard let self else { return }
-                        self.applyToolOutcome(outcome, from: invocation)
-                    }
-                } catch {
-                    completions.append(
-                        WorkbenchHostActionCompletion(
-                            hostActionID: intent.id,
-                            toolID: intent.toolID,
-                            status: "failed",
-                            summary: nil,
-                            error: error.localizedDescription,
-                            resultJSON: nil
-                        )
-                    )
-                    await MainActor.run {
-                        self?.lastErrorMessage = error.localizedDescription
-                    }
-                }
-            }
-
-            guard !completions.isEmpty else { return }
+        Task { [weak self, intents, currentSnapshot] in
             do {
-                let nextSnapshot = try await runtimeClient.completeHostActionTurn(
-                    completions,
+                guard let self else { return }
+                let nextSnapshot = try await self.completeHostActionIntents(
+                    intents,
                     in: currentSnapshot
                 )
                 await MainActor.run {
-                    guard let self else { return }
                     self.snapshot = nextSnapshot
                     self.quickInputLatestResult = nextSnapshot.lastOutcome
                     self.applyHostActionIntents(nextSnapshot.hostActionIntents)
@@ -814,6 +781,69 @@ final class WorkbenchStore {
                 }
             }
         }
+    }
+
+    private func completeHostActionIntents(
+        _ initialIntents: [WorkbenchHostActionIntent],
+        in initialSnapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        var workingSnapshot = initialSnapshot
+        var intents = initialIntents
+        var seenBatchIDs: Set<String> = []
+
+        while !intents.isEmpty {
+            let batchID = intents.map(\.id).joined(separator: "|")
+            guard !seenBatchIDs.contains(batchID) else {
+                throw RuntimeProcessError.runtimeInvocation(
+                    "The runtime returned the same native Gear action batch more than once; refusing to repeat side effects."
+                )
+            }
+            seenBatchIDs.insert(batchID)
+
+            let completions = await hostActionCompletions(for: intents)
+            guard !completions.isEmpty else {
+                return workingSnapshot
+            }
+
+            workingSnapshot = try await runtimeClient.completeHostActionTurn(
+                completions,
+                in: workingSnapshot
+            )
+            intents = workingSnapshot.hostActionIntents
+        }
+
+        return workingSnapshot
+    }
+
+    private func hostActionCompletions(
+        for intents: [WorkbenchHostActionIntent]
+    ) async -> [WorkbenchHostActionCompletion] {
+        var completions: [WorkbenchHostActionCompletion] = []
+        for intent in intents {
+            let invocation = ToolInvocation(
+                toolID: intent.toolID,
+                arguments: intent.arguments
+            )
+            do {
+                let rawOutcome = try await runtimeClient.invokeTool(invocation)
+                let outcome = await GeeHostToolRouter.resolveCompletedIntent(rawOutcome) ?? rawOutcome
+                completions.append(Self.hostActionCompletion(for: intent, outcome: outcome))
+                applyToolOutcome(outcome, from: invocation)
+            } catch {
+                completions.append(
+                    WorkbenchHostActionCompletion(
+                        hostActionID: intent.id,
+                        toolID: intent.toolID,
+                        status: "failed",
+                        summary: nil,
+                        error: error.localizedDescription,
+                        resultJSON: nil
+                    )
+                )
+                lastErrorMessage = error.localizedDescription
+            }
+        }
+        return completions
     }
 
     private func applyExternalInvocations(_ invocations: [WorkbenchExternalInvocation]) {
@@ -1472,13 +1502,43 @@ final class WorkbenchStore {
 
     func submitTelegramChannelMessage(_ payload: TelegramChannelMessagePayload) async throws -> String? {
         let currentSnapshot = snapshot
-        let nextSnapshot = try await runtimeClient.submitChannelMessage(payload, in: currentSnapshot)
+        var nextSnapshot = try await runtimeClient.submitChannelMessage(payload, in: currentSnapshot)
+        if !nextSnapshot.hostActionIntents.isEmpty {
+            nextSnapshot = try await completeHostActionIntents(
+                nextSnapshot.hostActionIntents,
+                in: nextSnapshot
+            )
+        }
         snapshot = nextSnapshot
-        return nextSnapshot.conversations
+        return telegramReplyText(for: payload, in: nextSnapshot)
+    }
+
+    private func telegramReplyText(
+        for payload: TelegramChannelMessagePayload,
+        in snapshot: WorkbenchSnapshot
+    ) -> String? {
+        let messages = snapshot.conversations
             .first(where: \.isActive)?
-            .visibleMessages
-            .last { $0.role == .assistant && $0.kind == .chat && !$0.isSeedPlaceholder }?
-            .content
+            .visibleMessages ?? []
+        let userMessageIndex = messages.lastIndex { message in
+            message.role == .user &&
+                message.content == payload.message.text
+        }
+        if let userMessageIndex {
+            let reply = messages[messages.index(after: userMessageIndex)...]
+                .last { message in
+                    message.role == .assistant &&
+                        message.kind == .chat &&
+                        !message.isSeedPlaceholder &&
+                        !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }?
+                .content
+            if let reply {
+                return reply
+            }
+        }
+        let quickReply = snapshot.quickReply.trimmingCharacters(in: .whitespacesAndNewlines)
+        return quickReply.isEmpty ? nil : quickReply
     }
 
     var canCreateConversation: Bool {

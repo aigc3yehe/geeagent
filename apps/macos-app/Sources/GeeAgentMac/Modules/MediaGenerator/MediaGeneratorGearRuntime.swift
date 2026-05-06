@@ -802,12 +802,11 @@ struct XenodiaImageGenerationClient {
         modelID: MediaGeneratorModelID,
         prompt: String,
         imageCount: Int,
-        useAsync: Bool,
         aspectRatio: MediaGeneratorAspectRatio,
         resolution: MediaGeneratorResolution,
         outputFormat: MediaGeneratorOutputFormat,
         references: [MediaGeneratorReference]
-    ) async throws -> (providerTaskID: String?, resultURL: String?) {
+    ) async throws -> String {
         let maxReferenceCount = MediaGeneratorGearStore.maxReferenceCount(for: modelID)
         let remoteURLs = references.compactMap(\.url)
         let localURLs = references.compactMap { reference -> URL? in
@@ -820,7 +819,6 @@ struct XenodiaImageGenerationClient {
             modelID: modelID,
             prompt: prompt,
             imageCount: imageCount,
-            useAsync: useAsync,
             aspectRatio: aspectRatio,
             resolution: resolution,
             outputFormat: outputFormat
@@ -837,7 +835,7 @@ struct XenodiaImageGenerationClient {
                 maxReferenceCount: maxReferenceCount
             )
         }
-        return try parseCreationResponse(responseData)
+        return try Self.parseCreationTaskID(responseData)
     }
 
     func createVideoTask(
@@ -847,7 +845,7 @@ struct XenodiaImageGenerationClient {
         resolution: MediaGeneratorResolution,
         references: [MediaGeneratorReference],
         parameters: [String: String]
-    ) async throws -> (providerTaskID: String?, resultURL: String?) {
+    ) async throws -> String {
         let fields = try videoRequestFields(
             modelID: modelID,
             prompt: prompt,
@@ -857,7 +855,7 @@ struct XenodiaImageGenerationClient {
             parameters: parameters
         )
         let responseData = try await postVideoJSON(fields: fields)
-        return try parseCreationResponse(responseData)
+        return try Self.parseCreationTaskID(responseData)
     }
 
     func uploadReferenceAsset(fileURL: URL) async throws -> String {
@@ -919,7 +917,6 @@ struct XenodiaImageGenerationClient {
         modelID: MediaGeneratorModelID,
         prompt: String,
         imageCount: Int,
-        useAsync: Bool,
         aspectRatio: MediaGeneratorAspectRatio,
         resolution: MediaGeneratorResolution,
         outputFormat: MediaGeneratorOutputFormat
@@ -928,7 +925,6 @@ struct XenodiaImageGenerationClient {
             "model": modelID.rawValue,
             "prompt": prompt,
             "n": imageCount,
-            "async": useAsync,
             "response_format": "url"
         ]
         switch modelID {
@@ -1134,7 +1130,7 @@ struct XenodiaImageGenerationClient {
         return data
     }
 
-    private func parseCreationResponse(_ data: Data) throws -> (providerTaskID: String?, resultURL: String?) {
+    static func parseCreationTaskID(_ data: Data) throws -> String {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw MediaGeneratorError.invalidResponse("Xenodia creation response was not a JSON object.")
         }
@@ -1142,8 +1138,12 @@ struct XenodiaImageGenerationClient {
             ?? object["taskId"] as? String
             ?? ((object["data"] as? [String: Any])?["task_id"] as? String)
             ?? ((object["data"] as? [String: Any])?["taskId"] as? String)
-        let resultURL = Self.firstResultURL(in: object)
-        return (providerTaskID, resultURL)
+        guard let providerTaskID,
+              !providerTaskID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            throw MediaGeneratorError.invalidResponse("Xenodia creation response did not include a task_id.")
+        }
+        return providerTaskID
     }
 
     private func validateHTTP(response: URLResponse, data: Data) throws {
@@ -1281,7 +1281,6 @@ final class MediaGeneratorGearStore: ObservableObject {
     @Published var generateAudio = false
     @Published var webSearch = false
     @Published var nsfwChecker = false
-    @Published var useAsync = true
     @Published var references: [MediaGeneratorReference] = []
     @Published var taskFilter: MediaGeneratorTaskFilter = .all
     @Published var modelFilter: MediaGeneratorModelID?
@@ -1593,7 +1592,6 @@ final class MediaGeneratorGearStore: ObservableObject {
         generateAudio = Bool(task.parameters["generate_audio"] ?? "false") ?? false
         webSearch = Bool(task.parameters["web_search"] ?? "false") ?? false
         nsfwChecker = Bool(task.parameters["nsfw_checker"] ?? "false") ?? false
-        useAsync = Bool(task.parameters["async"] ?? "true") ?? true
         normalizeSelectionForCurrentModel()
         selectedTaskID = task.id
         statusMessage = "Applied task prompt and parameters."
@@ -1748,7 +1746,6 @@ final class MediaGeneratorGearStore: ObservableObject {
                 modelID: self?.selectedModel ?? .nanoBananaPro,
                 prompt: prompt,
                 batchCount: self?.imageCount ?? 1,
-                useAsync: self?.useAsync ?? true,
                 aspectRatio: self?.aspectRatio ?? .square,
                 resolution: self?.resolution ?? .oneK,
                 outputFormat: self?.outputFormat ?? .png,
@@ -1824,7 +1821,6 @@ final class MediaGeneratorGearStore: ObservableObject {
             for: model
         ) ?? Self.defaultResolution(for: model, aspectRatio: aspectRatio)
         let outputFormat = Self.outputFormatArg(args["output_format"]) ?? .png
-        let useAsync = Self.boolArg(args["async"], defaultValue: true)
         let videoOptions = Self.videoOptionsArg(args)
         let providerImageCount: Int
         let batchCount: Int
@@ -1868,7 +1864,6 @@ final class MediaGeneratorGearStore: ObservableObject {
             modelID: model,
             prompt: prompt,
             batchCount: batchCount,
-            useAsync: useAsync,
             aspectRatio: aspectRatio,
             resolution: resolution,
             outputFormat: outputFormat,
@@ -1992,7 +1987,6 @@ final class MediaGeneratorGearStore: ObservableObject {
         modelID: MediaGeneratorModelID,
         prompt: String,
         batchCount: Int,
-        useAsync: Bool,
         aspectRatio: MediaGeneratorAspectRatio,
         resolution: MediaGeneratorResolution,
         outputFormat: MediaGeneratorOutputFormat,
@@ -2016,7 +2010,6 @@ final class MediaGeneratorGearStore: ObservableObject {
                 modelID: modelID,
                 prompt: prompt,
                 providerImageCount: 1,
-                useAsync: useAsync,
                 aspectRatio: aspectRatio,
                 resolution: resolution,
                 outputFormat: outputFormat,
@@ -2066,7 +2059,6 @@ final class MediaGeneratorGearStore: ObservableObject {
         modelID: MediaGeneratorModelID,
         prompt: String,
         providerImageCount: Int,
-        useAsync: Bool,
         aspectRatio: MediaGeneratorAspectRatio,
         resolution: MediaGeneratorResolution,
         outputFormat: MediaGeneratorOutputFormat,
@@ -2114,7 +2106,6 @@ final class MediaGeneratorGearStore: ObservableObject {
                 modelID: modelID,
                 imageCount: providerImageCount,
                 batchCount: batchCount,
-                useAsync: useAsync,
                 aspectRatio: aspectRatio,
                 resolution: resolution,
                 outputFormat: outputFormat,
@@ -2153,21 +2144,20 @@ final class MediaGeneratorGearStore: ObservableObject {
                 ?? Self.defaultAspectRatio(for: providerTask.modelID)
             let resolution = providerTask.parameters["resolution"].flatMap(MediaGeneratorResolution.init(rawValue:))
                 ?? Self.defaultResolution(for: providerTask.modelID, aspectRatio: aspectRatio)
-            let created: (providerTaskID: String?, resultURL: String?)
+            let providerTaskID: String
             switch providerTask.category {
             case .image:
-                created = try await client.createImageTask(
+                providerTaskID = try await client.createImageTask(
                     modelID: providerTask.modelID,
                     prompt: providerTask.prompt,
                     imageCount: Int(providerTask.parameters["n"] ?? "1") ?? 1,
-                    useAsync: Bool(providerTask.parameters["async"] ?? "true") ?? true,
                     aspectRatio: aspectRatio,
                     resolution: resolution,
                     outputFormat: providerTask.parameters["output_format"].flatMap(MediaGeneratorOutputFormat.init(rawValue:)) ?? .png,
                     references: providerTask.references
                 )
             case .video:
-                created = try await client.createVideoTask(
+                providerTaskID = try await client.createVideoTask(
                     modelID: providerTask.modelID,
                     prompt: providerTask.prompt,
                     aspectRatio: aspectRatio,
@@ -2181,24 +2171,17 @@ final class MediaGeneratorGearStore: ObservableObject {
             guard var task = tasks.first(where: { $0.id == taskID }) else {
                 return nil
             }
-            task.providerTaskID = created.providerTaskID
-            task.resultURL = created.resultURL
-            task.status = created.resultURL == nil ? .running : .completed
+            task.providerTaskID = providerTaskID
+            task.resultURL = nil
+            task.status = .running
             task.updatedAt = Date()
-            if task.status == .completed {
-                task = await cacheGeneratedResultIfPossible(task)
-            }
             guard tasks.contains(where: { $0.id == taskID }) else {
                 return nil
             }
             update(task)
-            statusMessage = task.status == .completed
-                ? (task.isLocallyCached ? "Generated and cached \(task.category.rawValue)." : "Generated \(task.category.rawValue).")
-                : "Task created. Polling Xenodia..."
-            if let providerTaskID = task.providerTaskID, task.resultURL == nil {
-                Task { [weak self] in
-                    await self?.poll(taskID: task.id, providerTaskID: providerTaskID)
-                }
+            statusMessage = "Task created. Polling Xenodia..."
+            Task { [weak self] in
+                await self?.poll(taskID: task.id, providerTaskID: providerTaskID)
             }
             return task
         } catch {
@@ -2380,7 +2363,6 @@ final class MediaGeneratorGearStore: ObservableObject {
         modelID: MediaGeneratorModelID,
         imageCount: Int,
         batchCount: Int,
-        useAsync: Bool,
         aspectRatio: MediaGeneratorAspectRatio,
         resolution: MediaGeneratorResolution,
         outputFormat: MediaGeneratorOutputFormat,
@@ -2393,14 +2375,12 @@ final class MediaGeneratorGearStore: ObservableObject {
         case .nanoBananaPro:
             parameters["response_format"] = "url"
             parameters["n"] = "\(imageCount)"
-            parameters["async"] = "\(useAsync)"
             parameters["aspect_ratio"] = aspectRatio.rawValue
             parameters["resolution"] = resolution.rawValue
             parameters["output_format"] = outputFormat.rawValue
         case .gptImage2:
             parameters["response_format"] = "url"
             parameters["n"] = "\(imageCount)"
-            parameters["async"] = "\(useAsync)"
             parameters["aspect_ratio"] = aspectRatio.rawValue
             parameters["resolution"] = resolution.rawValue
         case .veo31, .veo31Fast, .veo31Lite:
@@ -2737,6 +2717,29 @@ final class MediaGeneratorGearStore: ObservableObject {
         }
     }
 
+    private static func supportedModelResolutions(for modelID: MediaGeneratorModelID) -> [MediaGeneratorResolution] {
+        var seen = Set<MediaGeneratorResolution>()
+        var output: [MediaGeneratorResolution] = []
+        for aspectRatio in supportedAspectRatios(for: modelID) {
+            for resolution in supportedResolutions(for: modelID, aspectRatio: aspectRatio) where !seen.contains(resolution) {
+                seen.insert(resolution)
+                output.append(resolution)
+            }
+        }
+        return output
+    }
+
+    private static func supportedResolutionsByAspectRatioPayload(for modelID: MediaGeneratorModelID) -> [String: [String]] {
+        Dictionary(
+            uniqueKeysWithValues: supportedAspectRatios(for: modelID).map { aspectRatio in
+                (
+                    aspectRatio.rawValue,
+                    supportedResolutions(for: modelID, aspectRatio: aspectRatio).map(\.rawValue)
+                )
+            }
+        )
+    }
+
     nonisolated static func maxReferenceCount(for modelID: MediaGeneratorModelID) -> Int {
         switch modelID {
         case .nanoBananaPro:
@@ -2753,9 +2756,9 @@ final class MediaGeneratorGearStore: ObservableObject {
     private static func supportedFields(for modelID: MediaGeneratorModelID) -> [String] {
         switch modelID {
         case .nanoBananaPro:
-            ["model", "prompt", "n", "batch_count", "async", "response_format", "aspect_ratio", "resolution", "output_format", "image_input"]
+            ["model", "prompt", "n", "batch_count", "response_format", "aspect_ratio", "resolution", "output_format", "image_input"]
         case .gptImage2:
-            ["model", "prompt", "n", "batch_count", "async", "response_format", "aspect_ratio", "resolution", "image_input"]
+            ["model", "prompt", "n", "batch_count", "response_format", "aspect_ratio", "resolution", "image_input"]
         case .veo31, .veo31Fast, .veo31Lite:
             [
                 "model", "prompt", "batch_count", "generation_type", "aspect_ratio", "resolution",
@@ -2800,10 +2803,8 @@ final class MediaGeneratorGearStore: ObservableObject {
     private static func supportedValuesPayload(for modelID: MediaGeneratorModelID) -> [String: Any] {
         var payload: [String: Any] = [
             "aspect_ratio": supportedAspectRatios(for: modelID).map(\.rawValue),
-            "resolution": supportedResolutions(
-                for: modelID,
-                aspectRatio: defaultAspectRatio(for: modelID)
-            ).map(\.rawValue)
+            "resolution": supportedModelResolutions(for: modelID).map(\.rawValue),
+            "resolution_by_aspect_ratio": supportedResolutionsByAspectRatioPayload(for: modelID)
         ]
         if modelID == .nanoBananaPro {
             payload["output_format"] = MediaGeneratorOutputFormat.allCases.map(\.rawValue)
@@ -2827,14 +2828,12 @@ final class MediaGeneratorGearStore: ObservableObject {
         case .nanoBananaPro:
             payload["n"] = 1
             payload["batch_count"] = 1
-            payload["async"] = true
             payload["response_format"] = "url"
             payload["resolution"] = MediaGeneratorResolution.oneK.rawValue
             payload["output_format"] = MediaGeneratorOutputFormat.png.rawValue
         case .gptImage2:
             payload["n"] = 1
             payload["batch_count"] = 1
-            payload["async"] = true
             payload["response_format"] = "url"
             payload["resolution"] = MediaGeneratorResolution.oneK.rawValue
         case .veo31, .veo31Fast, .veo31Lite:

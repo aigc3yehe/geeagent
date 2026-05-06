@@ -55,9 +55,23 @@ const GEAR_CAPABILITY_CONTRACTS: RuntimeCapabilityContract[] = [
     requiredString("message", ["message"]),
     requiredString("idempotency_key", ["idempotency_key", "idempotencyKey"]),
   ]),
+  gearContract("telegram.bridge", "telegram_push.send_file", [
+    requiredString("channel_id", ["channel_id", "channelId"]),
+    requiredString("file_path", ["file_path", "filePath", "path"]),
+    requiredString("idempotency_key", ["idempotency_key", "idempotencyKey"]),
+  ]),
   gearContract("telegram.bridge", "telegram_direct.send_file", [
     requiredString("file_path", ["file_path", "filePath", "path"]),
     requiredString("idempotency_key", ["idempotency_key", "idempotencyKey"]),
+  ]),
+  gearContract("todo.manager", "todo.create", [
+    requiredString("title", ["title", "quick_add_text", "quickAddText"]),
+  ]),
+  gearContract("todo.manager", "todo.update", [
+    requiredString("task_id", ["task_id", "taskId", "id"]),
+  ]),
+  gearContract("todo.manager", "todo.delete", [
+    requiredString("task_id", ["task_id", "taskId", "id"]),
   ]),
   gearContract("smartyt.media", "smartyt.download", [requiredString("url", ["url"])]),
   gearContract("smartyt.media", "smartyt.download_now", [requiredString("url", ["url"])]),

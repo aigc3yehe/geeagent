@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 import { describe, it } from "node:test";
 
+import { loadXenodiaGatewayBackend } from "./chat-runtime.js";
 import { handleNativeRuntimeCommand } from "./native-runtime/commands.js";
 import { buildContextProjection } from "./native-runtime/context/projector.js";
 import { prepareHostActionCompletionsForModel } from "./native-runtime/context/host-action-results.js";
@@ -1155,6 +1156,81 @@ describe("native runtime command modules", () => {
     assert.equal(reloaded.routeClasses[0].model, "gpt-5.4");
   });
 
+  it("accepts the Swift snake_case chat routing payload and applies custom model names", async () => {
+    const configDir = await tempConfigDir();
+    const previousModelOverride = process.env.GEEAGENT_XENODIA_MODEL;
+    try {
+      delete process.env.GEEAGENT_XENODIA_MODEL;
+      await writeFile(
+        join(configDir, "chat-runtime-secrets.toml"),
+        `
+version = 1
+
+[providers.xenodia]
+api_key = "saved-xenodia-key"
+`,
+        "utf8",
+      );
+
+      const settingsRaw = await handleNativeRuntimeCommand(
+        "get-chat-routing-settings",
+        [],
+        { configDir },
+      );
+      const settings = JSON.parse(settingsRaw);
+      const customModel = "qwen/qwen3.6-plus:free";
+      const nativePayload = {
+        default_route_class: settings.defaultRouteClass,
+        allow_user_overrides: settings.allowUserOverrides,
+        provider_choices: settings.providerChoices,
+        route_classes: settings.routeClasses.map((routeClass: {
+          name: string;
+          provider: string;
+          model: string;
+          reasoningEffort: string;
+        }) => ({
+          name: routeClass.name,
+          provider: routeClass.provider,
+          model: routeClass.name === settings.defaultRouteClass ? customModel : routeClass.model,
+          reasoning_effort: routeClass.reasoningEffort,
+        })),
+        profiles: settings.profiles.map((profile: {
+          name: string;
+          defaultRouteClass: string;
+        }) => ({
+          name: profile.name,
+          default_route_class: profile.defaultRouteClass,
+        })),
+      };
+
+      await handleNativeRuntimeCommand(
+        "save-chat-routing-settings",
+        [JSON.stringify(nativePayload)],
+        { configDir },
+      );
+
+      const reloadedRaw = await handleNativeRuntimeCommand(
+        "get-chat-routing-settings",
+        [],
+        { configDir },
+      );
+      const reloaded = JSON.parse(reloadedRaw);
+      const selected = reloaded.routeClasses.find(
+        (routeClass: { name: string }) => routeClass.name === reloaded.defaultRouteClass,
+      );
+      assert.equal(selected.model, customModel);
+
+      const backend = await loadXenodiaGatewayBackend(configDir);
+      assert.equal(backend.model, customModel);
+    } finally {
+      if (previousModelOverride === undefined) {
+        delete process.env.GEEAGENT_XENODIA_MODEL;
+      } else {
+        process.env.GEEAGENT_XENODIA_MODEL = previousModelOverride;
+      }
+    }
+  });
+
   it("does not replace an unreadable runtime store with defaults", async () => {
     const configDir = await tempConfigDir();
     const storePath = join(configDir, "runtime-store.json");
@@ -1759,6 +1835,8 @@ describe("native runtime command modules", () => {
     assert.equal(requiresGeeGearBridgeFirst("explain image-2 parameters and limits"), false);
     assert.equal(requiresGeeGearBridgeFirst("how do I use image-2 to generate images?"), false);
     assert.equal(requiresGeeGearBridgeFirst("open the media generator"), true);
+    assert.equal(requiresGeeGearBridgeFirst("create a todo to review the launch checklist tomorrow"), true);
+    assert.equal(requiresGeeGearBridgeFirst("explain how reminder emails work"), false);
     assert.equal(
       routeLocalGearIntent("use the generator with image-2, 3:4, 2k, prompt: macaron toy house style"),
       null,
@@ -1784,6 +1862,13 @@ describe("native runtime command modules", () => {
     const generatorSurface = selectRuntimePlanningMode("open the media generator", "gear_first");
     assert.equal(generatorSurface.mode, "light");
     assert.equal(generatorSurface.should_create_run_plan, false);
+
+    const todoCreate = selectRuntimePlanningMode(
+      "create a todo to review the launch checklist tomorrow",
+      "gear_first",
+    );
+    assert.equal(todoCreate.mode, "light");
+    assert.equal(todoCreate.should_create_run_plan, false);
 
     const modelInfo = selectRuntimePlanningMode("explain image-2 parameters and limits", "gear_first");
     assert.equal(modelInfo.mode, "light");
@@ -1888,7 +1973,6 @@ describe("native runtime command modules", () => {
         resolution: "2K",
         response_format: "url",
         n: 1,
-        async: true,
       },
     );
     assert.deepEqual(capabilityFocusArgsForPlan(plan), {

@@ -11,6 +11,7 @@ enum GearHost {
     static let mediaGeneratorWindowID = "media-generator"
     static let appIconForgeWindowID = "app-icon-forge"
     static let telegramBridgeWindowID = "telegram-bridge"
+    static let todoManagerWindowID = "todo-manager"
     static let mediaLibraryWindowDescriptor = GearNativeWindowDescriptor(
         gearID: MediaLibraryGearDescriptor.gearID,
         windowID: mediaLibraryWindowID,
@@ -74,6 +75,13 @@ enum GearHost {
         defaultWidth: 1040,
         defaultHeight: 700
     )
+    static let todoManagerWindowDescriptor = GearNativeWindowDescriptor(
+        gearID: TodoManagerGearDescriptor.gearID,
+        windowID: todoManagerWindowID,
+        title: "Todo Manager",
+        defaultWidth: 1120,
+        defaultHeight: 720
+    )
     static let nativeWindowDescriptors: [GearNativeWindowDescriptor] = [
         mediaLibraryWindowDescriptor,
         hyperframesStudioWindowDescriptor,
@@ -83,7 +91,8 @@ enum GearHost {
         weSpyReaderWindowDescriptor,
         mediaGeneratorWindowDescriptor,
         appIconForgeWindowDescriptor,
-        telegramBridgeWindowDescriptor
+        telegramBridgeWindowDescriptor,
+        todoManagerWindowDescriptor
     ]
 
     private static let manifestFileName = "gear.json"
@@ -190,6 +199,8 @@ enum GearHost {
             return AnyView(AppIconForgeGearModuleView())
         case TelegramBridgeGearDescriptor.gearID:
             return AnyView(TelegramBridgeGearModuleView())
+        case TodoManagerGearDescriptor.gearID:
+            return AnyView(TodoManagerGearModuleView())
         default:
             return nil
         }
@@ -219,6 +230,8 @@ enum GearHost {
             return AnyView(AppIconForgeGearWindow())
         case TelegramBridgeGearDescriptor.gearID:
             return AnyView(TelegramBridgeGearWindow())
+        case TodoManagerGearDescriptor.gearID:
+            return AnyView(TodoManagerGearWindow())
         default:
             return AnyView(GearUnavailableWindowView(title: displayTitle(for: gearID)))
         }
@@ -422,6 +435,9 @@ enum AppIconForgeGearDescriptor {
 enum TelegramBridgeGearDescriptor {
     static let gearID = "telegram.bridge"
 }
+
+// `TodoManagerGearDescriptor` lives with the Todo Manager module because the
+// native store, UI, and tests share the same descriptor.
 
 struct GearWindowRequest: Equatable, Identifiable {
     let id = UUID()
