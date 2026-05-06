@@ -80,6 +80,10 @@ protocol WorkbenchRuntimeClient: Sendable {
         _ prompt: String,
         in snapshot: WorkbenchSnapshot
     ) async throws -> WorkbenchSnapshot
+    func submitChannelMessage(
+        _ payload: TelegramChannelMessagePayload,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot
 
     /// Completes a runtime-routed Gear turn after the native host has executed
     /// the requested actions. The backend uses these structured results to ask
@@ -101,6 +105,40 @@ protocol WorkbenchRuntimeClient: Sendable {
     ) async throws -> WorkbenchSnapshot
 }
 
+struct TelegramChannelMessagePayload: Codable, Hashable, Sendable {
+    struct Message: Codable, Hashable, Sendable {
+        var idempotencyKey: String
+        var telegramUpdateId: Int?
+        var chatId: String
+        var messageId: String
+        var fromUserId: String?
+        var text: String
+        var attachments: [String]
+    }
+
+    struct Security: Codable, Hashable, Sendable {
+        var decision: String
+        var policyId: String
+    }
+
+    struct Projection: Codable, Hashable, Sendable {
+        struct ReplyTarget: Codable, Hashable, Sendable {
+            var chatId: String
+            var messageId: String
+        }
+
+        var surface: String
+        var replyTarget: ReplyTarget
+    }
+
+    var source: String = "telegram.bridge"
+    var role: String = "gee_direct"
+    var channelIdentity: String
+    var message: Message
+    var security: Security
+    var projection: Projection
+}
+
 extension WorkbenchRuntimeClient {
     func loadLiveSnapshot() -> WorkbenchSnapshot {
         loadSnapshot()
@@ -114,6 +152,17 @@ extension WorkbenchRuntimeClient {
         _ = snapshot
         throw RuntimeProcessError.unsupported(
             "This runtime client does not support external Codex invocation completion."
+        )
+    }
+
+    func submitChannelMessage(
+        _ payload: TelegramChannelMessagePayload,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        _ = payload
+        _ = snapshot
+        throw RuntimeProcessError.unsupported(
+            "This runtime client does not support Telegram channel ingress."
         )
     }
 

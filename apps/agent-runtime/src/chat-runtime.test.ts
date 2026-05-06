@@ -240,6 +240,10 @@ api_key = "saved-xenodia-key"
         backend.image_generations_url,
         "https://api.xenodia.xyz/v1/images/generations",
       );
+      assert.equal(
+        backend.video_generations_url,
+        "https://api.xenodia.xyz/v1/videos/generations",
+      );
       assert.equal(backend.task_retrieval_url, "https://api.xenodia.xyz/v1/tasks");
       assert.equal(backend.request_timeout_seconds, 45);
     } finally {

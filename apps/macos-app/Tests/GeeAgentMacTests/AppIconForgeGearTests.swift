@@ -29,38 +29,92 @@ final class AppIconForgeGearTests: XCTestCase {
         XCTAssertEqual(AppIconForgeRenderer.iconSlots.count, 10)
     }
 
-    func testManifestDeclaresNativeCapability() throws {
-        let data = Data("""
-        {
-          "schema": "gee.gear.v1",
-          "id": "app.icon.forge",
-          "name": "App Icon Forge",
-          "description": "Native macOS icon generator.",
-          "developer": "Gee",
-          "version": "0.1.0",
-          "category": "Developer",
-          "kind": "atmosphere",
-          "display_mode": "full_canvas",
-          "entry": { "type": "native", "native_id": "app.icon.forge" },
-          "agent": {
-            "enabled": true,
-            "capabilities": [
-              {
-                "id": "app_icon.generate",
-                "title": "Generate macOS app icons",
-                "description": "Generate a rounded macOS icon package."
-              }
-            ]
-          }
-        }
-        """.utf8)
+    func testRendererCreatesGearCatalogIconPackage() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gear-icon-forge-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let sourceURL = root.appendingPathComponent("source.png")
+        try makeSourceImage(at: sourceURL)
+
+        let result = try AppIconForgeRenderer.exportGearIcon(settings: AppIconForgeGearIconSettings(
+            sourceURL: sourceURL,
+            outputDirectory: root,
+            baseName: "TestGear",
+            contentScale: 0.84,
+            cornerRadiusRatio: 0.18,
+            includesShadow: true
+        ))
+
+        XCTAssertEqual(result.manifestIconPath, "assets/icon.png")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.iconURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.previewURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.metadataURL.path))
+        XCTAssertEqual(result.iconURL.lastPathComponent, "icon.png")
+        XCTAssertEqual(result.iconURL.deletingLastPathComponent().lastPathComponent, "assets")
+        XCTAssertEqual(try pngPixelSize(at: result.iconURL), CGSize(width: 780, height: 580))
+        XCTAssertEqual(result.previewURL.lastPathComponent, "preview-780x580.png")
+
+        let metadata = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: result.metadataURL)) as? [String: Any])
+        XCTAssertEqual(metadata["spec_id"] as? String, AppIconForgeGearIconSpec.id)
+        XCTAssertEqual(metadata["manifest_icon"] as? String, "assets/icon.png")
+        XCTAssertEqual(metadata["canvas_width_px"] as? Int, 780)
+        XCTAssertEqual(metadata["canvas_height_px"] as? Int, 580)
+        XCTAssertEqual(metadata["aspect_ratio"] as? String, "39:29")
+        XCTAssertEqual(metadata["intended_surface"] as? String, "gears_list")
+    }
+
+    func testManifestDeclaresNativeCapabilities() throws {
+        let manifestURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Gears/app.icon.forge/gear.json")
+        let data = try Data(contentsOf: manifestURL)
 
         let manifest = try JSONDecoder().decode(GearManifest.self, from: data)
 
         XCTAssertEqual(manifest.id, AppIconForgeGearDescriptor.gearID)
         XCTAssertEqual(manifest.entry.nativeID, AppIconForgeGearDescriptor.gearID)
         XCTAssertEqual(manifest.agent?.enabled, true)
-        XCTAssertEqual(manifest.agent?.capabilities.map(\.id), ["app_icon.generate"])
+        XCTAssertEqual(manifest.agent?.capabilities.map(\.id), [
+            "app_icon.generate",
+            "gear_icon.generate"
+        ])
+    }
+
+    func testGearsCatalogPrefersExistingManifestIconOverCover() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gear-catalog-icon-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let iconURL = root.appendingPathComponent("icon.png")
+        let coverURL = root.appendingPathComponent("cover.png")
+        try makeSourceImage(at: iconURL)
+
+        var app = InstalledAppRecord(
+            id: "demo.gear",
+            name: "Demo Gear",
+            categoryLabel: "Developer",
+            versionLabel: "0.1.0",
+            healthLabel: "Ready",
+            installState: .installed,
+            summary: "Demo",
+            displayMode: .fullCanvas,
+            coverURL: coverURL,
+            iconURL: iconURL,
+            isGearPackage: true
+        )
+
+        XCTAssertEqual(GearCatalogVisual.primary(for: app).kind, .icon)
+        XCTAssertEqual(GearCatalogVisual.primary(for: app).url, iconURL)
+        XCTAssertEqual(GearCatalogVisual.primary(for: app).frameSize, CGSize(width: 78, height: 58))
+
+        app.iconURL = root.appendingPathComponent("missing.png")
+        XCTAssertEqual(GearCatalogVisual.primary(for: app).kind, .cover)
+        XCTAssertEqual(GearCatalogVisual.primary(for: app).url, coverURL)
     }
 
     private func makeSourceImage(at url: URL) throws {
@@ -81,5 +135,11 @@ final class AppIconForgeGearTests: XCTestCase {
             return
         }
         try png.write(to: url)
+    }
+
+    private func pngPixelSize(at url: URL) throws -> CGSize {
+        let data = try Data(contentsOf: url)
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: data))
+        return CGSize(width: bitmap.pixelsWide, height: bitmap.pixelsHigh)
     }
 }

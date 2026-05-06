@@ -35,9 +35,25 @@ struct AppIconForgeGearWindow: View {
                     Text("App Icon Forge")
                         .font(.system(size: 27, weight: .semibold))
                 }
-                Text("Build a rounded macOS icon package from one image.")
+                Text("Build app icons and Gear catalog icons from one image.")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.white.opacity(0.48))
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                AppIconForgeSectionLabel("Mode")
+                HStack(spacing: 8) {
+                    ForEach(AppIconForgeOutputKind.allCases) { kind in
+                        Button {
+                            store.outputKind = kind
+                        } label: {
+                            Label(kind.title, systemImage: kind.systemImage)
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(AppIconForgeModeButtonStyle(isSelected: store.outputKind == kind))
+                    }
+                }
             }
 
             VStack(alignment: .leading, spacing: 10) {
@@ -107,7 +123,7 @@ struct AppIconForgeGearWindow: View {
             Button {
                 store.exportCurrent()
             } label: {
-                Label(store.isExporting ? "Exporting" : "Export Icons", systemImage: store.isExporting ? "arrow.triangle.2.circlepath" : "square.and.arrow.down")
+                Label(store.isExporting ? "Exporting" : store.outputKind.actionTitle, systemImage: store.isExporting ? "arrow.triangle.2.circlepath" : "square.and.arrow.down")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(AppIconForgePrimaryButtonStyle())
@@ -139,12 +155,12 @@ struct AppIconForgeGearWindow: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Preview")
                         .font(.system(size: 22, weight: .semibold))
-                    Text("1024 canvas, transparent padding, rounded icon body")
+                    Text(store.outputKind.previewSubtitle)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.white.opacity(0.44))
                 }
                 Spacer()
-                if store.result != nil {
+                if store.activeOutputDirectory != nil {
                     Button {
                         store.revealResult()
                     } label: {
@@ -158,20 +174,19 @@ struct AppIconForgeGearWindow: View {
             }
 
             HStack(alignment: .center, spacing: 26) {
-                AppIconForgePreviewTile(image: store.previewImage, size: 256, label: "Large")
+                AppIconForgePreviewTile(image: store.previewImage, size: 256, label: store.outputKind.largePreviewLabel)
                 VStack(alignment: .leading, spacing: 16) {
-                    AppIconForgePreviewTile(image: store.previewImage, size: 96, label: "Dock")
+                    AppIconForgePreviewTile(image: store.previewImage, size: 96, label: store.outputKind.mediumPreviewLabel)
                     AppIconForgePreviewTile(image: store.previewImage, size: 48, label: "List")
                 }
             }
             .frame(maxWidth: .infinity, minHeight: 360, alignment: .center)
 
-            if let result = store.result {
+            if !resultRows.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    AppIconForgeResultRow(title: "ICNS", path: result.icnsURL.path)
-                    AppIconForgeResultRow(title: "Iconset", path: result.iconsetURL.path)
-                    AppIconForgeResultRow(title: "Xcode", path: result.appiconsetURL.path)
-                    AppIconForgeResultRow(title: "Preview", path: result.previewURL.path)
+                    ForEach(resultRows) { row in
+                        AppIconForgeResultRow(title: row.title, path: row.path)
+                    }
                 }
                 .padding(14)
                 .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -188,6 +203,34 @@ struct AppIconForgeGearWindow: View {
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
+
+    private var resultRows: [AppIconForgeResultItem] {
+        switch store.outputKind {
+        case .appIcon:
+            guard let result = store.result else { return [] }
+            return [
+                AppIconForgeResultItem(title: "ICNS", path: result.icnsURL.path),
+                AppIconForgeResultItem(title: "Iconset", path: result.iconsetURL.path),
+                AppIconForgeResultItem(title: "Xcode", path: result.appiconsetURL.path),
+                AppIconForgeResultItem(title: "Preview", path: result.previewURL.path)
+            ]
+        case .gearIcon:
+            guard let result = store.gearIconResult else { return [] }
+            return [
+                AppIconForgeResultItem(title: "Manifest", path: result.manifestIconPath),
+                AppIconForgeResultItem(title: "Icon", path: result.iconURL.path),
+                AppIconForgeResultItem(title: "Preview", path: result.previewURL.path),
+                AppIconForgeResultItem(title: "Metadata", path: result.metadataURL.path)
+            ]
+        }
+    }
+}
+
+private struct AppIconForgeResultItem: Identifiable {
+    let title: String
+    let path: String
+
+    var id: String { "\(title):\(path)" }
 }
 
 private struct AppIconForgeBackdrop: View {
@@ -322,6 +365,26 @@ private struct AppIconForgeControlButtonStyle: ButtonStyle {
     }
 }
 
+private struct AppIconForgeModeButtonStyle: ButtonStyle {
+    let isSelected: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(isSelected ? .black.opacity(0.84) : .white.opacity(0.62))
+            .padding(.horizontal, 10)
+            .frame(height: 34)
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(isSelected ? Color.cyan.opacity(configuration.isPressed ? 0.78 : 0.92) : Color.white.opacity(configuration.isPressed ? 0.11 : 0.065))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(isSelected ? Color.white.opacity(0.24) : Color.white.opacity(0.10), lineWidth: 0.8)
+            }
+    }
+}
+
 private struct AppIconForgePrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -347,5 +410,34 @@ private struct AppIconForgeIconButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
                     .stroke(Color.white.opacity(0.09), lineWidth: 0.8)
             }
+    }
+}
+
+private extension AppIconForgeOutputKind {
+    var systemImage: String {
+        switch self {
+        case .appIcon:
+            "app.badge"
+        case .gearIcon:
+            "shippingbox"
+        }
+    }
+
+    var largePreviewLabel: String {
+        switch self {
+        case .appIcon:
+            "Large"
+        case .gearIcon:
+            "Gear"
+        }
+    }
+
+    var mediumPreviewLabel: String {
+        switch self {
+        case .appIcon:
+            "Dock"
+        case .gearIcon:
+            "Catalog"
+        }
     }
 }

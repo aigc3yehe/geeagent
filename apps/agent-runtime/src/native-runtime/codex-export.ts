@@ -17,7 +17,6 @@ export const PLANNED_CODEX_EXPORT_TOOLS = [] as const;
 export const LIVE_BRIDGE_CODEX_EXPORT_TOOLS = [
   "gee_invoke_capability",
   "gee_open_surface",
-  "gee_get_invocation",
 ] as const;
 
 type CodexExportStatus = "success" | "degraded" | "failed";
@@ -244,8 +243,9 @@ async function scanCodexExportCapabilities(options: CodexExportOptions): Promise
     }
   }
 
-  capabilities.sort((left, right) => left.capability_ref.localeCompare(right.capability_ref));
-  return { capabilities, issues, scannedRoots };
+  const uniqueCapabilities = uniqueCapabilitiesByRef(capabilities);
+  uniqueCapabilities.sort((left, right) => left.capability_ref.localeCompare(right.capability_ref));
+  return { capabilities: uniqueCapabilities, issues, scannedRoots };
 }
 
 function gearRoots(options: CodexExportOptions): string[] {
@@ -265,6 +265,16 @@ function defaultGearRootCandidates(): string[] {
   const entrypointDir = process.argv[1]?.trim()
     ? dirname(resolve(process.argv[1]))
     : moduleDir;
+  const pluginLocalCandidates = [
+    resolve(entrypointDir, "../../../gears"),
+    resolve(moduleDir, "../../../gears"),
+  ];
+  const uniquePluginLocalCandidates = [...new Set(pluginLocalCandidates)];
+  const existingPluginLocalRoots = uniquePluginLocalCandidates.filter((candidate) => existsSync(candidate));
+  if (existingPluginLocalRoots.length > 0) {
+    return existingPluginLocalRoots;
+  }
+
   const candidates = [
     resolve(cwd, "apps/macos-app/Gears"),
     resolve(cwd, "../macos-app/Gears"),
@@ -277,6 +287,18 @@ function defaultGearRootCandidates(): string[] {
     return existing;
   }
   return unique;
+}
+
+function uniqueCapabilitiesByRef(
+  capabilities: CodexExportCapability[],
+): CodexExportCapability[] {
+  const recordsByRef = new Map<string, CodexExportCapability>();
+  for (const capability of capabilities) {
+    if (!recordsByRef.has(capability.capability_ref)) {
+      recordsByRef.set(capability.capability_ref, capability);
+    }
+  }
+  return [...recordsByRef.values()];
 }
 
 async function readGearManifest(

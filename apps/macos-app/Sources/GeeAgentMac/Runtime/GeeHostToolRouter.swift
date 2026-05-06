@@ -2,6 +2,21 @@ import Foundation
 
 @MainActor
 enum GeeHostToolRouter {
+    static func invokeExternalCapability(
+        gearID: String,
+        capabilityID: String,
+        args: [String: Any]
+    ) async -> WorkbenchToolOutcome {
+        await invokeGear(
+            toolID: "gee.gear.invoke",
+            payload: [
+                "gear_id": gearID,
+                "capability_id": capabilityID,
+                "args": args
+            ]
+        )
+    }
+
     static func resolveCompletedIntent(_ outcome: WorkbenchToolOutcome) async -> WorkbenchToolOutcome? {
         guard case let .completed(toolID, payload) = outcome,
               let intent = payload["intent"] as? String
@@ -332,7 +347,7 @@ enum GeeHostToolRouter {
         capabilityID: String,
         args: [String: Any]
     ) -> WorkbenchToolOutcome {
-        guard capabilityID == "app_icon.generate" else {
+        guard ["app_icon.generate", "gear_icon.generate"].contains(capabilityID) else {
             return .error(
                 toolID: toolID,
                 code: "gear.app_icon.capability_unsupported",
@@ -341,7 +356,7 @@ enum GeeHostToolRouter {
         }
         return .completed(
             toolID: toolID,
-            payload: AppIconForgeGearStore.shared.runAgentAction(args: args)
+            payload: AppIconForgeGearStore.shared.runAgentAction(capabilityID: capabilityID, args: args)
         )
     }
 
@@ -354,7 +369,8 @@ enum GeeHostToolRouter {
             "telegram_bridge.status",
             "telegram_push.list_channels",
             "telegram_push.upsert_channel",
-            "telegram_push.send_message"
+            "telegram_push.send_message",
+            "telegram_direct.send_file"
         ].contains(capabilityID) else {
             return .error(
                 toolID: toolID,
@@ -890,6 +906,19 @@ enum GeeHostToolRouter {
                     "disable_web_preview": ["type": "boolean"]
                 ]
             ]
+        case (TelegramBridgeGearDescriptor.gearID, "telegram_direct.send_file"):
+            return [
+                "type": "object",
+                "required": ["file_path", "idempotency_key"],
+                "additionalProperties": false,
+                "properties": [
+                    "file_path": ["type": "string"],
+                    "caption": ["type": "string"],
+                    "idempotency_key": ["type": "string"],
+                    "account_id": ["type": "string"],
+                    "chat_id": ["type": "string"]
+                ]
+            ]
         case (MediaLibraryGearDescriptor.gearID, "media.filter"):
             return [
                 "type": "object",
@@ -1053,27 +1082,38 @@ enum GeeHostToolRouter {
                 "additionalProperties": false,
                 "properties": [
                     "prompt": ["type": "string"],
-                    "category": ["type": "string", "enum": ["image"]],
+                    "category": ["type": "string", "enum": ["image", "video"]],
                     "model": [
                         "type": "string",
-                        "enum": ["nano-banana-pro", "gpt-image-2", "image-2"],
-                        "description": "Use gpt-image-2 for GPT Image-2. image-2 is accepted as an alias."
+                        "enum": [
+                            "nano-banana-pro",
+                            "gpt-image-2",
+                            "image-2",
+                            "veo3.1",
+                            "veo3.1_fast",
+                            "veo3.1_lite",
+                            "seedance-2",
+                            "seedance-2-fast",
+                            "seedance2.0",
+                            "seedance2.0-fast"
+                        ],
+                        "description": "Use gpt-image-2 for GPT Image-2. image-2 is accepted as an alias. Video models use Xenodia Veo3.1 or Seedance 2.0 IDs."
                     ],
                     "n": [
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 1,
-                        "description": "Xenodia image generation currently supports only 1 image per request."
+                        "description": "Image-only provider count. Xenodia image generation currently supports only 1 image per request."
                     ],
                     "batch_count": [
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 4,
-                        "description": "Gear-level batch fan-out. Gee creates one Xenodia n=1 task per requested image and returns one grouped batch result."
+                        "description": "Gear-level fan-out for image and video. Gee creates one Xenodia task per requested result and returns one grouped batch result."
                     ],
                     "async": [
                         "type": "boolean",
-                        "description": "When true, create an async Xenodia task and poll the task endpoint. Gee defaults this to true."
+                        "description": "Image task switch. Video generation is task-only and always polls Xenodia task retrieval."
                     ],
                     "response_format": [
                         "type": "string",
@@ -1082,30 +1122,103 @@ enum GeeHostToolRouter {
                     ],
                     "aspect_ratio": [
                         "type": "string",
-                        "enum": ["auto", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"],
-                        "description": "Supported by both Nano Banana Pro and GPT Image-2. Defaults to 1:1 for Nano and auto for GPT Image-2."
+                        "enum": ["auto", "adaptive", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"],
+                        "description": "Supported values vary by selected image or video model. Veo accepts 16:9, 9:16, or auto. Seedance accepts adaptive, 1:1, 4:3, 3:4, 16:9, 9:16, or 21:9."
                     ],
                     "resolution": [
                         "type": "string",
-                        "enum": ["1K", "2K", "4K"],
-                        "description": "Resolution is normalized case-insensitively."
+                        "enum": ["1K", "2K", "4K", "480p", "720p", "1080p", "4k"],
+                        "description": "Supported values vary by model. Image models use K resolutions; video models use 480p, 720p, 1080p, or Veo 4k where supported."
                     ],
                     "output_format": [
                         "type": "string",
                         "enum": ["png", "jpg"],
                         "description": "Nano Banana Pro only."
                     ],
+                    "generation_type": [
+                        "type": "string",
+                        "enum": ["TEXT_2_VIDEO", "FIRST_AND_LAST_FRAMES_2_VIDEO", "REFERENCE_2_VIDEO"],
+                        "description": "Veo mode. REFERENCE_2_VIDEO requires veo3.1_fast. Seedance uses this as Gee UI intent for text, first/last frame, or reference modes."
+                    ],
+                    "duration": [
+                        "type": "integer",
+                        "minimum": 4,
+                        "maximum": 15,
+                        "description": "Seedance 2.0 duration in seconds."
+                    ],
+                    "first_frame_url": [
+                        "type": "string",
+                        "description": "Seedance first frame image URL or asset:// ID. Also accepted by Gee as a frame URL for Veo FIRST_AND_LAST_FRAMES_2_VIDEO."
+                    ],
+                    "last_frame_url": [
+                        "type": "string",
+                        "description": "Seedance last frame image URL or asset:// ID. Requires first_frame_url."
+                    ],
                     "reference_urls": [
                         "type": "array",
                         "maxItems": 16,
                         "items": ["type": "string"],
-                        "description": "Remote reference image URLs passed as Xenodia image_input. Gear validation enforces the selected model limit."
+                        "description": "Remote reference image URLs. Image models pass them as Xenodia image_input. Veo passes them as imageUrls. Seedance passes them as reference_image_urls unless first/last frame URLs are used."
+                    ],
+                    "image_urls": [
+                        "type": "array",
+                        "maxItems": 9,
+                        "items": ["type": "string"],
+                        "description": "Alias for video/image reference URLs."
+                    ],
+                    "reference_image_urls": [
+                        "type": "array",
+                        "maxItems": 9,
+                        "items": ["type": "string"],
+                        "description": "Seedance multimodal reference image URLs or asset:// IDs. Gear validation enforces model limits."
+                    ],
+                    "reference_video_urls": [
+                        "type": "array",
+                        "maxItems": 3,
+                        "items": ["type": "string"],
+                        "description": "Seedance multimodal reference video URLs or asset:// IDs."
+                    ],
+                    "reference_audio_urls": [
+                        "type": "array",
+                        "maxItems": 3,
+                        "items": ["type": "string"],
+                        "description": "Seedance multimodal reference audio URLs or asset:// IDs."
                     ],
                     "reference_paths": [
                         "type": "array",
                         "maxItems": 16,
                         "items": ["type": "string"],
-                        "description": "Optional local JPEG, PNG, or WebP image paths, up to 30MB each. Gear validation enforces the selected model limit and sends them through the global Xenodia channel instead of Qiniu."
+                        "description": "Local JPEG, PNG, or WebP reference image paths, up to 30MB each. Image tasks send them as multipart references; video tasks upload them through the configured Xenodia storage upload URL before generation."
+                    ],
+                    "generate_audio": [
+                        "type": "boolean",
+                        "description": "Seedance 2.0 only."
+                    ],
+                    "web_search": [
+                        "type": "boolean",
+                        "description": "Seedance 2.0 only."
+                    ],
+                    "nsfw_checker": [
+                        "type": "boolean",
+                        "description": "Seedance 2.0 only."
+                    ],
+                    "seed": [
+                        "type": "integer",
+                        "minimum": 10000,
+                        "maximum": 99999,
+                        "description": "Veo3.1 seeds parameter."
+                    ],
+                    "enable_translation": [
+                        "type": "boolean",
+                        "description": "Veo3.1 enableTranslation parameter."
+                    ],
+                    "watermark": [
+                        "type": "string",
+                        "description": "Veo3.1 watermark text."
+                    ],
+                    "callback_url": [
+                        "type": "string",
+                        "description": "Optional Xenodia callBackUrl."
                     ]
                 ]
             ]
@@ -1148,6 +1261,39 @@ enum GeeHostToolRouter {
                     "name": [
                         "type": "string",
                         "description": "Output base name. Defaults to AppIcon."
+                    ],
+                    "content_scale": [
+                        "type": "number",
+                        "minimum": 0.6,
+                        "maximum": 0.95
+                    ],
+                    "corner_radius_ratio": [
+                        "type": "number",
+                        "minimum": 0.08,
+                        "maximum": 0.28
+                    ],
+                    "shadow": [
+                        "type": "boolean"
+                    ]
+                ]
+            ]
+        case (AppIconForgeGearDescriptor.gearID, "gear_icon.generate"):
+            return [
+                "type": "object",
+                "required": ["source_path"],
+                "additionalProperties": false,
+                "properties": [
+                    "source_path": [
+                        "type": "string",
+                        "description": "Local image path selected or supplied by the user."
+                    ],
+                    "output_dir": [
+                        "type": "string",
+                        "description": "Optional local directory for the generated assets/icon.png gear catalog icon."
+                    ],
+                    "name": [
+                        "type": "string",
+                        "description": "Output folder base name. Defaults to GearIcon."
                     ],
                     "content_scale": [
                         "type": "number",

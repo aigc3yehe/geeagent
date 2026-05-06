@@ -451,6 +451,11 @@ struct MediaLibraryModuleView: View {
                                             store.focusedItemID = item.id
                                             store.openFocusedItem()
                                         },
+                                        onEditVideo: {
+                                            store.focusedItemID = item.id
+                                            store.selectedItemIDs = [item.id]
+                                            nativePreviewController.openVideoEditor(item)
+                                        },
                                         onReveal: {
                                             store.focusedItemID = item.id
                                             store.selectedItemIDs = [item.id]
@@ -575,7 +580,13 @@ struct MediaLibraryModuleView: View {
     private var inspector: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let item = store.focusedItem {
-                MediaLibraryInspector(item: item, store: store)
+                MediaLibraryInspector(
+                    item: item,
+                    store: store,
+                    onEditVideo: {
+                        nativePreviewController.openVideoEditor(item)
+                    }
+                )
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Inspector")
@@ -693,6 +704,19 @@ private final class MediaLibraryNativePreviewController: NSObject, NSWindowDeleg
     func toggleVideoPreview(_ item: MediaLibraryItem) {
         if previewURL == item.fileURL, window?.isVisible == true {
             tearDownPreview(closeWindow: true)
+            return
+        }
+
+        openVideoEditor(item)
+    }
+
+    func openVideoEditor(_ item: MediaLibraryItem) {
+        guard item.mediaKind == .video else {
+            return
+        }
+        if previewURL == item.fileURL, let window, window.isVisible {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
             return
         }
 
@@ -1301,6 +1325,7 @@ private struct MediaLibraryItemTile: View {
     var onToggleStar: () -> Void
     var onMove: (String?) -> Void
     var onOpen: () -> Void
+    var onEditVideo: () -> Void
     var onReveal: () -> Void
     var onDelete: () -> Void
     let folders: [MediaLibraryFolder]
@@ -1396,6 +1421,14 @@ private struct MediaLibraryItemTile: View {
                 onOpen()
             } label: {
                 Label("Open", systemImage: "arrow.up.forward.app")
+            }
+
+            if item.mediaKind == .video {
+                Button {
+                    onEditVideo()
+                } label: {
+                    Label("Edit Video", systemImage: "slider.horizontal.3")
+                }
             }
 
             Button {
@@ -1646,6 +1679,7 @@ private struct MediaLibraryVideoAutoplayView: NSViewRepresentable {
 private struct MediaLibraryInspector: View {
     let item: MediaLibraryItem
     @Bindable var store: MediaLibraryModuleStore
+    var onEditVideo: () -> Void
 
     var body: some View {
         ScrollView {
@@ -1673,6 +1707,14 @@ private struct MediaLibraryInspector: View {
                         Label("Open", systemImage: "arrow.up.forward.app")
                     }
                     .buttonStyle(EaglePillButtonStyle(variant: .primary))
+                    if item.mediaKind == .video {
+                        Button {
+                            onEditVideo()
+                        } label: {
+                            Label("Edit Video", systemImage: "slider.horizontal.3")
+                        }
+                        .buttonStyle(EaglePillButtonStyle())
+                    }
                     Button {
                         store.revealFocusedItem()
                     } label: {

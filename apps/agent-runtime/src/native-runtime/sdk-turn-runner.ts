@@ -338,10 +338,15 @@ async function ensureSession(
   const activeGateway = await ensureGateway(backend);
   const runtimeFacts = captureRuntimeFacts(route.surface);
   const security = await loadSecurityPreferences(configDir);
-  const autoApproveTools =
-    options.toolBoundaryMode === "gear_first"
-      ? (options.autoApproveTools ?? DEFAULT_SDK_AUTO_APPROVE_TOOLS).filter(isGeeHostSdkTool)
-      : (options.autoApproveTools ?? DEFAULT_SDK_AUTO_APPROVE_TOOLS);
+  const availableTools = options.availableTools ?? DEFAULT_SDK_AVAILABLE_TOOLS;
+  const disallowedTools = options.disallowedTools ?? DEFAULT_SDK_DISALLOWED_TOOLS;
+  const autoApproveTools = sdkAutoApproveToolsForSecurity({
+    requestedAutoApproveTools: options.autoApproveTools ?? DEFAULT_SDK_AUTO_APPROVE_TOOLS,
+    availableTools,
+    disallowedTools,
+    highestAuthorizationEnabled: security.highest_authorization_enabled,
+    toolBoundaryMode: options.toolBoundaryMode ?? "default",
+  });
   const hostCapabilities = [
     "bash",
     "read",
@@ -373,9 +378,9 @@ async function ensureSession(
           : "gee_terminal_permissions",
         capabilities: hostCapabilities,
       } satisfies RuntimeContext,
-      availableTools: options.availableTools ?? DEFAULT_SDK_AVAILABLE_TOOLS,
+      availableTools,
       autoApproveTools,
-      disallowedTools: options.disallowedTools ?? DEFAULT_SDK_DISALLOWED_TOOLS,
+      disallowedTools,
       enableGeeHostTools: options.enableGeeHostTools ?? true,
       toolBoundaryMode: options.toolBoundaryMode ?? "default",
       runPlan: options.runPlan ?? null,
@@ -402,6 +407,32 @@ async function ensureSession(
     cwd: runtimeFacts.cwd,
   });
   return managed;
+}
+
+function sdkAutoApproveToolsForSecurity(input: {
+  requestedAutoApproveTools: string[];
+  availableTools: string[];
+  disallowedTools: string[];
+  highestAuthorizationEnabled: boolean;
+  toolBoundaryMode: "default" | "gear_first";
+}): string[] {
+  const disallowed = new Set(input.disallowedTools);
+  const baseTools = input.requestedAutoApproveTools.filter((tool) => !disallowed.has(tool));
+  const allowed = new Set<string>(
+    input.toolBoundaryMode === "gear_first"
+      ? baseTools.filter(isGeeHostSdkTool)
+      : baseTools,
+  );
+
+  if (input.highestAuthorizationEnabled && input.toolBoundaryMode !== "gear_first") {
+    for (const tool of input.availableTools) {
+      if (!disallowed.has(tool)) {
+        allowed.add(tool);
+      }
+    }
+  }
+
+  return Array.from(allowed);
 }
 
 async function ensureGateway(
@@ -1667,6 +1698,7 @@ export const __sdkTurnRunnerTestHooks = {
   closeUnfinishedToolEventsOnFailure,
   composeHostActionContinuationPrompt,
   sdkBashRequestFromInput,
+  sdkAutoApproveToolsForSecurity,
   sdkEventIdleTimeoutMs,
   sdkEventIdleTimeoutReason,
   shouldRecycleGatewayAfterTurn,

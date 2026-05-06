@@ -185,6 +185,44 @@ private struct GearKindSegmentedControl: View {
     }
 }
 
+struct GearCatalogVisual: Equatable {
+    enum Kind: Equatable {
+        case icon
+        case cover
+        case placeholder
+    }
+
+    var kind: Kind
+    var url: URL?
+
+    static func primary(
+        for app: InstalledAppRecord,
+        fileExists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }
+    ) -> GearCatalogVisual {
+        if let iconURL = app.iconURL, fileExists(iconURL) {
+            return GearCatalogVisual(kind: .icon, url: iconURL)
+        }
+        if let coverURL = app.coverURL {
+            return GearCatalogVisual(kind: .cover, url: coverURL)
+        }
+        return GearCatalogVisual(kind: .placeholder, url: nil)
+    }
+
+    var frameSize: CGSize {
+        switch kind {
+        case .icon, .cover, .placeholder:
+            CGSize(width: 78, height: 58)
+        }
+    }
+
+    var cornerRadius: CGFloat {
+        switch kind {
+        case .icon, .cover, .placeholder:
+            10
+        }
+    }
+}
+
 private struct GearCatalogCard: View {
     let app: InstalledAppRecord
     let preparation: GearPreparationSnapshot?
@@ -337,26 +375,47 @@ private struct GearCatalogCard: View {
 
     @ViewBuilder
     private var cover: some View {
+        let visual = GearCatalogVisual.primary(for: app)
         ZStack {
-            if let coverURL = app.coverURL {
-                AsyncImage(url: coverURL) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    default:
-                        placeholderCover
+            switch visual.kind {
+            case .icon:
+                if let iconURL = visual.url {
+                    AsyncImage(url: iconURL) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .scaledToFill()
+                        default:
+                            placeholderCover
+                        }
                     }
+                } else {
+                    placeholderCover
                 }
-            } else {
+            case .cover:
+                if let coverURL = visual.url {
+                    AsyncImage(url: coverURL) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .scaledToFill()
+                        default:
+                            placeholderCover
+                        }
+                    }
+                } else {
+                    placeholderCover
+                }
+            case .placeholder:
                 placeholderCover
             }
         }
-        .frame(width: 78, height: 58)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .frame(width: visual.frameSize.width, height: visual.frameSize.height)
+        .clipShape(RoundedRectangle(cornerRadius: visual.cornerRadius, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: visual.cornerRadius, style: .continuous)
                 .stroke(Color.white.opacity(0.12), lineWidth: 0.8)
         }
     }

@@ -16,9 +16,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let controller = MenuBarController(store: workbenchStore)
         controller.install()
         self.menuBarController = controller
+
+        let store = workbenchStore
+        TelegramBridgeGearStore.shared.startInboundService { [weak store] payload in
+            guard let store else {
+                throw RuntimeProcessError.runtimeUnavailable("GeeAgent workbench store is unavailable for Telegram channel ingress.")
+            }
+            return try await store.submitTelegramChannelMessage(payload)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        TelegramBridgeGearStore.shared.stopInboundService()
         workbenchStore.shutdownRuntime()
         menuBarController?.uninstall()
     }

@@ -442,7 +442,7 @@ function mediaGenerationPlan(userRequest: string): RuntimeRunPlan | null {
       {
         stage_id: "stage_create_media_generation_task",
         title: "Create media generation task",
-        objective: "Create the requested image generation task through Media Generator.",
+        objective: "Create the requested media generation task through Media Generator.",
         required_capabilities: ["media.generator/media_generator.create_task"],
         capability_args: {
           "media.generator/media_generator.create_task": args,
@@ -459,14 +459,18 @@ function mediaGenerationPlan(userRequest: string): RuntimeRunPlan | null {
 
 function mediaGenerationCapabilityArgs(userRequest: string): Record<string, unknown> {
   const text = userRequest.toLowerCase();
+  const requestedModel = requestedMediaGenerationModel(text);
+  const category = requestedMediaGenerationCategory(text, requestedModel);
   const args: Record<string, unknown> = {
-    category: "image",
-    model: requestedMediaGenerationModel(text) ?? "nano-banana-pro",
+    category,
+    model: requestedModel ?? (category === "video" ? "veo3.1_fast" : "nano-banana-pro"),
     prompt: generationPrompt(userRequest),
-    response_format: "url",
-    n: 1,
-    async: true,
   };
+  if (category === "image") {
+    args.response_format = "url";
+    args.n = 1;
+    args.async = true;
+  }
   const batchCount = requestedMediaGenerationBatchCount(userRequest);
   if (batchCount) {
     args.batch_count = batchCount;
@@ -479,10 +483,34 @@ function mediaGenerationCapabilityArgs(userRequest: string): Record<string, unkn
   if (resolution) {
     args.resolution = resolution;
   }
+  if (category === "video") {
+    const duration = requestedVideoDuration(text);
+    if (duration) {
+      args.duration = duration;
+    }
+    const generationType = requestedVideoGenerationType(text);
+    if (generationType) {
+      args.generation_type = generationType;
+    }
+  }
   return args;
 }
 
 function requestedMediaGenerationModel(text: string): string | null {
+  if (/\bveo[-_\s]*3(?:\.?1)?[-_\s]*fast\b/.test(text)) {
+    return "veo3.1_fast";
+  }
+  if (/\bveo[-_\s]*3(?:\.?1)?[-_\s]*lite\b/.test(text)) {
+    return "veo3.1_lite";
+  }
+  if (/\bveo[-_\s]*3(?:\.?1)?\b/.test(text)) {
+    return "veo3.1";
+  }
+  if (/\bseedance[-_\s]*2(?:\.?0)?(?:[-_\s]*fast)?\b/.test(text)) {
+    return /\bseedance[-_\s]*2(?:\.?0)?[-_\s]*fast\b/.test(text)
+      ? "seedance-2-fast"
+      : "seedance-2";
+  }
   if (/\b(?:gpt[-_\s]*)?image[-_\s]*2\b/.test(text)) {
     return "gpt-image-2";
   }
@@ -492,16 +520,28 @@ function requestedMediaGenerationModel(text: string): string | null {
   return null;
 }
 
+function requestedMediaGenerationCategory(
+  text: string,
+  requestedModel: string | null,
+): "image" | "video" {
+  if (requestedModel && /^(?:veo3\.1|seedance-2)/.test(requestedModel)) {
+    return "video";
+  }
+  return /\b(videos?|movies?|clips?|teasers?|trailers?)\b/.test(text) ? "video" : "image";
+}
+
 function requestedMediaGenerationBatchCount(userRequest: string): number | null {
   const text = userRequest.toLowerCase();
-  const numericMatch = text.match(/(?:^|[^\d])([1-4])\s*(?:images?|imgs?|pictures?|photos?)(?:[^\d]|$)/i);
+  const numericMatch = text.match(
+    /(?:^|[^\d])([1-4])\s*(?:images?|imgs?|pictures?|photos?|videos?|clips?|tasks?|results?)(?:[^\d]|$)/i,
+  );
   if (numericMatch?.[1]) {
     return Number(numericMatch[1]);
   }
   const wordCounts: Array<[RegExp, number]> = [
-    [/\b(?:two|couple)\s+(?:images?|pictures?|photos?)\b/, 2],
-    [/\bthree\s+(?:images?|pictures?|photos?)\b/, 3],
-    [/\bfour\s+(?:images?|pictures?|photos?)\b/, 4],
+    [/\b(?:two|couple)\s+(?:images?|pictures?|photos?|videos?|clips?|tasks?|results?)\b/, 2],
+    [/\bthree\s+(?:images?|pictures?|photos?|videos?|clips?|tasks?|results?)\b/, 3],
+    [/\bfour\s+(?:images?|pictures?|photos?|videos?|clips?|tasks?|results?)\b/, 4],
   ];
   for (const [pattern, count] of wordCounts) {
     if (pattern.test(text)) {
@@ -520,8 +560,31 @@ function requestedAspectRatio(text: string): string | null {
 }
 
 function requestedResolution(text: string): string | null {
+  const videoMatch = text.match(/(^|[^\d])(480|720|1080)\s*p([^\d]|$)/i);
+  if (videoMatch?.[2]) {
+    return `${videoMatch[2]}p`;
+  }
   const match = text.match(/(^|[^\d])([124])\s*k([^\d]|$)/i);
   return match?.[2] ? `${match[2]}K` : null;
+}
+
+function requestedVideoDuration(text: string): number | null {
+  const match = text.match(/(^|[^\d])(\d{1,2})\s*(?:s|sec|secs|second|seconds)\b/i);
+  if (!match?.[2]) {
+    return null;
+  }
+  const duration = Number(match[2]);
+  return duration >= 4 && duration <= 15 ? duration : null;
+}
+
+function requestedVideoGenerationType(text: string): string | null {
+  if (/\b(first\s*(?:and|&)\s*last|first[-_\s]*last)\b/.test(text)) {
+    return "FIRST_AND_LAST_FRAMES_2_VIDEO";
+  }
+  if (/\b(reference|references|reference[-_\s]*to[-_\s]*video|image[-_\s]*to[-_\s]*video)\b/.test(text)) {
+    return "REFERENCE_2_VIDEO";
+  }
+  return null;
 }
 
 function generationPrompt(userRequest: string): string {
@@ -728,7 +791,9 @@ function mentionsMediaGenerationRequest(rawText: string): boolean {
   return (
     (mentionsMediaGenerationPromptMarker(rawText) && mentionsMediaGenerationProvider(rawText, text)) ||
     /\b(generate|create|draw|render|make)\b.{0,80}\b(images?|pictures?|illustrations?|posters?|artworks?)\b/.test(text) ||
-    /\b(images?|pictures?|illustrations?|posters?|artworks?)\b.{0,80}\b(generate|create|draw|render|make)\b/.test(text)
+    /\b(images?|pictures?|illustrations?|posters?|artworks?)\b.{0,80}\b(generate|create|draw|render|make)\b/.test(text) ||
+    /\b(generate|create|render|make)\b.{0,80}\b(videos?|clips?|teasers?|trailers?)\b/.test(text) ||
+    /\b(videos?|clips?|teasers?|trailers?)\b.{0,80}\b(generate|create|render|make)\b/.test(text)
   );
 }
 
@@ -738,7 +803,7 @@ function isMediaGenerationInfoQuestion(rawText: string, text: string): boolean {
   }
   return (
     /\b(how\s+(?:do|to|can|should)|what(?:'s|\s+is)|why|whether|explain|describe|compare|pricing|price|limits?|parameters?|docs?)\b/.test(text) ||
-    /\b(?:can|does)\s+(?:gpt[-_\s]*image[-_\s]*2|image[-_\s]*2)\b/.test(text)
+    /\b(?:can|does)\s+(?:gpt[-_\s]*image[-_\s]*2|image[-_\s]*2|veo[-_\s]*3(?:\.?1)?|seedance[-_\s]*2(?:\.?0)?)\b/.test(text)
   );
 }
 
@@ -750,7 +815,10 @@ function mentionsMediaGenerationProvider(rawText: string, text: string): boolean
   return (
     text.includes("media generator") ||
     text.includes("image generator") ||
-    /\b(?:gpt[-_\s]*)?image[-_\s]*2\b/.test(text)
+    text.includes("video generator") ||
+    /\b(?:gpt[-_\s]*)?image[-_\s]*2\b/.test(text) ||
+    /\bveo[-_\s]*3(?:\.?1)?\b/.test(text) ||
+    /\bseedance[-_\s]*2(?:\.?0)?\b/.test(text)
   );
 }
 

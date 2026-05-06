@@ -1,5 +1,6 @@
 import {
   createConversation,
+  deleteConversation,
   QUICK_CONVERSATION_TAG,
   syncConversationStatuses,
 } from "./store/conversations.js";
@@ -100,6 +101,8 @@ import {
 } from "./turns/stage-advancer.js";
 
 const GEAR_COMPLETION_SDK_IDLE_TIMEOUT_MS = 75_000;
+const TELEGRAM_NEW_CONVERSATION_REPLY =
+  "Started a new Telegram conversation. Previous Telegram context has been cleared.";
 
 type HostActionCompletionContext = {
   runId: string | null;
@@ -215,6 +218,12 @@ export async function submitChannelMessage(
     return snapshotFromStore(store, configDir);
   }
 
+  if (isChannelNewConversationCommand(text)) {
+    resetChannelConversation(store, payload, binding);
+    await persistRuntimeStore(configDir, store);
+    return snapshotFromStore(store, configDir);
+  }
+
   const route: TurnRoute = {
     mode: "workspace_message",
     source: "telegram.bridge",
@@ -296,7 +305,7 @@ function parseChannelMessageInput(input: unknown): ChannelMessageInput {
   }
   const source = stringField(input, "source");
   const role = stringField(input, "role");
-  const channelIdentity = stringField(input, "channelIdentity") ?? stringField(input, "channel_identity");
+  const channelIdentity = stringField(input, "channelIdentity") || stringField(input, "channel_identity");
   const message = isRecord(input.message) ? input.message : null;
   const security = isRecord(input.security) ? input.security : null;
   const projection = isRecord(input.projection) ? input.projection : null;
@@ -318,9 +327,9 @@ function parseChannelMessageInput(input: unknown): ChannelMessageInput {
   if (!projection) {
     throw new Error("channel message requires `projection`");
   }
-  const idempotencyKey = stringField(message, "idempotencyKey") ?? stringField(message, "idempotency_key");
-  const chatId = stringField(message, "chatId") ?? stringField(message, "chat_id");
-  const messageId = stringField(message, "messageId") ?? stringField(message, "message_id");
+  const idempotencyKey = stringField(message, "idempotencyKey") || stringField(message, "idempotency_key");
+  const chatId = stringField(message, "chatId") || stringField(message, "chat_id");
+  const messageId = stringField(message, "messageId") || stringField(message, "message_id");
   const text = stringField(message, "text") ?? "";
   const decision = stringField(security, "decision");
   const surface = stringField(projection, "surface");
@@ -359,7 +368,7 @@ function parseChannelMessageInput(input: unknown): ChannelMessageInput {
       telegramUpdateId: numberField(message, "telegramUpdateId") ?? numberField(message, "telegram_update_id") ?? null,
       chatId,
       messageId,
-      fromUserId: stringField(message, "fromUserId") ?? stringField(message, "from_user_id") ?? null,
+      fromUserId: stringField(message, "fromUserId") || stringField(message, "from_user_id") || null,
       text,
       attachments: Array.isArray(message.attachments) ? message.attachments : [],
     },
@@ -409,6 +418,76 @@ function ensureChannelBinding(
 
 function channelConversationTitle(payload: ChannelMessageInput): string {
   return `Telegram ${summarizePrompt(payload.message.chatId, 24)}`;
+}
+
+function isChannelNewConversationCommand(text: string): boolean {
+  return /^\/new(?:@[A-Za-z0-9_]{1,64})?(?:\s|$)/i.test(text.trim());
+}
+
+function resetChannelConversation(
+  store: RuntimeStore,
+  payload: ChannelMessageInput,
+  binding: NonNullable<RuntimeStore["channel_bindings"]>[number],
+): void {
+  const previousConversationId = binding.conversation_id;
+  closeSdkRuntimeSession(executionSessionIdForConversation(previousConversationId));
+
+  const conversation = createConversation(
+    store,
+    channelConversationTitle(payload),
+    ["telegram.bridge", payload.role],
+  );
+  conversation.messages = [
+    {
+      message_id: "msg_assistant_reset",
+      role: "assistant",
+      content: TELEGRAM_NEW_CONVERSATION_REPLY,
+      timestamp: currentTimestamp(),
+    },
+  ];
+
+  binding.conversation_id = conversation.conversation_id;
+  binding.updated_at = currentTimestamp();
+  if (previousConversationId !== conversation.conversation_id) {
+    deleteConversation(store, previousConversationId);
+  }
+  store.active_conversation_id = conversation.conversation_id;
+  syncConversationStatuses(store);
+
+  const sessionId = executionSessionIdForConversation(conversation.conversation_id);
+  appendTranscriptEvent(
+    store,
+    sessionId,
+    {
+      kind: "channel_message_received",
+      channel: channelIngressRecord(payload),
+      summary: "Telegram Bridge accepted a /new command and reset the bound Phase 3 conversation.",
+    },
+    null,
+  );
+  appendTranscriptEvent(store, sessionId, {
+    kind: "assistant_message",
+    message_id: "msg_assistant_reset",
+    content: TELEGRAM_NEW_CONVERSATION_REPLY,
+  });
+  recordChannelMessage(store, payload, null);
+  store.quick_reply = TELEGRAM_NEW_CONVERSATION_REPLY;
+  store.last_run_state = runtimeRunState(
+    conversation.conversation_id,
+    "completed",
+    "channel_conversation_reset",
+    TELEGRAM_NEW_CONVERSATION_REPLY,
+    false,
+    null,
+    null,
+  );
+  store.last_request_outcome = {
+    source: payload.source,
+    kind: "channel_conversation_reset",
+    detail: TELEGRAM_NEW_CONVERSATION_REPLY,
+    channel_identity: payload.channelIdentity,
+    fallback_attempted: false,
+  };
 }
 
 function channelIngressRecord(payload: ChannelMessageInput): Record<string, unknown> {

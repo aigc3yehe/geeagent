@@ -183,6 +183,70 @@ final class WorkbenchStoreTests: XCTestCase {
         XCTAssertEqual(conversation.displayPreviewText, "saved media.")
     }
 
+    func testTelegramChannelReplySkipsRuntimeStateMessages() async throws {
+        var snapshot = PreviewWorkbenchRuntimeClient().loadSnapshot()
+        snapshot.conversations = [
+            ConversationThread(
+                id: "telegram",
+                title: "Telegram 7973901539",
+                participantLabel: "GeeAgent",
+                previewText: "Session state updated.",
+                statusLabel: "live",
+                lastActivityLabel: "Just now",
+                unreadCount: 0,
+                linkedTaskTitle: nil,
+                linkedAppName: nil,
+                messages: [
+                    ConversationMessage(
+                        id: "user",
+                        role: .user,
+                        content: "Who are you?",
+                        timestampLabel: "Just now"
+                    ),
+                    ConversationMessage(
+                        id: "assistant-chat",
+                        role: .assistant,
+                        kind: .chat,
+                        content: "I am Nyko.",
+                        timestampLabel: "Just now"
+                    ),
+                    ConversationMessage(
+                        id: "assistant-state",
+                        role: .assistant,
+                        kind: .thinking,
+                        content: "Session state updated.",
+                        timestampLabel: "Just now"
+                    )
+                ],
+                tags: ["telegram.bridge", "gee_direct"],
+                isActive: true
+            )
+        ]
+        let store = WorkbenchStore(runtimeClient: FixedSnapshotRuntimeClient(snapshot: snapshot))
+
+        let reply = try await store.submitTelegramChannelMessage(
+            TelegramChannelMessagePayload(
+                channelIdentity: "telegram:gee_direct_default:chat:7973901539",
+                message: .init(
+                    idempotencyKey: "telegram:update:test",
+                    telegramUpdateId: 1,
+                    chatId: "7973901539",
+                    messageId: "1",
+                    fromUserId: "7973901539",
+                    text: "Who are you?",
+                    attachments: []
+                ),
+                security: .init(decision: "allowed", policyId: "telegram.allowlist"),
+                projection: .init(
+                    surface: "telegram",
+                    replyTarget: .init(chatId: "7973901539", messageId: "1")
+                )
+            )
+        )
+
+        XCTAssertEqual(reply, "I am Nyko.")
+    }
+
     // MARK: - Plan 2: persona-driven appearance
 
     func testFreshInstallEffectiveAppearanceFollowsActivePersona() throws {
@@ -628,7 +692,9 @@ final class WorkbenchStoreTests: XCTestCase {
         }
         let argsSchema = try XCTUnwrap(mediaGeneratorSchemaPayload["args_schema"] as? [String: Any])
         let properties = try XCTUnwrap(argsSchema["properties"] as? [String: Any])
-        XCTAssertNil(properties["nsfw_checker"])
+        XCTAssertNotNil(properties["nsfw_checker"])
+        XCTAssertEqual((properties["category"] as? [String: Any])?["enum"] as? [String], ["image", "video"])
+        XCTAssertEqual((properties["reference_video_urls"] as? [String: Any])?["maxItems"] as? Int, 3)
         XCTAssertEqual((properties["reference_urls"] as? [String: Any])?["maxItems"] as? Int, 16)
         XCTAssertEqual((properties["reference_paths"] as? [String: Any])?["maxItems"] as? Int, 16)
     }
@@ -1103,7 +1169,7 @@ final class WorkbenchStoreTests: XCTestCase {
         XCTAssertEqual(store.activeAgentProfileID, "gee")
     }
 
-    func testExternalCodexInvocationRunsThroughGeeHostBridge() async throws {
+    func testReadOnlyExternalCodexInvocationFastDrainsThroughGeeHostBridge() async throws {
         var snapshot = PreviewWorkbenchRuntimeClient().loadSnapshot()
         snapshot.externalInvocations = [
             WorkbenchExternalInvocation(
@@ -1125,11 +1191,55 @@ final class WorkbenchStoreTests: XCTestCase {
             runtimeClient.completedInvocationStatuses.contains(.success)
         }
 
-        XCTAssertEqual(runtimeClient.invokedToolIDs, ["gee.gear.invoke"])
-        XCTAssertEqual(runtimeClient.invokedToolInvocations.first?.arguments["args"], .object(["content_scale": .double(0.95)]))
+        XCTAssertEqual(runtimeClient.invokedToolIDs, [])
         XCTAssertEqual(runtimeClient.completedInvocationStatuses, [.running, .success])
-        XCTAssertEqual(runtimeClient.statusesAtInvoke, [.running])
+        XCTAssertEqual(runtimeClient.statusesAtInvoke, [])
         XCTAssertEqual(store.snapshot.externalInvocations.first?.status, .success)
+    }
+
+    func testExternalCodexInvocationDrainCarriesLatestSnapshotAcrossBatch() async throws {
+        var snapshot = PreviewWorkbenchRuntimeClient().loadSnapshot()
+        snapshot.externalInvocations = [
+            WorkbenchExternalInvocation(
+                id: "gee_ext_slow",
+                tool: .invokeCapability,
+                status: .pending,
+                gearID: "app.icon.forge",
+                capabilityID: "app_icon.generate",
+                surfaceID: nil,
+                args: [
+                    "source_path": .string("/tmp/source.png")
+                ]
+            ),
+            WorkbenchExternalInvocation(
+                id: "gee_ext_fast",
+                tool: .invokeCapability,
+                status: .pending,
+                gearID: "media.generator",
+                capabilityID: "media_generator.list_models",
+                surfaceID: nil,
+                args: [:]
+            )
+        ]
+        let runtimeClient = ExternalInvocationRuntimeClient(snapshot: snapshot)
+        let store = WorkbenchStore(runtimeClient: runtimeClient)
+
+        try await waitUntil(timeout: 1.0) {
+            runtimeClient.completedInvocationStatuses.count == 4
+        }
+
+        XCTAssertEqual(
+            runtimeClient.completedInvocationIDs,
+            ["gee_ext_fast", "gee_ext_fast", "gee_ext_slow", "gee_ext_slow"]
+        )
+        let expectedStatuses: [WorkbenchExternalInvocationStatus] = [.running, .success, .running, .success]
+        XCTAssertEqual(runtimeClient.completedInvocationStatuses, expectedStatuses)
+        XCTAssertEqual(runtimeClient.invokedToolIDs, ["gee.gear.invoke"])
+        let statusesByID = Dictionary(uniqueKeysWithValues: store.snapshot.externalInvocations.map { invocation in
+            (invocation.id, invocation.status)
+        })
+        XCTAssertEqual(statusesByID["gee_ext_fast"], .success)
+        XCTAssertEqual(statusesByID["gee_ext_slow"], .success)
     }
 
     /// Polls the main-actor condition until it becomes true or the deadline
@@ -1253,6 +1363,13 @@ private struct FixedSnapshotRuntimeClient: WorkbenchRuntimeClient {
         in snapshot: WorkbenchSnapshot
     ) async throws -> WorkbenchSnapshot { snapshot }
 
+    func submitChannelMessage(
+        _ payload: TelegramChannelMessagePayload,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        self.snapshot
+    }
+
     func completeHostActionTurn(
         _ completions: [WorkbenchHostActionCompletion],
         in snapshot: WorkbenchSnapshot
@@ -1332,6 +1449,7 @@ private final class ExternalInvocationRuntimeClient: WorkbenchRuntimeClient, @un
         _ prompt: String,
         in snapshot: WorkbenchSnapshot
     ) async throws -> WorkbenchSnapshot { snapshot }
+
     func completeHostActionTurn(
         _ completions: [WorkbenchHostActionCompletion],
         in snapshot: WorkbenchSnapshot

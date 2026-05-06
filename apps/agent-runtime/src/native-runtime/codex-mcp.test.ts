@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import readline from "node:readline";
 import { describe, it } from "node:test";
 
@@ -29,11 +29,14 @@ async function writeGearManifest(
   await writeFile(join(gearRoot, "gear.json"), JSON.stringify(manifest, null, 2), "utf8");
 }
 
-function exportedGearManifest(): Record<string, unknown> {
+function exportedGearManifest(
+  gearID = "codex.safe",
+  gearName = "Codex Safe Gear",
+): Record<string, unknown> {
   return {
     schema: "gee.gear.v1",
-    id: "codex.safe",
-    name: "Codex Safe Gear",
+    id: gearID,
+    name: gearName,
     agent: {
       enabled: true,
       capabilities: [
@@ -472,6 +475,63 @@ describe("Codex MCP export server", () => {
     });
   });
 
+  it("can wait briefly for a prior external invocation through gee_get_invocation", async () => {
+    const configDir = await mkdtemp(join(tmpdir(), "geeagent-codex-config-"));
+    const root = await mkdtemp(join(tmpdir(), "geeagent-codex-mcp-"));
+    await writeGearManifest(root, "codex.safe", exportedGearManifest());
+
+    await withCodexMcpServer(async (child, iterator, stderr) => {
+      sendRpc(child, {
+        jsonrpc: "2.0",
+        id: "invoke",
+        method: "tools/call",
+        params: {
+          name: "gee_invoke_capability",
+          arguments: {
+            capability_ref: "codex.safe/safe.query",
+            gear_roots: [root],
+            args: { key: "fixture" },
+            wait_ms: 0,
+            config_dir: configDir,
+          },
+        },
+      });
+      const invoked = JSON.parse(await nextLine(iterator, stderr)) as JsonRpcResponse;
+      const pending = parseToolText(invoked);
+      const invocationID = String(pending.external_invocation_id);
+
+      setTimeout(() => {
+        void handleNativeRuntimeCommand("codex-external-invocation-complete", [
+          JSON.stringify({
+            external_invocation_id: invocationID,
+            status: "success",
+            result: {
+              value: "waited-for-gear-host",
+            },
+          }),
+        ], { configDir });
+      }, 100);
+
+      sendRpc(child, {
+        jsonrpc: "2.0",
+        id: "wait",
+        method: "tools/call",
+        params: {
+          name: "gee_get_invocation",
+          arguments: {
+            invocation_id: invocationID,
+            wait_ms: 2_000,
+            config_dir: configDir,
+          },
+        },
+      });
+      const received = JSON.parse(await nextLine(iterator, stderr)) as JsonRpcResponse;
+      const completed = parseToolText(received);
+      assert.equal(completed.status, "success");
+      assert.deepEqual(completed.result, { value: "waited-for-gear-host" });
+    });
+  });
+
   it("degrades stale running invocations instead of leaving Codex waiting forever", async () => {
     const configDir = await mkdtemp(join(tmpdir(), "geeagent-codex-config-"));
     const root = await mkdtemp(join(tmpdir(), "geeagent-codex-mcp-"));
@@ -569,6 +629,7 @@ describe("Codex plugin package generation", () => {
       result.files.includes("skills/gee-capabilities/references/telegram.bridge.md"),
       true,
     );
+    assert.equal(result.files.includes("gears/telegram.bridge/gear.json"), true);
 
     const plugin = JSON.parse(
       await readFile(join(pluginRoot, ".codex-plugin", "plugin.json"), "utf8"),
@@ -627,10 +688,144 @@ describe("Codex plugin package generation", () => {
     assert.match(telegram, /telegram\.bridge\/telegram_push\.send_message/);
     assert.match(telegram, /idempotency_key/);
     assert.match(telegram, /configured push-only Telegram channels/i);
+
+    const bundledTelegramManifest = JSON.parse(
+      await readFile(join(pluginRoot, "gears", "telegram.bridge", "gear.json"), "utf8"),
+    ) as {
+      schema: string;
+      id: string;
+      agent: { capabilities: Array<{ id: string }> };
+    };
+    assert.equal(bundledTelegramManifest.schema, "gee.gear.v1");
+    assert.equal(bundledTelegramManifest.id, "telegram.bridge");
+    assert.deepEqual(
+      bundledTelegramManifest.agent.capabilities.map((capability) => capability.id),
+      [
+        "telegram_bridge.status",
+        "telegram_push.list_channels",
+        "telegram_push.send_message",
+      ],
+    );
+
+    const bundledRaw = await handleNativeRuntimeCommand("codex-export-list-capabilities", [
+      JSON.stringify({ gear_roots: [join(pluginRoot, "gears")], gear_id: "telegram.bridge" }),
+    ]);
+    const bundled = JSON.parse(bundledRaw) as {
+      status: string;
+      capabilities: Array<{ capability_ref: string }>;
+    };
+    assert.equal(bundled.status, "success");
+    assert.deepEqual(
+      bundled.capabilities.map((capability) => capability.capability_ref),
+      [
+        "telegram.bridge/telegram_bridge.status",
+        "telegram.bridge/telegram_push.list_channels",
+        "telegram.bridge/telegram_push.send_message",
+      ],
+    );
   });
 
-  it("defaults the generated MCP config to the current native-runtime entrypoint", async () => {
+  it("removes stale generated capability references when refreshing a plugin package", async () => {
+    const pluginRoot = await mkdtemp(join(tmpdir(), "geeagent-codex-plugin-refresh-"));
+    const firstGearRoot = await mkdtemp(join(tmpdir(), "geeagent-codex-gears-a-"));
+    const secondGearRoot = await mkdtemp(join(tmpdir(), "geeagent-codex-gears-b-"));
+    await writeGearManifest(firstGearRoot, "codex.safe", exportedGearManifest());
+    await writeGearManifest(
+      secondGearRoot,
+      "codex.next",
+      exportedGearManifest("codex.next", "Codex Next Gear"),
+    );
+
+    const firstRaw = await handleNativeRuntimeCommand("codex-export-generate-plugin", [
+      JSON.stringify({
+        output_dir: pluginRoot,
+        runtime_command: "node",
+        runtime_args: ["/opt/geeagent/dist/native-runtime/index.mjs", "codex-mcp"],
+        gear_roots: [firstGearRoot],
+      }),
+    ]);
+    const first = JSON.parse(firstRaw) as { status: string };
+    assert.equal(first.status, "success");
+    let references = await readdir(join(pluginRoot, "skills", "gee-capabilities", "references"));
+    assert.equal(references.includes("codex.safe.md"), true);
+    let gearProjections = await readdir(join(pluginRoot, "gears"));
+    assert.equal(gearProjections.includes("codex.safe"), true);
+
+    const secondRaw = await handleNativeRuntimeCommand("codex-export-generate-plugin", [
+      JSON.stringify({
+        output_dir: pluginRoot,
+        runtime_command: "node",
+        runtime_args: ["/opt/geeagent/dist/native-runtime/index.mjs", "codex-mcp"],
+        gear_roots: [secondGearRoot],
+      }),
+    ]);
+    const second = JSON.parse(secondRaw) as {
+      status: string;
+      capability_index: { capability_count: number };
+    };
+
+    assert.equal(second.status, "success");
+    assert.equal(second.capability_index.capability_count, 1);
+    references = await readdir(join(pluginRoot, "skills", "gee-capabilities", "references"));
+    assert.equal(references.includes("codex.safe.md"), false);
+    assert.equal(references.includes("codex.next.md"), true);
+    assert.equal(references.includes("capability-index.md"), true);
+    gearProjections = await readdir(join(pluginRoot, "gears"));
+    assert.equal(gearProjections.includes("codex.safe"), false);
+    assert.equal(gearProjections.includes("codex.next"), true);
+  });
+
+  it("refreshes from plugin-local runtime and manifest projections without wiping sources", async () => {
+    const pluginRoot = await mkdtemp(join(tmpdir(), "geeagent-codex-plugin-self-refresh-"));
+    const gearRoot = await mkdtemp(join(tmpdir(), "geeagent-codex-gears-"));
+    const runtimeBundlePath = join(tmpdir(), "geeagent-codex-self-refresh-runtime-bundle.mjs");
+    await writeFile(runtimeBundlePath, "console.log('self refresh runtime fixture');\n", "utf8");
+    await writeGearManifest(gearRoot, "codex.safe", exportedGearManifest());
+
+    const firstRaw = await handleNativeRuntimeCommand("codex-export-generate-plugin", [
+      JSON.stringify({
+        output_dir: pluginRoot,
+        runtime_bundle_path: runtimeBundlePath,
+        gear_roots: [gearRoot],
+      }),
+    ]);
+    const first = JSON.parse(firstRaw) as { status: string };
+    assert.equal(first.status, "success");
+
+    const pluginRuntimePath = join(
+      pluginRoot,
+      "runtime",
+      "native-runtime",
+      "0.1.3",
+      "index.mjs",
+    );
+    const secondRaw = await handleNativeRuntimeCommand("codex-export-generate-plugin", [
+      JSON.stringify({
+        output_dir: pluginRoot,
+        runtime_bundle_path: pluginRuntimePath,
+        gear_roots: [join(pluginRoot, "gears")],
+      }),
+    ]);
+    const second = JSON.parse(secondRaw) as {
+      status: string;
+      capability_index: { capability_count: number };
+      runtime_bundle?: { path: string };
+    };
+
+    assert.equal(second.status, "success");
+    assert.equal(second.capability_index.capability_count, 1);
+    assert.equal(second.runtime_bundle?.path, pluginRuntimePath);
+    assert.equal(
+      await readFile(pluginRuntimePath, "utf8"),
+      "console.log('self refresh runtime fixture');\n",
+    );
+    assert.deepEqual(await readdir(join(pluginRoot, "gears")), ["codex.safe"]);
+  });
+
+  it("defaults source-launched plugin generation to the stable built native-runtime entrypoint", async () => {
     const pluginRoot = await mkdtemp(join(tmpdir(), "geeagent-codex-plugin-"));
+    const runtimeBundlePath = join(tmpdir(), "geeagent-codex-runtime-bundle.mjs");
+    await writeFile(runtimeBundlePath, "console.log('runtime bundle fixture');\n", "utf8");
     const child = spawn(
       process.execPath,
       [
@@ -638,7 +833,7 @@ describe("Codex plugin package generation", () => {
         "tsx",
         "src/native-runtime/index.ts",
         "codex-export-generate-plugin",
-        JSON.stringify({ output_dir: pluginRoot }),
+        JSON.stringify({ output_dir: pluginRoot, runtime_bundle_path: runtimeBundlePath }),
       ],
       {
         cwd: process.cwd(),
@@ -660,9 +855,18 @@ describe("Codex plugin package generation", () => {
         command: string;
         args: string[];
       };
+      runtime_bundle: {
+        path: string;
+        version: string;
+      };
     };
     assert.equal(generated.status, "success");
     assert.equal(generated.mcp_server.command, process.execPath);
+    assert.equal(generated.runtime_bundle.version, "0.1.3");
+    assert.equal(
+      generated.runtime_bundle.path,
+      join(pluginRoot, "runtime", "native-runtime", "0.1.3", "index.mjs"),
+    );
 
     const mcp = JSON.parse(await readFile(join(pluginRoot, ".mcp.json"), "utf8")) as {
       mcpServers: {
@@ -674,11 +878,15 @@ describe("Codex plugin package generation", () => {
     };
     assert.equal(mcp.mcpServers.geeagent.command, process.execPath);
     assert.deepEqual(mcp.mcpServers.geeagent.args, [
-      "--import",
-      "tsx",
-      resolve(process.cwd(), "src/native-runtime/index.ts"),
+      join(pluginRoot, "runtime", "native-runtime", "0.1.3", "index.mjs"),
       "codex-mcp",
     ]);
+    assert.equal(mcp.mcpServers.geeagent.args.includes("tsx"), false);
+    assert.equal(mcp.mcpServers.geeagent.args[0]?.includes("/private/example/geeagent"), false);
+    assert.equal(
+      await readFile(join(pluginRoot, "runtime", "native-runtime", "0.1.3", "index.mjs"), "utf8"),
+      "console.log('runtime bundle fixture');\n",
+    );
   });
 
   it("refreshes an explicit Codex marketplace entry when requested", async () => {
@@ -734,11 +942,12 @@ describe("Codex plugin package generation", () => {
 
   it("installs a home-local GeeAgent Codex plugin with marketplace defaults", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "geeagent-codex-home-"));
+    const runtimeBundlePath = join(tmpdir(), "geeagent-codex-install-runtime-bundle.mjs");
+    await writeFile(runtimeBundlePath, "console.log('install runtime bundle fixture');\n", "utf8");
     const raw = await handleNativeRuntimeCommand("codex-export-install-plugin", [
       JSON.stringify({
         home_dir: homeDir,
-        runtime_command: "node",
-        runtime_args: ["/opt/geeagent/dist/native-runtime/index.mjs", "codex-mcp"],
+        runtime_bundle_path: runtimeBundlePath,
       }),
     ]);
     const result = JSON.parse(raw) as {
@@ -746,12 +955,142 @@ describe("Codex plugin package generation", () => {
       plugin_root: string;
       marketplace_file?: string;
       install_hint?: string;
+      runtime_bundle?: {
+        path: string;
+        version: string;
+      };
+      codex_cache: {
+        plugin_root: string;
+        runtime_bundle?: {
+          path: string;
+          version: string;
+        };
+      };
     };
 
     assert.equal(result.status, "success");
     assert.equal(result.plugin_root, join(homeDir, "plugins", "geeagent-codex"));
+    assert.equal(
+      result.codex_cache.plugin_root,
+      join(homeDir, ".codex", "plugins", "cache", "geeagent-local", "geeagent-codex", "0.1.3"),
+    );
     assert.equal(result.marketplace_file, join(homeDir, ".agents", "plugins", "marketplace.json"));
-    assert.match(String(result.install_hint), /refresh Codex/i);
+    assert.match(String(result.install_hint), /cache was refreshed/i);
+    assert.equal(result.runtime_bundle?.version, "0.1.3");
+    assert.equal(
+      result.runtime_bundle?.path,
+      join(homeDir, "plugins", "geeagent-codex", "runtime", "native-runtime", "0.1.3", "index.mjs"),
+    );
+    assert.equal(result.codex_cache.runtime_bundle?.version, "0.1.3");
+    assert.equal(
+      result.codex_cache.runtime_bundle?.path,
+      join(
+        homeDir,
+        ".codex",
+        "plugins",
+        "cache",
+        "geeagent-local",
+        "geeagent-codex",
+        "0.1.3",
+        "runtime",
+        "native-runtime",
+        "0.1.3",
+        "index.mjs",
+      ),
+    );
+
+    const mcp = JSON.parse(
+      await readFile(join(homeDir, "plugins", "geeagent-codex", ".mcp.json"), "utf8"),
+    ) as {
+      mcpServers: {
+        geeagent: {
+          command: string;
+          args: string[];
+        };
+      };
+    };
+    assert.equal(mcp.mcpServers.geeagent.command, process.execPath);
+    assert.deepEqual(mcp.mcpServers.geeagent.args, [
+      join(homeDir, "plugins", "geeagent-codex", "runtime", "native-runtime", "0.1.3", "index.mjs"),
+      "codex-mcp",
+    ]);
+    assert.equal(mcp.mcpServers.geeagent.args[0]?.includes("/private/example/geeagent"), false);
+
+    const cachedMcp = JSON.parse(
+      await readFile(
+        join(
+          homeDir,
+          ".codex",
+          "plugins",
+          "cache",
+          "geeagent-local",
+          "geeagent-codex",
+          "0.1.3",
+          ".mcp.json",
+        ),
+        "utf8",
+      ),
+    ) as {
+      mcpServers: {
+        geeagent: {
+          command: string;
+          args: string[];
+        };
+      };
+    };
+    assert.equal(cachedMcp.mcpServers.geeagent.command, process.execPath);
+    assert.deepEqual(cachedMcp.mcpServers.geeagent.args, [
+      join(
+        homeDir,
+        ".codex",
+        "plugins",
+        "cache",
+        "geeagent-local",
+        "geeagent-codex",
+        "0.1.3",
+        "runtime",
+        "native-runtime",
+        "0.1.3",
+        "index.mjs",
+      ),
+      "codex-mcp",
+    ]);
+    assert.equal(cachedMcp.mcpServers.geeagent.args.includes("tsx"), false);
+    assert.equal(cachedMcp.mcpServers.geeagent.args[0]?.includes("/private/example/geeagent"), false);
+    assert.equal(
+      await readFile(
+        join(
+          homeDir,
+          ".codex",
+          "plugins",
+          "cache",
+          "geeagent-local",
+          "geeagent-codex",
+          "0.1.3",
+          "runtime",
+          "native-runtime",
+          "0.1.3",
+          "index.mjs",
+        ),
+        "utf8",
+      ),
+      "console.log('install runtime bundle fixture');\n",
+    );
+    assert.equal(
+      (await readdir(
+        join(
+          homeDir,
+          ".codex",
+          "plugins",
+          "cache",
+          "geeagent-local",
+          "geeagent-codex",
+          "0.1.3",
+          "gears",
+        ),
+      )).includes("telegram.bridge"),
+      true,
+    );
 
     const marketplace = JSON.parse(
       await readFile(join(homeDir, ".agents", "plugins", "marketplace.json"), "utf8"),

@@ -15,6 +15,7 @@ let package = Package(
             path: ".",
             exclude: [
                 ".codex",
+                ".build",
                 ".swift-build",
                 "dist",
                 "Resources",

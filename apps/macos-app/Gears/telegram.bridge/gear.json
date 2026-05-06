@@ -258,6 +258,110 @@
             "skill_hint": "Use only for configured push-only Telegram channels returned by GeeAgent. Never call Telegram Bot API directly or invent a target."
           }
         }
+      },
+      {
+        "id": "telegram_direct.send_file",
+        "title": "Send local file to the active Gee Direct Telegram chat",
+        "description": "Send a local file path to a Gee Direct Telegram conversation. The native Gear resolves the current Telegram chat from explicit account/chat args or the latest inbound Gee Direct thread, validates the local file, sends it through Telegram Bot API, and records the outbound message in the Telegram conversation log.",
+        "examples": [
+          "Send this local screenshot back to the Telegram chat",
+          "Upload /tmp/report.pdf to the current Gee Direct Telegram conversation"
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": ["file_path", "idempotency_key"],
+          "additionalProperties": false,
+          "properties": {
+            "file_path": {
+              "type": "string",
+              "description": "Local file path to send. Absolute paths are preferred."
+            },
+            "caption": {
+              "type": "string",
+              "description": "Optional Telegram caption."
+            },
+            "idempotency_key": {
+              "type": "string",
+              "description": "Caller-provided key used to avoid duplicate file sends."
+            },
+            "account_id": {
+              "type": "string",
+              "description": "Optional Gee Direct account id. If omitted, the native Gear uses the latest Gee Direct Telegram thread when available."
+            },
+            "chat_id": {
+              "type": "string",
+              "description": "Optional Telegram chat id. If omitted, the native Gear uses the latest Gee Direct Telegram thread for the selected account when available."
+            }
+          }
+        },
+        "output_schema": {
+          "type": "object",
+          "required": ["status", "fallback_attempted", "accountId", "chatId", "file", "error"],
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": ["success", "partial", "blocked", "degraded", "failed"]
+            },
+            "fallback_attempted": { "type": "boolean" },
+            "accountId": { "type": "string" },
+            "chatId": { "type": "string" },
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": { "type": "string" },
+                "redacted": { "type": "string" }
+              }
+            },
+            "file": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": { "type": "string" },
+                "name": { "type": "string" }
+              }
+            },
+            "delivery": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "telegramMessageId": { "type": "string" },
+                "sentAt": { "type": "string" },
+                "idempotencyKey": { "type": "string" },
+                "reused": { "type": "boolean" }
+              }
+            },
+            "error": {
+              "oneOf": [
+                { "type": "null" },
+                {
+                  "type": "object",
+                  "required": ["code", "message"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": { "type": "string" },
+                    "message": { "type": "string" },
+                    "retryAfterMs": { "type": "number" }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "side_effect": "network.telegram.send",
+        "permissions": [
+          "network.telegram",
+          "secret.telegram.read",
+          "gear_data.read",
+          "gear_data.write"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": false,
+            "reason": "This capability is contextual to an active Gee Direct Telegram chat and should stay inside GeeAgent's native runtime channel rather than being called from detached Codex pushes."
+          }
+        }
       }
     ]
   }

@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import GeeAgentMac
 
@@ -7,6 +8,7 @@ final class MediaGeneratorGearTests: XCTestCase {
         {
           "api_key": "secret-test-key",
           "image_generations_url": "https://api.xenodia.xyz/v1/images/generations",
+          "video_generations_url": "https://api.xenodia.xyz/v1/videos/generations",
           "task_retrieval_url": "https://api.xenodia.xyz/v1/tasks",
           "request_timeout_seconds": 45
         }
@@ -16,6 +18,7 @@ final class MediaGeneratorGearTests: XCTestCase {
 
         XCTAssertEqual(backend.apiKey, "secret-test-key")
         XCTAssertEqual(backend.imageGenerationsURL, "https://api.xenodia.xyz/v1/images/generations")
+        XCTAssertEqual(backend.videoGenerationsURL, "https://api.xenodia.xyz/v1/videos/generations")
         XCTAssertEqual(backend.taskRetrievalURL, "https://api.xenodia.xyz/v1/tasks")
         XCTAssertEqual(backend.requestTimeoutSeconds, 45)
     }
@@ -25,6 +28,7 @@ final class MediaGeneratorGearTests: XCTestCase {
         {
           "api_key": "secret-test-key",
           "image_generations_url": "https://api.xenodia.xyz/v1/images/generations",
+          "video_generations_url": "https://api.xenodia.xyz/v1/videos/generations",
           "task_retrieval_url": "https://api.xenodia.xyz/v1/tasks",
           "request_timeout_seconds": 45
         }
@@ -38,6 +42,7 @@ final class MediaGeneratorGearTests: XCTestCase {
 
         XCTAssertEqual(backend.apiKey, "secret-test-key")
         XCTAssertEqual(backend.imageGenerationsURL, "https://api.xenodia.xyz/v1/images/generations")
+        XCTAssertEqual(backend.videoGenerationsURL, "https://api.xenodia.xyz/v1/videos/generations")
         XCTAssertEqual(backend.taskRetrievalURL, "https://api.xenodia.xyz/v1/tasks")
         XCTAssertEqual(backend.requestTimeoutSeconds, 45)
     }
@@ -46,6 +51,7 @@ final class MediaGeneratorGearTests: XCTestCase {
         let backend = XenodiaMediaBackend(
             apiKey: "secret-test-key",
             imageGenerationsURL: "https://api.xenodia.xyz/v1/images/generations",
+            videoGenerationsURL: "https://api.xenodia.xyz/v1/videos/generations",
             taskRetrievalURL: "https://api.xenodia.xyz/v1/tasks",
             storageUploadURL: nil,
             requestTimeoutSeconds: 45
@@ -96,6 +102,48 @@ final class MediaGeneratorGearTests: XCTestCase {
         XCTAssertFalse(result.isFailed)
         XCTAssertEqual(result.resultURL, "https://cdn.xenodia.xyz/generated/a.png")
         XCTAssertEqual(result.progress, 100)
+    }
+
+    func testXenodiaTaskResponseParsesOfficialVideoSuccessPayload() throws {
+        let data = Data("""
+        {
+          "task_id": "task_123",
+          "state": "success",
+          "result": {
+            "created": 1760000100,
+            "data": [
+              { "url": "https://cdn.example.com/video.mp4" }
+            ],
+            "resolution": "720p"
+          },
+          "progress": 100,
+          "poll_url": "/v1/tasks/task_123"
+        }
+        """.utf8)
+
+        let result = try XenodiaImageGenerationClient.parseTaskResponse(data)
+
+        XCTAssertTrue(result.isSuccessful)
+        XCTAssertEqual(result.resultURL, "https://cdn.example.com/video.mp4")
+        XCTAssertEqual(result.progress, 100)
+    }
+
+    func testXenodiaAssetUploadResponseNormalizesAssetIDs() throws {
+        let assetIDData = Data("""
+        {
+          "data": {
+            "asset_id": "asset_123"
+          }
+        }
+        """.utf8)
+        let urlData = Data("""
+        {
+          "asset_url": "https://cdn.example.com/reference.png"
+        }
+        """.utf8)
+
+        XCTAssertEqual(try XenodiaImageGenerationClient.parseAssetUploadReference(assetIDData), "asset://asset_123")
+        XCTAssertEqual(try XenodiaImageGenerationClient.parseAssetUploadReference(urlData), "https://cdn.example.com/reference.png")
     }
 
     func testXenodiaTaskResponseAcceptsCompletedAliasAndAlternateURLKeys() throws {
@@ -204,6 +252,31 @@ final class MediaGeneratorGearTests: XCTestCase {
         XCTAssertEqual(tasks.first?.resultURL, "https://cdn.example/image.png")
         XCTAssertEqual(tasks.first?.references.first?.url, "https://example.com/ref.png")
         XCTAssertTrue(FileManager.default.fileExists(atPath: try database.taskFileURL(task.id).path))
+    }
+
+    func testMediaGeneratorReferencePreviewURLSupportsDisplayableImageReferencesOnly() {
+        let remote = MediaGeneratorReference(
+            id: "remote",
+            url: "https://cdn.example/reference.png",
+            localPath: nil,
+            displayName: "reference.png"
+        )
+        let asset = MediaGeneratorReference(
+            id: "asset",
+            url: "asset://reference-1",
+            localPath: nil,
+            displayName: "reference-1"
+        )
+        let local = MediaGeneratorReference(
+            id: "local",
+            url: nil,
+            localPath: "/tmp/reference.webp",
+            displayName: "reference.webp"
+        )
+
+        XCTAssertEqual(remote.previewURL?.absoluteString, "https://cdn.example/reference.png")
+        XCTAssertNil(asset.previewURL)
+        XCTAssertEqual(local.previewURL, URL(fileURLWithPath: "/tmp/reference.webp"))
     }
 
     func testMediaGeneratorFileDatabaseClearsPreBatchTaskHistory() throws {
@@ -326,6 +399,43 @@ final class MediaGeneratorGearTests: XCTestCase {
         XCTAssertEqual(store.imageHistory.map(\.localPath), [referenceURL.path])
         XCTAssertEqual(store.imageHistory.first?.url, nil)
         XCTAssertEqual(store.imageHistory.first?.displayName, "moodboard.png")
+    }
+
+    @MainActor
+    func testVideoLocalReferenceFileAddsReusableHistoryItem() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-generator-video-local-reference-history-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let referenceURL = root.appendingPathComponent("video-frame.png")
+        try Data([0x89, 0x50, 0x4E, 0x47]).write(to: referenceURL)
+        let store = MediaGeneratorGearStore(database: MediaGeneratorFileDatabase(rootURL: root.appendingPathComponent("gear-data", isDirectory: true)))
+
+        store.selectCategory(.video)
+        store.addReferenceFileURL(referenceURL)
+
+        XCTAssertEqual(store.references.map(\.localPath), [referenceURL.path])
+        XCTAssertEqual(store.imageHistory.map(\.localPath), [referenceURL.path])
+        XCTAssertEqual(store.imageHistory.first?.displayName, "video-frame.png")
+    }
+
+    @MainActor
+    func testClipboardImageAddsReusableReferenceFile() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-generator-clipboard-reference-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MediaGeneratorGearStore(database: MediaGeneratorFileDatabase(rootURL: root))
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("media-generator-\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        pasteboard.setData(Data([0x89, 0x50, 0x4E, 0x47]), forType: .png)
+
+        store.addClipboardReferenceImage(from: pasteboard)
+
+        XCTAssertEqual(store.references.count, 1)
+        let localPath = try XCTUnwrap(store.references.first?.localPath)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: localPath))
+        XCTAssertEqual(store.imageHistory.map(\.localPath), [localPath])
+        XCTAssertTrue(MediaGeneratorGearStore.pasteboardHasReferenceImage(pasteboard))
     }
 
     @MainActor
@@ -630,24 +740,44 @@ final class MediaGeneratorGearTests: XCTestCase {
         XCTAssertEqual(payload["capability_id"] as? String, "media_generator.list_models")
         XCTAssertEqual(payload["channel"] as? String, "xenodia")
         let models = payload["models"] as? [[String: Any]]
-        XCTAssertEqual(models?.map { $0["model"] as? String }, ["nano-banana-pro", "gpt-image-2"])
+        XCTAssertEqual(
+            models?.map { $0["model"] as? String },
+            [
+                "nano-banana-pro",
+                "gpt-image-2",
+                "veo3.1",
+                "veo3.1_fast",
+                "veo3.1_lite",
+                "seedance-2",
+                "seedance-2-fast"
+            ]
+        )
         let nanoFields = models?.first?["supported_fields"] as? [String]
         XCTAssertTrue(nanoFields?.contains("resolution") == true)
         XCTAssertTrue(nanoFields?.contains("output_format") == true)
-        let gptFields = models?.last?["supported_fields"] as? [String]
+        let gptFields = models?.first { $0["model"] as? String == "gpt-image-2" }?["supported_fields"] as? [String]
         XCTAssertTrue(gptFields?.contains("aspect_ratio") == true)
         XCTAssertTrue(gptFields?.contains("resolution") == true)
         XCTAssertFalse(gptFields?.contains("nsfw_checker") == true)
         XCTAssertFalse(gptFields?.contains("output_format") == true)
+        let veoFields = models?.first { $0["model"] as? String == "veo3.1_fast" }?["supported_fields"] as? [String]
+        XCTAssertTrue(veoFields?.contains("batch_count") == true)
+        XCTAssertTrue(veoFields?.contains("generation_type") == true)
+        XCTAssertTrue(veoFields?.contains("image_urls") == true)
+        let seedanceFields = models?.first { $0["model"] as? String == "seedance-2" }?["supported_fields"] as? [String]
+        XCTAssertTrue(seedanceFields?.contains("batch_count") == true)
+        XCTAssertTrue(seedanceFields?.contains("duration") == true)
+        XCTAssertTrue(seedanceFields?.contains("reference_video_urls") == true)
         let constraints = payload["constraints"] as? [String: Any]
         let referenceLimits = constraints?["max_total_references_by_model"] as? [String: Int]
         XCTAssertEqual(referenceLimits?["nano-banana-pro"], 8)
         XCTAssertEqual(referenceLimits?["gpt-image-2"], 16)
+        XCTAssertEqual(referenceLimits?["veo3.1_fast"], 3)
+        XCTAssertEqual(referenceLimits?["seedance-2"], 9)
         let batchConstraint = constraints?["batch_count"] as? [String: Int]
         XCTAssertEqual(batchConstraint?["maximum"], 4)
         XCTAssertEqual(constraints?["max_reference_file_bytes"] as? Int64, 31_457_280)
         let placeholders = payload["placeholders"] as? [String: String]
-        XCTAssertTrue(placeholders?["video"]?.contains("Xenodia video") == true)
         XCTAssertTrue(placeholders?["audio"]?.contains("Xenodia audio") == true)
     }
 
@@ -765,7 +895,7 @@ final class MediaGeneratorGearTests: XCTestCase {
     }
 
     @MainActor
-    func testUnsupportedVideoTaskFailsBeforeProviderCall() async {
+    func testAgentVideoBatchCountCreatesGroupedChildTasks() async {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-generator-video-tests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -773,13 +903,133 @@ final class MediaGeneratorGearTests: XCTestCase {
 
         let payload = await store.createAgentTask(args: [
             "category": "video",
-            "prompt": "Make a five second product teaser"
+            "model": "veo3.1_fast",
+            "prompt": "Make a five second product teaser",
+            "batch_count": 2
+        ])
+
+        XCTAssertEqual(payload["gear_id"] as? String, MediaGeneratorGearDescriptor.gearID)
+        XCTAssertEqual(payload["capability_id"] as? String, "media_generator.create_task")
+        XCTAssertEqual(payload["batch_count"] as? Int, 2)
+        XCTAssertNotNil(payload["batch_id"] as? String)
+        XCTAssertEqual(store.tasks.count, 2)
+        XCTAssertEqual(store.visibleTaskGroups.count, 1)
+        XCTAssertEqual(store.visibleTaskGroups.first?.tasks.count, 2)
+        XCTAssertEqual(Set(store.tasks.map(\.category)), [.video])
+        XCTAssertEqual(Set(store.tasks.map(\.modelID)), [.veo31Fast])
+        XCTAssertEqual(Set(store.tasks.map(\.batchCount)), [2])
+        XCTAssertEqual(Set(store.tasks.compactMap { $0.parameters["batch_count"] }), ["2"])
+        XCTAssertTrue(store.tasks.allSatisfy { $0.parameters["n"] == nil })
+        XCTAssertTrue(store.tasks.allSatisfy { $0.parameters["async"] == nil })
+        XCTAssertTrue(store.tasks.allSatisfy { $0.parameters["response_format"] == nil })
+        let payloadTasks = payload["tasks"] as? [[String: Any]]
+        XCTAssertEqual(payloadTasks?.count, 2)
+    }
+
+    @MainActor
+    func testVeoReferenceModeRequiresFastModelBeforeProviderCall() async {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-generator-veo-reference-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MediaGeneratorGearStore(database: MediaGeneratorFileDatabase(rootURL: root))
+
+        let payload = await store.createAgentTask(args: [
+            "category": "video",
+            "model": "veo3.1",
+            "prompt": "Animate this product frame",
+            "generation_type": "REFERENCE_2_VIDEO",
+            "reference_urls": ["https://cdn.example/frame.png"]
         ])
 
         XCTAssertEqual(payload["gear_id"] as? String, MediaGeneratorGearDescriptor.gearID)
         XCTAssertEqual(payload["capability_id"] as? String, "media_generator.create_task")
         XCTAssertEqual(payload["status"] as? String, "failed")
-        XCTAssertTrue((payload["error"] as? String)?.contains("future Xenodia media endpoints") == true)
+        XCTAssertTrue((payload["error"] as? String)?.contains("only supports veo3.1_fast") == true)
+        XCTAssertTrue(store.tasks.isEmpty)
+    }
+
+    @MainActor
+    func testVeoFastReferenceURLsInferReferenceGenerationType() async {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-generator-veo-fast-reference-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MediaGeneratorGearStore(database: MediaGeneratorFileDatabase(rootURL: root))
+
+        _ = await store.createAgentTask(args: [
+            "category": "video",
+            "model": "veo3.1_fast",
+            "prompt": "Animate this product frame",
+            "reference_urls": ["https://cdn.example/frame.png"]
+        ])
+
+        XCTAssertEqual(store.tasks.count, 1)
+        XCTAssertEqual(store.tasks.first?.parameters["generation_type"], "REFERENCE_2_VIDEO")
+        XCTAssertEqual(store.tasks.first?.references.map(\.url), ["https://cdn.example/frame.png"])
+    }
+
+    @MainActor
+    func testAgentReferenceLimitFailsBeforeProviderCall() async {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-generator-reference-limit-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MediaGeneratorGearStore(database: MediaGeneratorFileDatabase(rootURL: root))
+        let referenceURLs = (1...17).map { "https://cdn.example/reference-\($0).png" }
+
+        let payload = await store.createAgentTask(args: [
+            "category": "image",
+            "model": "gpt-image-2",
+            "prompt": "Make a product board from these references",
+            "reference_urls": referenceURLs
+        ])
+
+        XCTAssertEqual(payload["gear_id"] as? String, MediaGeneratorGearDescriptor.gearID)
+        XCTAssertEqual(payload["capability_id"] as? String, "media_generator.create_task")
+        XCTAssertEqual(payload["status"] as? String, "failed")
+        XCTAssertTrue((payload["error"] as? String)?.contains("at most 16 total references") == true)
+        XCTAssertTrue(store.tasks.isEmpty)
+    }
+
+    @MainActor
+    func testSeedanceFirstFrameRejectsReferenceImageArrayBeforeProviderCall() async {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-generator-seedance-image-reference-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MediaGeneratorGearStore(database: MediaGeneratorFileDatabase(rootURL: root))
+
+        let payload = await store.createAgentTask(args: [
+            "category": "video",
+            "model": "seedance-2",
+            "prompt": "Animate a product reveal",
+            "first_frame_url": "asset://first-frame",
+            "reference_image_urls": ["https://cdn.example/style.png"]
+        ])
+
+        XCTAssertEqual(payload["gear_id"] as? String, MediaGeneratorGearDescriptor.gearID)
+        XCTAssertEqual(payload["capability_id"] as? String, "media_generator.create_task")
+        XCTAssertEqual(payload["status"] as? String, "failed")
+        XCTAssertTrue((payload["error"] as? String)?.contains("cannot be combined") == true)
+        XCTAssertTrue(store.tasks.isEmpty)
+    }
+
+    @MainActor
+    func testSeedanceFirstFrameRejectsReferenceVideoArrayBeforeProviderCall() async {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-generator-seedance-reference-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MediaGeneratorGearStore(database: MediaGeneratorFileDatabase(rootURL: root))
+
+        let payload = await store.createAgentTask(args: [
+            "category": "video",
+            "model": "seedance-2",
+            "prompt": "Animate a product reveal",
+            "first_frame_url": "asset://first-frame",
+            "reference_video_urls": ["https://cdn.example/motion.mp4"]
+        ])
+
+        XCTAssertEqual(payload["gear_id"] as? String, MediaGeneratorGearDescriptor.gearID)
+        XCTAssertEqual(payload["capability_id"] as? String, "media_generator.create_task")
+        XCTAssertEqual(payload["status"] as? String, "failed")
+        XCTAssertTrue((payload["error"] as? String)?.contains("cannot be combined") == true)
         XCTAssertTrue(store.tasks.isEmpty)
     }
 }

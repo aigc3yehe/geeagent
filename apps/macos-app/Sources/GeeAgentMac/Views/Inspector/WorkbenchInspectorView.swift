@@ -11,6 +11,8 @@ struct WorkbenchInspectorView: View {
                     homeInspector
                 case .chat:
                     chatInspector
+                case .telegram:
+                    telegramInspector
                 case .tasks:
                     taskInspector
                 case .logs:
@@ -47,6 +49,13 @@ struct WorkbenchInspectorView: View {
                 LabeledContent("Next automation", value: store.homeSummary.nextAutomationLabel)
                 LabeledContent("Installed gears", value: "\(store.installedApps.count)")
             }
+        }
+    }
+
+    private var telegramInspector: some View {
+        WorkbenchInspectorCard(title: "Telegram") {
+            LabeledContent("Gear", value: "telegram.bridge")
+            LabeledContent("Surface", value: "Conversation log")
         }
     }
 

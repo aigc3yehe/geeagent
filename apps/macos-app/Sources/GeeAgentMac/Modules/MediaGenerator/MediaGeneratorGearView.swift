@@ -1,5 +1,7 @@
 import AppKit
+import AVFoundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct MediaGeneratorGearModuleView: View {
     var body: some View {
@@ -19,7 +21,8 @@ private struct MediaGeneratorGearRootView: View {
     @State private var pastedReferenceURL = ""
     @State private var isReferenceDropzoneHovered = false
     @State private var previewTask: MediaGeneratorTask?
-    @State private var previewScale = 1.0
+    @State private var previewReference: MediaGeneratorReference?
+    @State private var unmutedVideoTaskIDs: Set<MediaGeneratorTask.ID> = []
     @State private var isQuickPromptEditorPresented = false
     @State private var isImageHistoryPresented = false
 
@@ -36,10 +39,12 @@ private struct MediaGeneratorGearRootView: View {
             if let previewTask {
                 MediaGeneratorPreviewOverlay(
                     task: previewTask,
-                    scale: $previewScale,
+                    isVideoMuted: isVideoMuted(previewTask),
+                    onToggleVideoMute: {
+                        toggleVideoMute(previewTask)
+                    },
                     onClose: {
                         self.previewTask = nil
-                        previewScale = 1
                     },
                     onDownload: {
                         store.downloadResult(previewTask)
@@ -47,10 +52,29 @@ private struct MediaGeneratorGearRootView: View {
                 )
                 .transition(.opacity)
             }
+            if let previewReference, let previewURL = previewReference.previewURL {
+                MediaGeneratorReferencePreviewOverlay(
+                    reference: previewReference,
+                    url: previewURL,
+                    onClose: {
+                        self.previewReference = nil
+                    }
+                )
+                .transition(.opacity)
+            }
         }
         .foregroundStyle(.white)
         .animation(.easeOut(duration: 0.16), value: previewTask?.id)
+        .animation(.easeOut(duration: 0.16), value: previewReference?.id)
         .background(MediaGeneratorThinScrollbars())
+        .background(
+            MediaGeneratorReferencePasteMonitor(
+                isEnabled: store.category == .image || store.category == .video,
+                onPasteImage: {
+                    store.addClipboardReferenceImage()
+                }
+            )
+        )
         .sheet(isPresented: $isQuickPromptEditorPresented) {
             MediaGeneratorQuickPromptEditor(store: store)
         }
@@ -59,13 +83,28 @@ private struct MediaGeneratorGearRootView: View {
         }
     }
 
+    private func isVideoMuted(_ task: MediaGeneratorTask) -> Bool {
+        task.category != .video || !unmutedVideoTaskIDs.contains(task.id)
+    }
+
+    private func toggleVideoMute(_ task: MediaGeneratorTask) {
+        guard task.category == .video else {
+            return
+        }
+        if unmutedVideoTaskIDs.contains(task.id) {
+            unmutedVideoTaskIDs.remove(task.id)
+        } else {
+            unmutedVideoTaskIDs.insert(task.id)
+        }
+    }
+
     private var leftPanel: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 categorySwitcher
 
-                if store.category == .image {
-                    imageModelControls
+                if store.category == .image || store.category == .video {
+                    mediaModelControls
                     promptStudioSection
                     referencesPanel
                     generateFooter
@@ -80,7 +119,8 @@ private struct MediaGeneratorGearRootView: View {
                     Text(store.statusMessage)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.white.opacity(0.66))
-                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
                     Spacer()
                 }
                 .padding(.top, 2)
@@ -95,7 +135,7 @@ private struct MediaGeneratorGearRootView: View {
         HStack(spacing: 2) {
             ForEach(MediaGeneratorCategory.allCases) { category in
                 Button {
-                    store.category = category
+                    store.selectCategory(category)
                 } label: {
                     Label(localizedCategoryTitle(category), systemImage: category.systemImage)
                         .labelStyle(.titleAndIcon)
@@ -113,7 +153,7 @@ private struct MediaGeneratorGearRootView: View {
         }
     }
 
-    private var imageModelControls: some View {
+    private var mediaModelControls: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack(alignment: .top, spacing: 12) {
                 MediaGeneratorReadonlyField(title: "Provider", value: "Xenodia")
@@ -122,7 +162,7 @@ private struct MediaGeneratorGearRootView: View {
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.white.opacity(0.56))
                     Menu {
-                        ForEach(MediaGeneratorModelID.allCases) { model in
+                        ForEach(MediaGeneratorGearStore.availableModels(for: store.category)) { model in
                             Button(model.title) {
                                 store.selectModel(model)
                             }
@@ -167,20 +207,62 @@ private struct MediaGeneratorGearRootView: View {
                     selection: resolutionBinding,
                     options: MediaGeneratorGearStore.supportedResolutions(for: store.selectedModel, aspectRatio: store.aspectRatio)
                 )
-                if store.selectedModel == .nanoBananaPro {
+                if store.category == .image, store.selectedModel == .nanoBananaPro {
                     MediaGeneratorOptionField(
                         title: "Format",
                         selection: $store.outputFormat,
                         options: MediaGeneratorOutputFormat.allCases
                     )
                 }
-                MediaGeneratorImageCountField(selection: $store.imageCount)
+                if store.category == .image || store.category == .video {
+                    MediaGeneratorMediaCountField(
+                        title: store.category == .video ? "Videos" : "Images",
+                        selection: $store.imageCount
+                    )
+                }
+                if store.category == .video {
+                    MediaGeneratorVideoModeField(
+                        selection: videoGenerationTypeBinding,
+                        options: MediaGeneratorGearStore.supportedVideoGenerationTypes(for: store.selectedModel)
+                    )
+                    if store.selectedModel.isSeedance {
+                        MediaGeneratorVideoDurationField(selection: $store.videoDuration)
+                    }
+                }
             }
-            MediaGeneratorCheckboxRow(
-                title: "Async task",
-                subtitle: "Keep Gee responsive while polling.",
-                isOn: $store.useAsync
-            )
+            if store.category == .image {
+                MediaGeneratorCheckboxRow(
+                    title: "Async task",
+                    helpText: "When enabled, Gee asks Xenodia to create a background task and polls until the generated image is ready. When disabled, Gee asks Xenodia for a synchronous response; if the provider supports it, the result can return directly, but long generations are more likely to hit request timeouts.",
+                    isOn: $store.useAsync
+                )
+            }
+            if store.selectedModel.isSeedance {
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(), spacing: 12),
+                        GridItem(.flexible(), spacing: 12)
+                    ],
+                    alignment: .leading,
+                    spacing: 12
+                ) {
+                    MediaGeneratorCheckboxRow(
+                        title: "Audio",
+                        helpText: "Ask Seedance to generate audio together with the video when the selected model and prompt support it.",
+                        isOn: $store.generateAudio
+                    )
+                    MediaGeneratorCheckboxRow(
+                        title: "Web Search",
+                        helpText: "Allow Seedance to use provider-side web grounding for prompts that benefit from current external context.",
+                        isOn: $store.webSearch
+                    )
+                    MediaGeneratorCheckboxRow(
+                        title: "NSFW Check",
+                        helpText: "Enable provider-side safety screening for the generated video output.",
+                        isOn: $store.nsfwChecker
+                    )
+                }
+            }
         }
     }
 
@@ -278,7 +360,7 @@ private struct MediaGeneratorGearRootView: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(MediaGeneratorPrimaryButtonStyle())
-            .disabled(store.category != .image || store.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(store.category == .audio || store.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
     }
 
@@ -315,6 +397,16 @@ private struct MediaGeneratorGearRootView: View {
         )
     }
 
+    private var videoGenerationTypeBinding: Binding<MediaGeneratorVideoGenerationType> {
+        Binding(
+            get: { store.videoGenerationType },
+            set: { value in
+                store.videoGenerationType = value
+                store.normalizeSelectionForCurrentModel()
+            }
+        )
+    }
+
     private var referencesPanel: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -326,6 +418,12 @@ private struct MediaGeneratorGearRootView: View {
                     .foregroundStyle(MediaGeneratorPalette.accent)
                 Spacer()
                 Button {
+                    store.addClipboardReferenceImage()
+                } label: {
+                    Label("Paste", systemImage: "doc.on.clipboard")
+                }
+                .buttonStyle(MediaGeneratorPillButtonStyle())
+                Button {
                     isImageHistoryPresented = true
                 } label: {
                     Label("History", systemImage: "clock.arrow.circlepath")
@@ -334,7 +432,7 @@ private struct MediaGeneratorGearRootView: View {
             }
 
             HStack(spacing: 8) {
-                TextField("Paste image URL", text: $pastedReferenceURL)
+                TextField(store.category == .video ? "Paste image URL or asset://" : "Paste image URL", text: $pastedReferenceURL)
                     .textFieldStyle(.plain)
                     .font(.caption)
                     .padding(.horizontal, 10)
@@ -357,7 +455,7 @@ private struct MediaGeneratorGearRootView: View {
                 VStack(spacing: 6) {
                     Image(systemName: isReferenceDropzoneHovered ? "photo.badge.plus.fill" : "photo.badge.plus")
                         .font(.system(size: 22, weight: .medium))
-                    Text("Click or drag local references")
+                    Text("Click or drag reference images")
                         .font(.system(size: 11, weight: .medium))
                 }
                 .foregroundStyle(isReferenceDropzoneHovered ? .white : .white.opacity(0.62))
@@ -377,13 +475,33 @@ private struct MediaGeneratorGearRootView: View {
             }
             .buttonStyle(.plain)
             .onHover { isReferenceDropzoneHovered = $0 }
+            .dropDestination(for: URL.self) { urls, _ in
+                guard !urls.isEmpty else {
+                    return false
+                }
+                for url in urls {
+                    store.addReferenceFileURL(url)
+                }
+                return true
+            } isTargeted: { isTargeted in
+                isReferenceDropzoneHovered = isTargeted
+            }
 
             if !store.references.isEmpty {
                 LazyVGrid(columns: Array(repeating: GridItem(.fixed(62), spacing: 7), count: 5), alignment: .leading, spacing: 7) {
                     ForEach(store.references) { reference in
-                        MediaGeneratorReferenceThumb(reference: reference) {
-                            store.removeReference(reference)
-                        }
+                        MediaGeneratorReferenceThumb(
+                            reference: reference,
+                            onPreview: {
+                                previewReference = reference
+                            },
+                            onRemove: {
+                                store.removeReference(reference)
+                                if previewReference?.id == reference.id {
+                                    previewReference = nil
+                                }
+                            }
+                        )
                     }
                 }
             }
@@ -453,7 +571,7 @@ private struct MediaGeneratorGearRootView: View {
                             .font(.system(size: 30, weight: .medium))
                         Text(store.tasks.isEmpty ? "No generation tasks yet" : "No matching tasks")
                             .font(.subheadline.weight(.semibold))
-                        Text(store.tasks.isEmpty ? "Generated images and async status will appear here." : "Try another status, model, or search keyword.")
+                        Text(store.tasks.isEmpty ? "Generated images, videos, and async status will appear here." : "Try another status, model, or search keyword.")
                             .font(.caption)
                             .foregroundStyle(.white.opacity(0.44))
                     }
@@ -468,9 +586,14 @@ private struct MediaGeneratorGearRootView: View {
                                 MediaGeneratorTaskGroupCard(
                                     group: group,
                                     isSelected: group.tasks.contains { $0.id == store.selectedTaskID },
+                                    isVideoMuted: { task in
+                                        isVideoMuted(task)
+                                    },
                                     onPreview: { task in
-                                        previewScale = 1
                                         previewTask = task
+                                    },
+                                    onToggleVideoMute: { task in
+                                        toggleVideoMute(task)
                                     },
                                     onDownload: { task in
                                         store.downloadResult(task)
@@ -491,7 +614,7 @@ private struct MediaGeneratorGearRootView: View {
                                         store.toggleStar(group)
                                     },
                                     onDelete: {
-                                        store.confirmAndDelete(group)
+                                        store.delete(group)
                                     }
                                 ) {
                                     store.selectedTaskID = group.representative.id
@@ -501,9 +624,12 @@ private struct MediaGeneratorGearRootView: View {
                                 MediaGeneratorTaskCard(
                                     task: task,
                                     isSelected: store.selectedTaskID == task.id,
+                                    isVideoMuted: isVideoMuted(task),
                                     onPreview: {
-                                        previewScale = 1
                                         previewTask = task
+                                    },
+                                    onToggleVideoMute: {
+                                        toggleVideoMute(task)
                                     },
                                     onDownload: {
                                         store.downloadResult(task)
@@ -524,7 +650,7 @@ private struct MediaGeneratorGearRootView: View {
                                         store.toggleStar(task)
                                     },
                                     onDelete: {
-                                        store.confirmAndDelete(task)
+                                        store.delete(task)
                                     }
                                 ) {
                                     store.selectedTaskID = task.id
@@ -597,12 +723,13 @@ private struct MediaGeneratorOptionField<Value: Identifiable & RawRepresentable 
     }
 }
 
-private struct MediaGeneratorImageCountField: View {
+private struct MediaGeneratorMediaCountField: View {
+    var title: String
     @Binding var selection: Int
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Images")
+            Text(title)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.white.opacity(0.56))
             Menu {
@@ -627,10 +754,72 @@ private struct MediaGeneratorImageCountField: View {
     }
 }
 
+private struct MediaGeneratorVideoModeField: View {
+    @Binding var selection: MediaGeneratorVideoGenerationType
+    var options: [MediaGeneratorVideoGenerationType]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Mode")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white.opacity(0.56))
+            Menu {
+                ForEach(options) { mode in
+                    Button(mode.title) {
+                        selection = mode
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(selection.title)
+                        .font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                    Spacer()
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.45))
+                }
+            }
+            .buttonStyle(MediaGeneratorSelectButtonStyle())
+        }
+    }
+}
+
+private struct MediaGeneratorVideoDurationField: View {
+    @Binding var selection: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Seconds")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white.opacity(0.56))
+            Menu {
+                ForEach(4...15, id: \.self) { seconds in
+                    Button("\(seconds)") {
+                        selection = seconds
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Text("\(selection)")
+                        .font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                    Spacer()
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.45))
+                }
+            }
+            .buttonStyle(MediaGeneratorSelectButtonStyle())
+        }
+    }
+}
+
 private struct MediaGeneratorCheckboxRow: View {
     var title: String
-    var subtitle: String
+    var helpText: String?
     @Binding var isOn: Bool
+    @State private var isHelpPresented = false
 
     var body: some View {
         Button {
@@ -640,14 +829,15 @@ private struct MediaGeneratorCheckboxRow: View {
                 Image(systemName: isOn ? "checkmark.square.fill" : "square")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(isOn ? MediaGeneratorPalette.success : .white.opacity(0.58))
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title)
-                        .font(.system(size: 11, weight: .medium))
-                    Text(subtitle)
-                        .font(.system(size: 10))
+                Text(title)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                Spacer()
+                if helpText != nil {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.42))
                 }
-                Spacer()
             }
             .padding(.horizontal, 8)
             .frame(height: 32)
@@ -658,6 +848,21 @@ private struct MediaGeneratorCheckboxRow: View {
             }
         }
         .buttonStyle(.plain)
+        .onHover { isHovering in
+            guard helpText != nil else { return }
+            isHelpPresented = isHovering
+        }
+        .popover(isPresented: $isHelpPresented, arrowEdge: .trailing) {
+            if let helpText {
+                Text(helpText)
+                    .font(.system(size: 12))
+                    .lineSpacing(3)
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(12)
+                    .frame(width: 280, alignment: .leading)
+            }
+        }
     }
 }
 
@@ -885,9 +1090,9 @@ private struct MediaGeneratorImageHistorySheet: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Image History")
+                    Text("Reference History")
                         .font(.system(size: 20, weight: .semibold))
-                    Text("Recent reference images from pasted links and local files.")
+                    Text("Recent reference images from pasted links, clipboard, and local files.")
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.50))
                 }
@@ -904,9 +1109,9 @@ private struct MediaGeneratorImageHistorySheet: View {
                 VStack(spacing: 10) {
                     Image(systemName: "photo.on.rectangle.angled")
                         .font(.system(size: 30, weight: .medium))
-                    Text("No image links yet")
+                    Text("No reference images yet")
                         .font(.subheadline.weight(.semibold))
-                    Text("Pasted reference URLs and local reference files will appear here.")
+                    Text("Pasted URLs, clipboard images, and local reference files will appear here.")
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.44))
                 }
@@ -1167,14 +1372,20 @@ private struct MediaGeneratorToggleRow: View {
 
 private struct MediaGeneratorReferenceThumb: View {
     var reference: MediaGeneratorReference
+    var onPreview: () -> Void
     var onRemove: () -> Void
     @State private var isHovered = false
 
     var body: some View {
         ZStack {
-            preview
-                .frame(width: 62, height: 62)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            Button(action: onPreview) {
+                preview
+                    .frame(width: 62, height: 62)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(reference.previewURL == nil)
+            .help(reference.previewURL == nil ? "This reference cannot be previewed directly." : "Open reference preview")
 
             if isHovered {
                 ZStack(alignment: .topTrailing) {
@@ -1191,6 +1402,14 @@ private struct MediaGeneratorReferenceThumb: View {
                     }
                     .buttonStyle(.plain)
                     .padding(4)
+                    if reference.previewURL != nil {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 10, weight: .bold))
+                            .padding(4)
+                            .background(.black.opacity(0.50), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                            .padding(4)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .transition(.opacity)
@@ -1217,19 +1436,35 @@ private struct MediaGeneratorReferenceThumb: View {
 
     @ViewBuilder
     private var preview: some View {
-        if let urlString = reference.url, let url = URL(string: urlString) {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case let .success(image):
-                    image.resizable().scaledToFill()
-                default:
-                    Rectangle().fill(.white.opacity(0.06))
+        if let url = reference.previewURL {
+            if url.isFileURL, let image = NSImage(contentsOf: url) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case let .success(image):
+                        image.resizable().scaledToFill()
+                    case .failure:
+                        Rectangle()
+                            .fill(.white.opacity(0.06))
+                            .overlay {
+                                Image(systemName: "exclamationmark.triangle")
+                                    .foregroundStyle(.orange.opacity(0.82))
+                            }
+                    default:
+                        Rectangle().fill(.white.opacity(0.06))
+                    }
                 }
             }
-        } else if let path = reference.localPath, let image = NSImage(contentsOfFile: path) {
-            Image(nsImage: image)
-                .resizable()
-                .scaledToFill()
+        } else if reference.url != nil {
+            Rectangle()
+                .fill(.white.opacity(0.06))
+                .overlay {
+                    Image(systemName: "link")
+                        .foregroundStyle(.white.opacity(0.52))
+                }
         } else {
             Rectangle().fill(.white.opacity(0.06))
         }
@@ -1287,6 +1522,208 @@ private struct MediaGeneratorResultImage: View {
     }
 }
 
+private struct MediaGeneratorResultMedia: View {
+    var task: MediaGeneratorTask
+    var url: URL
+    var mode: MediaGeneratorResultImage.Mode
+    var autoplay = false
+    var isMuted = true
+
+    var body: some View {
+        if task.category == .video {
+            MediaGeneratorResultVideo(url: url, mode: mode, autoplay: autoplay, isMuted: isMuted)
+        } else {
+            MediaGeneratorResultImage(url: url, mode: mode)
+        }
+    }
+}
+
+private struct MediaGeneratorResultVideo: View {
+    var url: URL
+    var mode: MediaGeneratorResultImage.Mode
+    var autoplay: Bool
+    var isMuted: Bool
+
+    var body: some View {
+        ZStack {
+            MediaGeneratorVideoPlayerView(
+                url: url,
+                mode: mode,
+                isPlaying: autoplay,
+                isMuted: isMuted
+            )
+
+            if !autoplay {
+                LinearGradient(
+                    colors: [.black.opacity(0.52), MediaGeneratorPalette.accent.opacity(0.22), .black.opacity(0.62)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                VStack(spacing: 10) {
+                    Image(systemName: "play.rectangle.fill")
+                        .font(.system(size: mode == .fill ? 30 : 44, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.86))
+                    Text(videoLabel)
+                        .font(.system(size: mode == .fill ? 10 : 13, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 12)
+                }
+            } else {
+                Image(systemName: "play.rectangle.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.78))
+                    .padding(8)
+                    .background(.black.opacity(0.34), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(8)
+            }
+        }
+    }
+
+    private var videoLabel: String {
+        if url.isFileURL {
+            return url.lastPathComponent.isEmpty ? "Generated video" : url.lastPathComponent
+        }
+        return url.host ?? "Generated video"
+    }
+}
+
+private struct MediaGeneratorVideoPlayerView: NSViewRepresentable {
+    var url: URL
+    var mode: MediaGeneratorResultImage.Mode
+    var isPlaying: Bool
+    var isMuted: Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> MediaGeneratorVideoPlayerContainerView {
+        let view = MediaGeneratorVideoPlayerContainerView()
+        context.coordinator.attach(to: view)
+        context.coordinator.update(url: url, mode: mode, isPlaying: isPlaying, isMuted: isMuted)
+        return view
+    }
+
+    func updateNSView(_ nsView: MediaGeneratorVideoPlayerContainerView, context: Context) {
+        context.coordinator.attach(to: nsView)
+        context.coordinator.update(url: url, mode: mode, isPlaying: isPlaying, isMuted: isMuted)
+    }
+
+    static func dismantleNSView(_ nsView: MediaGeneratorVideoPlayerContainerView, coordinator: Coordinator) {
+        coordinator.cleanup()
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        private weak var view: MediaGeneratorVideoPlayerContainerView?
+        private var player: AVPlayer?
+        private var currentURL: URL?
+        private var observedItem: AVPlayerItem?
+        private var shouldPlay = false
+
+        override init() {
+            super.init()
+        }
+
+        func attach(to view: MediaGeneratorVideoPlayerContainerView) {
+            self.view = view
+            view.playerLayer.player = player
+        }
+
+        func update(
+            url: URL,
+            mode: MediaGeneratorResultImage.Mode,
+            isPlaying: Bool,
+            isMuted: Bool
+        ) {
+            shouldPlay = isPlaying
+            if currentURL != url || player == nil {
+                configurePlayer(url: url)
+            }
+            view?.playerLayer.videoGravity = mode == .fill ? .resizeAspectFill : .resizeAspect
+            player?.isMuted = isMuted
+            if isPlaying {
+                player?.play()
+            } else {
+                player?.pause()
+            }
+        }
+
+        func cleanup() {
+            removeEndObserver()
+            player?.pause()
+            player = nil
+            currentURL = nil
+            view?.playerLayer.player = nil
+        }
+
+        private func configurePlayer(url: URL) {
+            removeEndObserver()
+            let item = AVPlayerItem(url: url)
+            let player = AVPlayer(playerItem: item)
+            player.actionAtItemEnd = .none
+            observedItem = item
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(playerDidReachEnd(_:)),
+                name: .AVPlayerItemDidPlayToEndTime,
+                object: item
+            )
+            self.player = player
+            currentURL = url
+            view?.playerLayer.player = player
+        }
+
+        private func removeEndObserver() {
+            if let observedItem {
+                NotificationCenter.default.removeObserver(
+                    self,
+                    name: .AVPlayerItemDidPlayToEndTime,
+                    object: observedItem
+                )
+            }
+            observedItem = nil
+        }
+
+        @objc private func playerDidReachEnd(_ notification: Notification) {
+            guard let item = notification.object as? AVPlayerItem,
+                  item == observedItem
+            else {
+                return
+            }
+            player?.seek(to: .zero)
+            if shouldPlay {
+                player?.play()
+            }
+        }
+    }
+}
+
+private final class MediaGeneratorVideoPlayerContainerView: NSView {
+    let playerLayer = AVPlayerLayer()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.26).cgColor
+        playerLayer.videoGravity = .resizeAspect
+        layer?.addSublayer(playerLayer)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func layout() {
+        super.layout()
+        playerLayer.frame = bounds
+    }
+}
+
 private struct MediaGeneratorImageSizing: ViewModifier {
     var mode: MediaGeneratorResultImage.Mode
 
@@ -1302,7 +1739,8 @@ private struct MediaGeneratorImageSizing: ViewModifier {
 
 private struct MediaGeneratorPreviewOverlay: View {
     var task: MediaGeneratorTask
-    @Binding var scale: Double
+    var isVideoMuted: Bool
+    var onToggleVideoMute: () -> Void
     var onClose: () -> Void
     var onDownload: () -> Void
 
@@ -1325,24 +1763,13 @@ private struct MediaGeneratorPreviewOverlay: View {
                     }
                     Spacer()
                     HStack(spacing: 8) {
-                        Button {
-                            scale = max(0.3, scale - 0.2)
-                        } label: {
-                            Image(systemName: "minus.magnifyingglass")
+                        if task.category == .video {
+                            Button(action: onToggleVideoMute) {
+                                Label(isVideoMuted ? "Sound Off" : "Sound On", systemImage: isVideoMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                            }
+                            .buttonStyle(MediaGeneratorPillButtonStyle())
+                            .help(isVideoMuted ? "Turn sound on" : "Mute video")
                         }
-                        .buttonStyle(MediaGeneratorPillButtonStyle())
-
-                        Text("\(Int(scale * 100))%")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.white.opacity(0.64))
-                            .frame(width: 46)
-
-                        Button {
-                            scale = min(4.0, scale + 0.2)
-                        } label: {
-                            Image(systemName: "plus.magnifyingglass")
-                        }
-                        .buttonStyle(MediaGeneratorPillButtonStyle())
 
                         Button(action: onDownload) {
                             Label("Download", systemImage: "arrow.down.to.line")
@@ -1363,11 +1790,16 @@ private struct MediaGeneratorPreviewOverlay: View {
                 }
 
                 if let url = task.resultDisplayURL {
-                    ScrollView([.horizontal, .vertical]) {
-                        MediaGeneratorResultImage(url: url, mode: .fit)
-                            .scaleEffect(scale)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .padding(36)
+                    GeometryReader { proxy in
+                        MediaGeneratorResultMedia(
+                            task: task,
+                            url: url,
+                            mode: .fit,
+                            autoplay: task.category == .video,
+                            isMuted: isVideoMuted
+                        )
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -1383,10 +1815,77 @@ private struct MediaGeneratorPreviewOverlay: View {
     }
 }
 
+private struct MediaGeneratorReferencePreviewOverlay: View {
+    var reference: MediaGeneratorReference
+    var url: URL
+    var onClose: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.84)
+                .background(.ultraThinMaterial)
+                .ignoresSafeArea()
+                .onTapGesture(perform: onClose)
+
+            VStack(spacing: 14) {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Reference Image")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(MediaGeneratorPalette.modelPurple)
+                        Text(reference.displayName)
+                            .font(.headline.weight(.semibold))
+                            .lineLimit(1)
+                        Text(sourceText)
+                            .font(.caption2)
+                            .foregroundStyle(.white.opacity(0.48))
+                            .lineLimit(1)
+                            .textSelection(.enabled)
+                    }
+                    Spacer()
+                    Button(action: onClose) {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(MediaGeneratorPillButtonStyle())
+                }
+                .padding(14)
+                .background(.black.opacity(0.44), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(.white.opacity(0.12), lineWidth: 0.8)
+                }
+
+                GeometryReader { proxy in
+                    MediaGeneratorResultImage(url: url, mode: .fit)
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(.white.opacity(0.10), lineWidth: 0.8)
+                }
+                .onTapGesture { }
+            }
+            .padding(28)
+        }
+    }
+
+    private var sourceText: String {
+        if url.isFileURL {
+            return url.path
+        }
+        return reference.url ?? url.absoluteString
+    }
+}
+
 private struct MediaGeneratorTaskCard: View {
     var task: MediaGeneratorTask
     var isSelected: Bool
+    var isVideoMuted: Bool
     var onPreview: () -> Void
+    var onToggleVideoMute: () -> Void
     var onDownload: () -> Void
     var onCopy: () -> Void
     var onReveal: () -> Void
@@ -1431,12 +1930,6 @@ private struct MediaGeneratorTaskCard: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
                     .background(statusColor.opacity(0.14), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                if let error = task.errorMessage {
-                    Text(error)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.red.opacity(0.86))
-                        .lineLimit(1)
-                }
                 Spacer()
                 HStack(spacing: 8) {
                     Button(action: onStar) {
@@ -1454,15 +1947,31 @@ private struct MediaGeneratorTaskCard: View {
                 }
             }
 
+            if let error = task.errorMessage {
+                MediaGeneratorCopyableErrorBlock(message: error)
+            }
+
             if let url = task.resultDisplayURL {
                 ZStack(alignment: .bottomLeading) {
-                    MediaGeneratorResultImage(url: url, mode: .fit)
+                    MediaGeneratorResultMedia(
+                        task: task,
+                        url: url,
+                        mode: .fit,
+                        autoplay: isHovered,
+                        isMuted: isVideoMuted
+                    )
                         .frame(maxWidth: .infinity)
                         .frame(minHeight: 180, maxHeight: 450)
                         .background(.black.opacity(0.20), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         .onTapGesture(perform: onPreview)
+
+                    if task.category == .video {
+                        MediaGeneratorVideoMuteButton(isMuted: isVideoMuted, action: onToggleVideoMute)
+                            .padding(8)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    }
 
                     if isHovered {
                         HStack(spacing: 6) {
@@ -1532,7 +2041,9 @@ private struct MediaGeneratorTaskCard: View {
 private struct MediaGeneratorTaskGroupCard: View {
     var group: MediaGeneratorTaskGroup
     var isSelected: Bool
+    var isVideoMuted: (MediaGeneratorTask) -> Bool
     var onPreview: (MediaGeneratorTask) -> Void
+    var onToggleVideoMute: (MediaGeneratorTask) -> Void
     var onDownload: (MediaGeneratorTask) -> Void
     var onCopy: (MediaGeneratorTask) -> Void
     var onReveal: (MediaGeneratorTask) -> Void
@@ -1557,7 +2068,10 @@ private struct MediaGeneratorTaskGroupCard: View {
                     .textCase(.uppercase)
                     .foregroundStyle(MediaGeneratorPalette.modelPurple)
                     .lineLimit(1)
-                MediaGeneratorTaskTinyBadge(text: "\(group.batchCount) IMAGES", color: MediaGeneratorPalette.accentLight)
+                MediaGeneratorTaskTinyBadge(
+                    text: "\(group.batchCount) \(representative.category.rawValue.uppercased())S",
+                    color: MediaGeneratorPalette.accentLight
+                )
                 Text(timeText)
                     .font(.system(size: 10))
                     .foregroundStyle(.white.opacity(0.40))
@@ -1605,12 +2119,18 @@ private struct MediaGeneratorTaskGroupCard: View {
                 }
             }
 
+            if let errorMessage {
+                MediaGeneratorCopyableErrorBlock(message: errorMessage)
+            }
+
             LazyVGrid(columns: columns, spacing: 8) {
                 ForEach(group.tasks.sorted(by: MediaGeneratorTaskGroup.sortTasks)) { task in
                     MediaGeneratorTaskGroupTile(
                         task: task,
                         isHovered: isHovered,
+                        isVideoMuted: isVideoMuted(task),
                         onPreview: { onPreview(task) },
+                        onToggleVideoMute: { onToggleVideoMute(task) },
                         onDownload: { onDownload(task) },
                         onCopy: { onCopy(task) },
                         onReveal: { onReveal(task) },
@@ -1653,12 +2173,28 @@ private struct MediaGeneratorTaskGroupCard: View {
             MediaGeneratorPalette.accent
         }
     }
+
+    private var errorMessage: String? {
+        let messages = group.tasks
+            .sorted(by: MediaGeneratorTaskGroup.sortTasks)
+            .compactMap { task -> String? in
+                guard let message = task.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !message.isEmpty
+                else {
+                    return nil
+                }
+                return group.isBatch ? "#\(task.batchIndex): \(message)" : message
+            }
+        return messages.isEmpty ? nil : messages.joined(separator: "\n\n")
+    }
 }
 
 private struct MediaGeneratorTaskGroupTile: View {
     var task: MediaGeneratorTask
     var isHovered: Bool
+    var isVideoMuted: Bool
     var onPreview: () -> Void
+    var onToggleVideoMute: () -> Void
     var onDownload: () -> Void
     var onCopy: () -> Void
     var onReveal: () -> Void
@@ -1666,9 +2202,12 @@ private struct MediaGeneratorTaskGroupTile: View {
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            tileContent
-                .frame(maxWidth: .infinity)
+            Color.clear
                 .aspectRatio(1, contentMode: .fit)
+                .overlay {
+                    tileContent
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
                 .background(.black.opacity(0.20), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -1688,6 +2227,12 @@ private struct MediaGeneratorTaskGroupTile: View {
             }
             .padding(7)
 
+            if task.category == .video, task.resultDisplayURL != nil {
+                MediaGeneratorVideoMuteButton(isMuted: isVideoMuted, action: onToggleVideoMute)
+                    .padding(7)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            }
+
             if isHovered, task.resultDisplayURL != nil {
                 HStack(spacing: 5) {
                     if task.isLocallyCached {
@@ -1700,7 +2245,7 @@ private struct MediaGeneratorTaskGroupTile: View {
                     }
                 }
                 .padding(7)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                 .transition(.opacity)
             }
         }
@@ -1709,7 +2254,13 @@ private struct MediaGeneratorTaskGroupTile: View {
     @ViewBuilder
     private var tileContent: some View {
         if let url = task.resultDisplayURL {
-            MediaGeneratorResultImage(url: url, mode: .fill)
+            MediaGeneratorResultMedia(
+                task: task,
+                url: url,
+                mode: .fit,
+                autoplay: isHovered,
+                isMuted: isVideoMuted
+            )
         } else if task.status == .running || task.status == .queued {
             Rectangle()
                 .fill(.white.opacity(0.055))
@@ -1735,8 +2286,122 @@ private struct MediaGeneratorTaskGroupTile: View {
                             .lineLimit(2)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, 8)
+                            .help(task.errorMessage ?? "Failed")
                     }
                 }
+        }
+    }
+}
+
+private struct MediaGeneratorCopyableErrorBlock: View {
+    var message: String
+    @State private var didCopy = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Label("Error", systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.red.opacity(0.88))
+                Spacer()
+                Button {
+                    copyMessage()
+                } label: {
+                    Label(didCopy ? "Copied" : "Copy", systemImage: didCopy ? "checkmark" : "doc.on.doc")
+                }
+                .buttonStyle(MediaGeneratorTaskActionButtonStyle(tint: didCopy ? .green : .red))
+            }
+
+            ScrollView(.vertical) {
+                Text(message)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.80))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+            }
+            .frame(maxHeight: 180)
+            .background(.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(.red.opacity(0.24), lineWidth: 0.8)
+            }
+        }
+        .padding(10)
+        .background(.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(.red.opacity(0.18), lineWidth: 0.8)
+        }
+    }
+
+    private func copyMessage() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(message, forType: .string)
+        didCopy = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+            didCopy = false
+        }
+    }
+}
+
+private struct MediaGeneratorReferencePasteMonitor: NSViewRepresentable {
+    var isEnabled: Bool
+    var onPasteImage: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(isEnabled: isEnabled, onPasteImage: onPasteImage)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        context.coordinator.install()
+        return NSView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.isEnabled = isEnabled
+        context.coordinator.onPasteImage = onPasteImage
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.uninstall()
+    }
+
+    final class Coordinator {
+        var isEnabled: Bool
+        var onPasteImage: () -> Void
+        private var monitor: Any?
+
+        init(isEnabled: Bool, onPasteImage: @escaping () -> Void) {
+            self.isEnabled = isEnabled
+            self.onPasteImage = onPasteImage
+        }
+
+        func install() {
+            guard monitor == nil else {
+                return
+            }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                let shortcutFlags = event.modifierFlags.intersection([.command, .control, .option, .shift])
+                guard let self,
+                      self.isEnabled,
+                      shortcutFlags == .command || shortcutFlags == [.command, .shift],
+                      event.charactersIgnoringModifiers?.lowercased() == "v",
+                      MediaGeneratorGearStore.pasteboardHasReferenceImage()
+                else {
+                    return event
+                }
+                self.onPasteImage()
+                return nil
+            }
+        }
+
+        func uninstall() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+            monitor = nil
         }
     }
 }
@@ -1831,6 +2496,27 @@ private struct MediaGeneratorOverlayIcon: View {
             return .yellow
         }
         return .white
+    }
+}
+
+private struct MediaGeneratorVideoMuteButton: View {
+    var isMuted: Bool
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(isMuted ? .white.opacity(0.86) : MediaGeneratorPalette.accentLight)
+                .frame(width: 28, height: 28)
+                .background(.black.opacity(0.58), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(isMuted ? .white.opacity(0.12) : MediaGeneratorPalette.accentLight.opacity(0.44), lineWidth: 0.8)
+                }
+        }
+        .buttonStyle(.plain)
+        .help(isMuted ? "Turn sound on" : "Mute video")
     }
 }
 

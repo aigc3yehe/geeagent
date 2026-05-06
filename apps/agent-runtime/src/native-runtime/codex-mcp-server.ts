@@ -10,6 +10,7 @@ import {
   listCodexExportCapabilities,
   PLANNED_CODEX_EXPORT_TOOLS,
   type CodexExportOptions,
+  type CodexExportCapability,
 } from "./codex-export.js";
 import {
   createExternalInvocation,
@@ -196,6 +197,11 @@ export const CODEX_MCP_TOOLS: McpTool[] = [
           type: "object",
           additionalProperties: true,
         },
+        wait_ms: {
+          type: "number",
+          description:
+            "Optional short wait window for the prior invocation to reach a terminal state before returning its latest status.",
+        },
       },
       additionalProperties: false,
     },
@@ -357,7 +363,11 @@ async function queueCapabilityInvocation(
     args: objectRecord(args.args) ?? {},
     caller: callerRecord(args),
   });
-  return await waitOrReturnInvocation(configDir, queued.external_invocation_id, waitMs(args));
+  return await waitOrReturnInvocation(
+    configDir,
+    queued.external_invocation_id,
+    waitMs(args, defaultWaitMsForCapability(capability.capability)),
+  );
 }
 
 async function queueOpenSurface(
@@ -375,7 +385,7 @@ async function queueOpenSurface(
     gear_id: stringValue(args.gear_id) ?? surfaceID,
     caller: callerRecord(args),
   });
-  return await waitOrReturnInvocation(configDir, queued.external_invocation_id, waitMs(args));
+  return await waitOrReturnInvocation(configDir, queued.external_invocation_id, waitMs(args, 15_000));
 }
 
 async function getInvocationResult(
@@ -386,7 +396,12 @@ async function getInvocationResult(
   if (!invocationID) {
     return failed("gee.codex_export.invocation_id_missing", "required string `invocation_id` is missing");
   }
-  const record = await getExternalInvocation(configDirFor(args, context), invocationID);
+  const configDir = configDirFor(args, context);
+  const waitMsValue = waitMs(args, 0);
+  const record =
+    waitMsValue > 0
+      ? await waitForExternalInvocation(configDir, invocationID, waitMsValue)
+      : await getExternalInvocation(configDir, invocationID);
   if (!record) {
     return failed(
       "gee.codex_export.invocation_not_found",
@@ -465,12 +480,16 @@ function configDirFor(args: Record<string, unknown>, context: CodexMcpRequestCon
   return resolveConfigDir(stringValue(args.config_dir) ?? context.configDir);
 }
 
-function waitMs(args: Record<string, unknown>): number {
+function waitMs(args: Record<string, unknown>, defaultValue: number): number {
   const value = args.wait_ms;
   if (typeof value !== "number" || !Number.isFinite(value)) {
-    return 15_000;
+    return defaultValue;
   }
   return Math.max(0, Math.min(Math.trunc(value), 60_000));
+}
+
+function defaultWaitMsForCapability(capability: CodexExportCapability): number {
+  return capability.side_effect === "read_only" ? 2_000 : 15_000;
 }
 
 function callerRecord(args: Record<string, unknown>): Record<string, unknown> | undefined {

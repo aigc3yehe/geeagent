@@ -1,5 +1,6 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
 
 import { runtimeSecurityPath, runtimeStorePath } from "../paths.js";
 import { defaultAgentProfile, defaultRuntimeStore } from "./defaults.js";
@@ -11,17 +12,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export async function loadRuntimeStore(configDir: string): Promise<RuntimeStore> {
-  try {
-    const raw = await readFile(runtimeStorePath(configDir), "utf8");
-    return normalizeRuntimeStore(JSON.parse(raw));
-  } catch (error) {
-    if (isMissingFileError(error)) {
-      return defaultRuntimeStore();
+  const path = runtimeStorePath(configDir);
+  let lastError: unknown;
+  const attempts = [0, 25, 75];
+  for (const delayMs of attempts) {
+    if (delayMs > 0) {
+      await sleep(delayMs);
     }
-    throw new Error(
-      `failed to load runtime store at ${runtimeStorePath(configDir)}: ${errorMessage(error)}`,
-    );
+    try {
+      const raw = await readFile(path, "utf8");
+      return normalizeRuntimeStore(JSON.parse(raw));
+    } catch (error) {
+      if (isMissingFileError(error)) {
+        return defaultRuntimeStore();
+      }
+      lastError = error;
+      if (!isRetryableRuntimeStoreReadError(error)) {
+        break;
+      }
+    }
   }
+
+  throw new Error(
+    `failed to load runtime store at ${path}: ${errorMessage(lastError)}`,
+  );
 }
 
 function isMissingFileError(error: unknown): boolean {
@@ -46,7 +60,14 @@ export async function persistRuntimeStore(
 ): Promise<void> {
   const path = runtimeStorePath(configDir);
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(store, null, 2)}\n`, "utf8");
+  const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tempPath, `${JSON.stringify(store, null, 2)}\n`, "utf8");
+    await rename(tempPath, path);
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 export async function loadSecurityPreferences(
@@ -128,6 +149,14 @@ function normalizeRuntimeStore(value: unknown): RuntimeStore {
   pruneOrphanConversationRuntimeHistory(store);
   syncConversationStatuses(store);
   return store;
+}
+
+function isRetryableRuntimeStoreReadError(error: unknown): boolean {
+  return error instanceof SyntaxError;
+}
+
+function sleep(delayMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 function pruneOrphanConversationRuntimeHistory(store: RuntimeStore): void {

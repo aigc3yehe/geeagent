@@ -299,7 +299,7 @@ private struct WorkbenchTopNavigation: View {
     @Bindable var store: WorkbenchStore
     var mode: Mode
 
-    private let primarySections: [WorkbenchSection] = [.chat, .automations, .agents, .settings]
+    private let primarySections: [WorkbenchSection] = [.chat, .telegram, .automations, .agents, .settings]
 
     var body: some View {
         VStack(spacing: 7) {

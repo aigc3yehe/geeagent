@@ -3,6 +3,7 @@ import Foundation
 enum WorkbenchSection: String, CaseIterable, Identifiable {
     case home
     case chat
+    case telegram
     case tasks
     case automations
     case apps
@@ -16,6 +17,7 @@ enum WorkbenchSection: String, CaseIterable, Identifiable {
         switch self {
         case .home: "Home"
         case .chat: "Chat"
+        case .telegram: "Telegram"
         case .tasks: "Tasks"
         case .automations: "Automations"
         case .apps: "Gears"
@@ -29,6 +31,7 @@ enum WorkbenchSection: String, CaseIterable, Identifiable {
         switch self {
         case .home: "house"
         case .chat: "bubble.left"
+        case .telegram: "paperplane"
         case .tasks: "checklist"
         case .automations: "bolt"
         case .apps: "square.grid.2x2"

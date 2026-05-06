@@ -21,6 +21,35 @@ struct AppIconForgeExportResult: Equatable {
     var generatedFiles: [URL]
 }
 
+struct AppIconForgeGearIconSettings: Equatable {
+    var sourceURL: URL
+    var outputDirectory: URL?
+    var baseName: String = "GearIcon"
+    var contentScale: Double = 0.84
+    var cornerRadiusRatio: Double = 0.18
+    var includesShadow: Bool = true
+}
+
+struct AppIconForgeGearIconResult: Equatable {
+    var sourceURL: URL
+    var outputDirectory: URL
+    var assetsDirectoryURL: URL
+    var iconURL: URL
+    var previewURL: URL
+    var metadataURL: URL
+    var manifestIconPath: String
+    var generatedFiles: [URL]
+}
+
+enum AppIconForgeGearIconSpec {
+    static let id = "gee.gear.icon.v1"
+    static let canvasWidthPixels = 780
+    static let canvasHeightPixels = 580
+    static let aspectRatio = "39:29"
+    static let manifestIconPath = "assets/icon.png"
+    static let intendedSurface = "gears_list"
+}
+
 enum AppIconForgeError: LocalizedError, Equatable {
     case sourceMissing(String)
     case sourceUnreadable(String)
@@ -62,6 +91,58 @@ enum AppIconForgeError: LocalizedError, Equatable {
     }
 }
 
+enum AppIconForgeOutputKind: String, CaseIterable, Identifiable {
+    case appIcon
+    case gearIcon
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .appIcon:
+            "macOS App"
+        case .gearIcon:
+            "Gear List"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .appIcon:
+            "Build .icns, .iconset, and Xcode appiconset outputs."
+        case .gearIcon:
+            "Build a simple list tile at assets/icon.png for the Gears catalog."
+        }
+    }
+
+    var actionTitle: String {
+        switch self {
+        case .appIcon:
+            "Export App Icons"
+        case .gearIcon:
+            "Export Gear Icon"
+        }
+    }
+
+    var previewSubtitle: String {
+        switch self {
+        case .appIcon:
+            "1024 canvas, transparent padding, rounded icon body"
+        case .gearIcon:
+            "780x580 PNG for manifest icon: assets/icon.png"
+        }
+    }
+
+    var exportingStatus: String {
+        switch self {
+        case .appIcon:
+            "Generating app icon package..."
+        case .gearIcon:
+            "Generating gear icon..."
+        }
+    }
+}
+
 enum AppIconForgeRenderer {
     struct IconSlot: Equatable {
         var size: Int
@@ -91,18 +172,7 @@ enum AppIconForgeRenderer {
     ]
 
     static func exportIcons(settings: AppIconForgeExportSettings) throws -> AppIconForgeExportResult {
-        let sourceURL = settings.sourceURL.standardizedFileURL
-        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
-            throw AppIconForgeError.sourceMissing(sourceURL.path)
-        }
-        guard FileManager.default.isReadableFile(atPath: sourceURL.path) else {
-            throw AppIconForgeError.sourceUnreadable(sourceURL.path)
-        }
-        guard let sourceImage = NSImage(contentsOf: sourceURL),
-              let croppedSource = centeredSquareImage(from: sourceImage)
-        else {
-            throw AppIconForgeError.imageDecodeFailed(sourceURL.path)
-        }
+        let (sourceURL, croppedSource) = try loadCroppedSourceImage(from: settings.sourceURL, targetAspectRatio: 1)
 
         let baseName = sanitizedBaseName(settings.baseName)
         guard !baseName.isEmpty else {
@@ -176,21 +246,101 @@ enum AppIconForgeRenderer {
         )
     }
 
+    static func exportGearIcon(settings: AppIconForgeGearIconSettings) throws -> AppIconForgeGearIconResult {
+        let (sourceURL, croppedSource) = try loadCroppedSourceImage(
+            from: settings.sourceURL,
+            targetAspectRatio: Double(AppIconForgeGearIconSpec.canvasWidthPixels) / Double(AppIconForgeGearIconSpec.canvasHeightPixels)
+        )
+
+        let baseName = sanitizedBaseName(settings.baseName)
+        guard !baseName.isEmpty else {
+            throw AppIconForgeError.invalidBaseName
+        }
+
+        let exportDirectory = try createExportDirectory(baseName: baseName, outputDirectory: settings.outputDirectory)
+        let assetsDirectory = exportDirectory.appendingPathComponent("assets", isDirectory: true)
+        let iconURL = assetsDirectory.appendingPathComponent("icon.png")
+        let previewURL = exportDirectory.appendingPathComponent("preview-780x580.png")
+        let metadataURL = exportDirectory.appendingPathComponent("gear-icon.json")
+
+        do {
+            try FileManager.default.createDirectory(at: assetsDirectory, withIntermediateDirectories: true)
+        } catch {
+            throw AppIconForgeError.outputCreateFailed(error.localizedDescription)
+        }
+
+        let icon = renderIcon(
+            sourceImage: croppedSource,
+            canvasSize: NSSize(
+                width: AppIconForgeGearIconSpec.canvasWidthPixels,
+                height: AppIconForgeGearIconSpec.canvasHeightPixels
+            ),
+            contentScale: clamped(settings.contentScale, min: 0.6, max: 0.95),
+            cornerRadiusRatio: clamped(settings.cornerRadiusRatio, min: 0.08, max: 0.28),
+            includesShadow: settings.includesShadow
+        )
+        try writePNG(icon, to: iconURL)
+        try writePNG(icon, to: previewURL)
+
+        let metadata: [String: Any] = [
+            "spec_id": AppIconForgeGearIconSpec.id,
+            "gear_id": AppIconForgeGearDescriptor.gearID,
+            "source_path": sourceURL.path,
+            "icon_path": iconURL.path,
+            "manifest_icon": AppIconForgeGearIconSpec.manifestIconPath,
+            "preview_path": previewURL.path,
+            "canvas_width_px": AppIconForgeGearIconSpec.canvasWidthPixels,
+            "canvas_height_px": AppIconForgeGearIconSpec.canvasHeightPixels,
+            "aspect_ratio": AppIconForgeGearIconSpec.aspectRatio,
+            "content_scale": clamped(settings.contentScale, min: 0.6, max: 0.95),
+            "corner_radius_ratio": clamped(settings.cornerRadiusRatio, min: 0.08, max: 0.28),
+            "shadow": settings.includesShadow,
+            "intended_surface": AppIconForgeGearIconSpec.intendedSurface
+        ]
+        let metadataData = try JSONSerialization.data(withJSONObject: metadata, options: [.prettyPrinted, .sortedKeys])
+        try metadataData.write(to: metadataURL, options: .atomic)
+
+        return AppIconForgeGearIconResult(
+            sourceURL: sourceURL,
+            outputDirectory: exportDirectory,
+            assetsDirectoryURL: assetsDirectory,
+            iconURL: iconURL,
+            previewURL: previewURL,
+            metadataURL: metadataURL,
+            manifestIconPath: AppIconForgeGearIconSpec.manifestIconPath,
+            generatedFiles: [iconURL, metadataURL, previewURL].sorted { $0.path < $1.path }
+        )
+    }
+
     static func centeredSquareImage(from image: NSImage) -> NSImage? {
+        centeredCroppedImage(from: image, targetAspectRatio: 1)
+    }
+
+    static func centeredCroppedImage(from image: NSImage, targetAspectRatio: Double) -> NSImage? {
         guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             return nil
         }
-        let square = min(cgImage.width, cgImage.height)
+        let targetAspectRatio = Swift.max(0.1, targetAspectRatio)
+        let sourceAspectRatio = Double(cgImage.width) / Double(cgImage.height)
+        let cropWidth: Int
+        let cropHeight: Int
+        if sourceAspectRatio > targetAspectRatio {
+            cropHeight = cgImage.height
+            cropWidth = Int(Double(cropHeight) * targetAspectRatio)
+        } else {
+            cropWidth = cgImage.width
+            cropHeight = Int(Double(cropWidth) / targetAspectRatio)
+        }
         let cropRect = CGRect(
-            x: (cgImage.width - square) / 2,
-            y: (cgImage.height - square) / 2,
-            width: square,
-            height: square
+            x: (cgImage.width - cropWidth) / 2,
+            y: (cgImage.height - cropHeight) / 2,
+            width: cropWidth,
+            height: cropHeight
         )
         guard let cropped = cgImage.cropping(to: cropRect) else {
             return nil
         }
-        return NSImage(cgImage: cropped, size: NSSize(width: square, height: square))
+        return NSImage(cgImage: cropped, size: NSSize(width: cropWidth, height: cropHeight))
     }
 
     static func renderIcon(
@@ -200,30 +350,74 @@ enum AppIconForgeRenderer {
         cornerRadiusRatio: Double,
         includesShadow: Bool
     ) -> NSImage {
-        let canvasSize = NSSize(width: pixelSize, height: pixelSize)
-        let image = NSImage(size: canvasSize)
-        image.lockFocus()
-        defer { image.unlockFocus() }
+        renderIcon(
+            sourceImage: sourceImage,
+            canvasSize: NSSize(width: pixelSize, height: pixelSize),
+            contentScale: contentScale,
+            cornerRadiusRatio: cornerRadiusRatio,
+            includesShadow: includesShadow
+        )
+    }
 
-        guard let context = NSGraphicsContext.current else {
+    static func renderIcon(
+        sourceImage: NSImage,
+        canvasSize: NSSize,
+        contentScale: Double,
+        cornerRadiusRatio: Double,
+        includesShadow: Bool
+    ) -> NSImage {
+        let width = Int(canvasSize.width.rounded())
+        let height = Int(canvasSize.height.rounded())
+        let image = NSImage(size: canvasSize)
+        guard width > 0, height > 0,
+              let bitmap = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: width,
+                pixelsHigh: height,
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 0,
+                bitsPerPixel: 0
+              ),
+              let context = NSGraphicsContext(bitmapImageRep: bitmap)
+        else {
             return image
         }
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        defer {
+            NSGraphicsContext.restoreGraphicsState()
+            image.addRepresentation(bitmap)
+        }
+
         context.imageInterpolation = .high
+        context.shouldAntialias = true
 
         NSColor.clear.setFill()
         NSRect(origin: .zero, size: canvasSize).fill()
 
-        let side = Double(pixelSize) * clamped(contentScale, min: 0.6, max: 0.95)
-        let origin = (Double(pixelSize) - side) / 2
-        let iconRect = NSRect(x: origin, y: origin, width: side, height: side)
-        let radius = side * clamped(cornerRadiusRatio, min: 0.08, max: 0.28)
+        let contentScale = clamped(contentScale, min: 0.6, max: 0.95)
+        let iconWidth = Double(width) * contentScale
+        let iconHeight = Double(height) * contentScale
+        let iconRect = NSRect(
+            x: (Double(width) - iconWidth) / 2,
+            y: (Double(height) - iconHeight) / 2,
+            width: iconWidth,
+            height: iconHeight
+        )
+        let radius = min(iconWidth, iconHeight) * clamped(cornerRadiusRatio, min: 0.08, max: 0.28)
         let path = NSBezierPath(roundedRect: iconRect, xRadius: radius, yRadius: radius)
+        let shortSide = CGFloat(min(width, height))
 
         if includesShadow {
             let shadow = NSShadow()
             shadow.shadowColor = NSColor.black.withAlphaComponent(0.24)
-            shadow.shadowBlurRadius = CGFloat(pixelSize) * 0.035
-            shadow.shadowOffset = NSSize(width: 0, height: -CGFloat(pixelSize) * 0.018)
+            shadow.shadowBlurRadius = shortSide * 0.035
+            shadow.shadowOffset = NSSize(width: 0, height: -shortSide * 0.018)
             NSGraphicsContext.saveGraphicsState()
             shadow.set()
             NSColor.white.setFill()
@@ -242,10 +436,26 @@ enum AppIconForgeRenderer {
         NSGraphicsContext.restoreGraphicsState()
 
         NSColor.white.withAlphaComponent(0.16).setStroke()
-        path.lineWidth = max(1, CGFloat(pixelSize) / 512)
+        path.lineWidth = max(1, shortSide / 512)
         path.stroke()
 
         return image
+    }
+
+    private static func loadCroppedSourceImage(from url: URL, targetAspectRatio: Double) throws -> (URL, NSImage) {
+        let sourceURL = url.standardizedFileURL
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            throw AppIconForgeError.sourceMissing(sourceURL.path)
+        }
+        guard FileManager.default.isReadableFile(atPath: sourceURL.path) else {
+            throw AppIconForgeError.sourceUnreadable(sourceURL.path)
+        }
+        guard let sourceImage = NSImage(contentsOf: sourceURL),
+              let croppedSource = centeredCroppedImage(from: sourceImage, targetAspectRatio: targetAspectRatio)
+        else {
+            throw AppIconForgeError.imageDecodeFailed(sourceURL.path)
+        }
+        return (sourceURL, croppedSource)
     }
 
     private static func writePNG(_ image: NSImage, to url: URL) throws {
@@ -351,9 +561,11 @@ final class AppIconForgeGearStore: ObservableObject {
     @Published var contentScale = 0.88
     @Published var cornerRadiusRatio = 0.22
     @Published var includesShadow = true
+    @Published var outputKind: AppIconForgeOutputKind = .appIcon
     @Published var isExporting = false
     @Published var statusMessage = "Ready"
     @Published var result: AppIconForgeExportResult?
+    @Published var gearIconResult: AppIconForgeGearIconResult?
     @Published var previewImage: NSImage?
     @Published var errorMessage: String?
 
@@ -394,20 +606,35 @@ final class AppIconForgeGearStore: ObservableObject {
         }
         isExporting = true
         errorMessage = nil
-        statusMessage = "Generating icon package..."
+        statusMessage = outputKind.exportingStatus
 
         do {
-            let export = try AppIconForgeRenderer.exportIcons(settings: AppIconForgeExportSettings(
-                sourceURL: sourceURL,
-                outputDirectory: outputDirectory,
-                baseName: outputName,
-                contentScale: contentScale,
-                cornerRadiusRatio: cornerRadiusRatio,
-                includesShadow: includesShadow
-            ))
-            result = export
-            previewImage = NSImage(contentsOf: export.previewURL)
-            statusMessage = "Generated \(export.icnsURL.lastPathComponent)"
+            switch outputKind {
+            case .appIcon:
+                let export = try AppIconForgeRenderer.exportIcons(settings: AppIconForgeExportSettings(
+                    sourceURL: sourceURL,
+                    outputDirectory: outputDirectory,
+                    baseName: outputName,
+                    contentScale: contentScale,
+                    cornerRadiusRatio: cornerRadiusRatio,
+                    includesShadow: includesShadow
+                ))
+                result = export
+                previewImage = NSImage(contentsOf: export.previewURL)
+                statusMessage = "Generated \(export.icnsURL.lastPathComponent)"
+            case .gearIcon:
+                let export = try AppIconForgeRenderer.exportGearIcon(settings: AppIconForgeGearIconSettings(
+                    sourceURL: sourceURL,
+                    outputDirectory: outputDirectory,
+                    baseName: outputName.isEmpty ? "GearIcon" : outputName,
+                    contentScale: contentScale,
+                    cornerRadiusRatio: cornerRadiusRatio,
+                    includesShadow: includesShadow
+                ))
+                gearIconResult = export
+                previewImage = NSImage(contentsOf: export.previewURL)
+                statusMessage = "Generated \(export.manifestIconPath)"
+            }
         } catch {
             errorMessage = error.localizedDescription
             statusMessage = "Export failed"
@@ -416,13 +643,23 @@ final class AppIconForgeGearStore: ObservableObject {
     }
 
     func revealResult() {
-        guard let result else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([result.outputDirectory])
+        guard let outputDirectory = activeOutputDirectory else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([outputDirectory])
     }
 
-    func runAgentAction(args: [String: Any]) -> [String: Any] {
+    var activeOutputDirectory: URL? {
+        switch outputKind {
+        case .appIcon:
+            result?.outputDirectory
+        case .gearIcon:
+            gearIconResult?.outputDirectory
+        }
+    }
+
+    func runAgentAction(capabilityID: String = "app_icon.generate", args: [String: Any]) -> [String: Any] {
         guard let sourcePath = args["source_path"] as? String ?? args["path"] as? String else {
             return failurePayload(
+                capabilityID: capabilityID,
                 code: "gear.args.source_path",
                 error: "`source_path` is required.",
                 recovery: "Pass a local image path selected or supplied by the user."
@@ -431,28 +668,59 @@ final class AppIconForgeGearStore: ObservableObject {
 
         let outputDir = args["output_dir"] as? String ?? args["output_directory"] as? String
         do {
-            let export = try AppIconForgeRenderer.exportIcons(settings: AppIconForgeExportSettings(
-                sourceURL: URL(fileURLWithPath: NSString(string: sourcePath).expandingTildeInPath),
-                outputDirectory: outputDir.map { URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath, isDirectory: true) },
-                baseName: (args["name"] as? String) ?? "AppIcon",
-                contentScale: numberArg(args["content_scale"]) ?? 0.88,
-                cornerRadiusRatio: numberArg(args["corner_radius_ratio"]) ?? 0.22,
-                includesShadow: (args["shadow"] as? Bool) ?? true
-            ))
-            result = export
-            sourceURL = export.sourceURL
-            outputDirectory = outputDir.map { URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath, isDirectory: true) }
-            previewImage = NSImage(contentsOf: export.previewURL)
-            statusMessage = "Generated \(export.icnsURL.lastPathComponent)"
-            return successPayload(export)
+            let expandedSourceURL = URL(fileURLWithPath: NSString(string: sourcePath).expandingTildeInPath)
+            let expandedOutputURL = outputDir.map { URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath, isDirectory: true) }
+            switch capabilityID {
+            case "app_icon.generate":
+                let export = try AppIconForgeRenderer.exportIcons(settings: AppIconForgeExportSettings(
+                    sourceURL: expandedSourceURL,
+                    outputDirectory: expandedOutputURL,
+                    baseName: (args["name"] as? String) ?? "AppIcon",
+                    contentScale: numberArg(args["content_scale"]) ?? 0.88,
+                    cornerRadiusRatio: numberArg(args["corner_radius_ratio"]) ?? 0.22,
+                    includesShadow: (args["shadow"] as? Bool) ?? true
+                ))
+                result = export
+                outputKind = .appIcon
+                sourceURL = export.sourceURL
+                outputDirectory = expandedOutputURL
+                previewImage = NSImage(contentsOf: export.previewURL)
+                statusMessage = "Generated \(export.icnsURL.lastPathComponent)"
+                return successPayload(export)
+            case "gear_icon.generate":
+                let export = try AppIconForgeRenderer.exportGearIcon(settings: AppIconForgeGearIconSettings(
+                    sourceURL: expandedSourceURL,
+                    outputDirectory: expandedOutputURL,
+                    baseName: (args["name"] as? String) ?? "GearIcon",
+                    contentScale: numberArg(args["content_scale"]) ?? 0.84,
+                    cornerRadiusRatio: numberArg(args["corner_radius_ratio"]) ?? 0.18,
+                    includesShadow: (args["shadow"] as? Bool) ?? true
+                ))
+                gearIconResult = export
+                outputKind = .gearIcon
+                sourceURL = export.sourceURL
+                outputDirectory = expandedOutputURL
+                previewImage = NSImage(contentsOf: export.previewURL)
+                statusMessage = "Generated \(export.manifestIconPath)"
+                return successPayload(export)
+            default:
+                return failurePayload(
+                    capabilityID: capabilityID,
+                    code: "gear.app_icon.capability_unsupported",
+                    error: "app.icon.forge does not support `\(capabilityID)` yet.",
+                    recovery: "Invoke app_icon.generate or gear_icon.generate."
+                )
+            }
         } catch let error as AppIconForgeError {
             return failurePayload(
+                capabilityID: capabilityID,
                 code: error.code,
                 error: error.localizedDescription,
                 recovery: recovery(for: error)
             )
         } catch {
             return failurePayload(
+                capabilityID: capabilityID,
                 code: "gear.app_icon.failed",
                 error: error.localizedDescription,
                 recovery: "Check the input image and output directory permissions, then retry."
@@ -481,11 +749,35 @@ final class AppIconForgeGearStore: ObservableObject {
         ]
     }
 
-    private func failurePayload(code: String, error: String, recovery: String) -> [String: Any] {
+    private func successPayload(_ result: AppIconForgeGearIconResult) -> [String: Any] {
+        [
+            "status": "succeeded",
+            "gear_id": AppIconForgeGearDescriptor.gearID,
+            "capability_id": "gear_icon.generate",
+            "source_path": result.sourceURL.path,
+            "output_dir": result.outputDirectory.path,
+            "assets_path": result.assetsDirectoryURL.path,
+            "icon_path": result.iconURL.path,
+            "manifest_icon": result.manifestIconPath,
+            "preview_path": result.previewURL.path,
+            "metadata_path": result.metadataURL.path,
+            "generated_files": result.generatedFiles.map(\.path),
+            "spec": [
+                "id": AppIconForgeGearIconSpec.id,
+                "canvas_width_px": AppIconForgeGearIconSpec.canvasWidthPixels,
+                "canvas_height_px": AppIconForgeGearIconSpec.canvasHeightPixels,
+                "aspect_ratio": AppIconForgeGearIconSpec.aspectRatio,
+                "manifest_icon": AppIconForgeGearIconSpec.manifestIconPath,
+                "intended_surface": AppIconForgeGearIconSpec.intendedSurface
+            ]
+        ]
+    }
+
+    private func failurePayload(capabilityID: String, code: String, error: String, recovery: String) -> [String: Any] {
         [
             "status": "failed",
             "gear_id": AppIconForgeGearDescriptor.gearID,
-            "capability_id": "app_icon.generate",
+            "capability_id": capabilityID,
             "code": code,
             "error": error,
             "recovery": recovery

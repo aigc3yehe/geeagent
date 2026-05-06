@@ -108,7 +108,6 @@ describe("Codex capability export projection", () => {
     assert.deepEqual(result.bridge_required_tools, [
       "gee_invoke_capability",
       "gee_open_surface",
-      "gee_get_invocation",
     ]);
   });
 
@@ -188,14 +187,29 @@ describe("Codex capability export projection", () => {
       "nano-banana-pro",
       "gpt-image-2",
       "image-2",
+      "veo3.1",
+      "veo3.1_fast",
+      "veo3.1_lite",
+      "seedance-2",
+      "seedance-2-fast",
+      "seedance2.0",
+      "seedance2.0-fast",
     ]);
+    assert.deepEqual(createTaskProperties?.category?.enum, ["image", "video"]);
     assert.equal(createTaskProperties?.batch_count?.minimum, 1);
     assert.equal(createTaskProperties?.batch_count?.maximum, 4);
+    assert.equal(createTaskProperties?.duration?.minimum, 4);
+    assert.equal(createTaskProperties?.duration?.maximum, 15);
     assert.ok(createTaskProperties?.aspect_ratio?.enum?.includes("3:4"));
+    assert.ok(createTaskProperties?.aspect_ratio?.enum?.includes("adaptive"));
     assert.ok(createTaskProperties?.resolution?.enum?.includes("2K"));
+    assert.ok(createTaskProperties?.resolution?.enum?.includes("720p"));
     assert.equal(createTaskProperties?.reference_urls?.maxItems, 16);
     assert.equal(createTaskProperties?.reference_paths?.maxItems, 16);
-    assert.equal("nsfw_checker" in (createTaskProperties ?? {}), false);
+    assert.equal(createTaskProperties?.reference_video_urls?.maxItems, 3);
+    assert.equal(createTaskProperties?.reference_audio_urls?.maxItems, 3);
+    assert.ok(createTaskProperties?.generation_type?.enum?.includes("REFERENCE_2_VIDEO"));
+    assert.equal("nsfw_checker" in (createTaskProperties ?? {}), true);
     assert.deepEqual(createTask?.permissions, [
       "network.xenodia",
       "provider.media_generation",
@@ -324,6 +338,27 @@ describe("Codex capability export projection", () => {
       side_effect: "read_only",
       skill_hint: "Use when Codex needs the safe fixture value.",
     });
+  });
+
+  it("deduplicates capability refs when multiple manifest roots expose the same Gear", async () => {
+    const firstRoot = await mkdtemp(join(tmpdir(), "geeagent-codex-export-a-"));
+    const secondRoot = await mkdtemp(join(tmpdir(), "geeagent-codex-export-b-"));
+    await writeGearManifest(firstRoot, "codex.safe", exportedGearManifest());
+    await writeGearManifest(secondRoot, "codex.safe", exportedGearManifest());
+
+    const raw = await handleNativeRuntimeCommand("codex-export-list-capabilities", [
+      JSON.stringify({ gear_roots: [firstRoot, secondRoot], gear_id: "codex.safe" }),
+    ]);
+    const result = JSON.parse(raw) as {
+      status: string;
+      capabilities: Array<{ capability_ref: string }>;
+    };
+
+    assert.equal(result.status, "success");
+    assert.deepEqual(
+      result.capabilities.map((capability) => capability.capability_ref),
+      ["codex.safe/safe.query"],
+    );
   });
 
   it("describes one exported capability without exposing hidden siblings", async () => {

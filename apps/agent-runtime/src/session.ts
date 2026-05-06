@@ -280,6 +280,9 @@ function buildSystemPrompt(
       lines.push(
         "- Never call `gee.gear.invoke` with guessed or empty required arguments. If required arguments are not known from the latest user request, recent assistant result, or a specific Gear schema, read the schema or report the missing argument as a real blockage.",
       );
+      lines.push(
+        "- When the current surface is Telegram and the user asks to send, upload, attach, or return a local file, first identify a real local file path with the available file tools, then invoke `telegram.bridge/telegram_direct.send_file` with `file_path` and a fresh `idempotency_key`. Inspect the structured result before replying; do not call Telegram Bot API directly.",
+      );
       lines.push(renderGearCapabilityContractHints());
       lines.push(
         '- For direct `mcp__gee__gear_invoke` tool calls, pass `gear_id`, `capability_id`, and `args` directly, for example `{"gear_id":"wespy.reader","capability_id":"wespy.fetch_article","args":{"url":"https://mp.weixin.qq.com/s/..."}}`. Only raw host-action directives use a `tool_id` plus `arguments` envelope.',

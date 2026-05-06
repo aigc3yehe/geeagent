@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
@@ -13,6 +13,7 @@ type CodexPluginGenerationOptions = {
   output_dir?: unknown;
   runtime_command?: unknown;
   runtime_args?: unknown;
+  runtime_bundle_path?: unknown;
   gear_roots?: unknown;
   marketplace_path?: unknown;
   marketplace_name?: unknown;
@@ -23,6 +24,7 @@ type CodexPluginGenerationOptions = {
 
 type CodexPluginInstallOptions = CodexPluginGenerationOptions & {
   home_dir?: unknown;
+  codex_cache_root?: unknown;
 };
 
 export type CodexPluginGenerationResult = {
@@ -41,10 +43,21 @@ export type CodexPluginGenerationResult = {
     command: string;
     args: string[];
   };
+  runtime_bundle?: {
+    version: string;
+    path: string;
+    relative_path: string;
+  };
   marketplace_file?: string;
 };
 
 export type CodexPluginInstallResult = CodexPluginGenerationResult & {
+  codex_cache: {
+    plugin_root: string;
+    files: string[];
+    mcp_server: CodexPluginGenerationResult["mcp_server"];
+    runtime_bundle?: CodexPluginGenerationResult["runtime_bundle"];
+  };
   install_hint: string;
 };
 
@@ -60,24 +73,28 @@ export async function generateCodexPluginPackage(
   options: CodexPluginGenerationOptions,
 ): Promise<CodexPluginGenerationResult> {
   const pluginRoot = outputDir(options.output_dir);
-  const defaultInvocation = defaultRuntimeInvocation();
-  const command = stringValue(options.runtime_command) ?? defaultInvocation.command;
-  const args = stringArray(options.runtime_args) ?? defaultInvocation.args;
 
   await mkdir(join(pluginRoot, ".codex-plugin"), { recursive: true });
   const skillRoot = join(pluginRoot, "skills", "gee-capabilities");
   await mkdir(skillRoot, { recursive: true });
 
+  const runtimeInvocation = await runtimeInvocationForPlugin(pluginRoot, options);
   await writeJson(join(pluginRoot, ".codex-plugin", "plugin.json"), pluginManifest());
-  await writeJson(join(pluginRoot, ".mcp.json"), mcpConfig(command, args));
-  const capabilityReferences = await writeCapabilityReferences(skillRoot, options);
+  await writeJson(
+    join(pluginRoot, ".mcp.json"),
+    mcpConfig(runtimeInvocation.command, runtimeInvocation.args),
+  );
+  const capabilityReferences = await writeCapabilityReferences(pluginRoot, skillRoot, options);
   await writeFile(
     join(skillRoot, "SKILL.md"),
     geeCapabilitiesSkill(capabilityReferences),
     "utf8",
   );
   const marketplaceFile = await maybeRefreshMarketplace(options, pluginRoot);
-  const files = [...BASE_GENERATED_FILES, ...capabilityReferences.files].sort();
+  const runtimeFiles = runtimeInvocation.runtimeBundle
+    ? [runtimeInvocation.runtimeBundle.relative_path]
+    : [];
+  const files = [...BASE_GENERATED_FILES, ...runtimeFiles, ...capabilityReferences.files].sort();
 
   return {
     status: "success",
@@ -92,9 +109,10 @@ export async function generateCodexPluginPackage(
     },
     mcp_server: {
       name: "geeagent",
-      command,
-      args,
+      command: runtimeInvocation.command,
+      args: runtimeInvocation.args,
     },
+    runtime_bundle: runtimeInvocation.runtimeBundle,
     marketplace_file: marketplaceFile,
   };
 }
@@ -105,22 +123,46 @@ export async function installCodexPluginPackage(
   const home = resolve(stringValue(options.home_dir) ?? homedir());
   const pluginRoot =
     stringValue(options.output_dir) ?? join(home, "plugins", PLUGIN_NAME);
+  const marketplaceName = stringValue(options.marketplace_name) ?? "geeagent-local";
   const marketplacePath =
     stringValue(options.marketplace_path) ?? join(home, ".agents", "plugins", "marketplace.json");
   const result = await generateCodexPluginPackage({
     ...options,
     output_dir: pluginRoot,
     marketplace_path: marketplacePath,
-    marketplace_name: stringValue(options.marketplace_name) ?? "geeagent-local",
+    marketplace_name: marketplaceName,
     marketplace_display_name:
       stringValue(options.marketplace_display_name) ?? "GeeAgent Local",
     marketplace_plugin_path:
       stringValue(options.marketplace_plugin_path) ?? `./plugins/${PLUGIN_NAME}`,
   });
+  const cacheResult = await generateCodexPluginPackage({
+    ...options,
+    output_dir: codexCacheRoot(options.codex_cache_root, home, marketplaceName),
+    ...(result.runtime_bundle
+      ? {
+          runtime_command: undefined,
+          runtime_args: undefined,
+          runtime_bundle_path: result.runtime_bundle.path,
+        }
+      : {}),
+    gear_roots: [join(result.plugin_root, "gears")],
+    marketplace_path: undefined,
+    marketplace_name: undefined,
+    marketplace_display_name: undefined,
+    marketplace_plugin_path: undefined,
+    marketplace_category: undefined,
+  });
   return {
     ...result,
+    codex_cache: {
+      plugin_root: cacheResult.plugin_root,
+      files: cacheResult.files,
+      mcp_server: cacheResult.mcp_server,
+      runtime_bundle: cacheResult.runtime_bundle,
+    },
     install_hint:
-      "Refresh Codex plugins, enable geeagent-codex, and keep GeeAgentMac running so it can drain Gear invocations through GearHost.",
+      "Refresh Codex plugins, enable geeagent-codex, and keep GeeAgentMac running so it can drain Gear invocations through GearHost. The Codex plugin cache was refreshed with a plugin-local runtime bundle.",
   };
 }
 
@@ -192,14 +234,98 @@ function mcpConfig(command: string, args: string[]): Record<string, unknown> {
   };
 }
 
-function defaultRuntimeInvocation(): { command: string; args: string[] } {
+async function runtimeInvocationForPlugin(
+  pluginRoot: string,
+  options: CodexPluginGenerationOptions,
+): Promise<{
+  command: string;
+  args: string[];
+  runtimeBundle?: {
+    version: string;
+    path: string;
+    relative_path: string;
+  };
+}> {
+  const explicitArgs = stringArray(options.runtime_args);
+  if (explicitArgs) {
+    return {
+      command: stringValue(options.runtime_command) ?? process.execPath,
+      args: explicitArgs,
+    };
+  }
+
+  const runtimeBundle = await writeRuntimeBundle(pluginRoot, options);
+  return {
+    command: stringValue(options.runtime_command) ?? process.execPath,
+    args: [runtimeBundle.path, "codex-mcp"],
+    runtimeBundle,
+  };
+}
+
+async function writeRuntimeBundle(
+  pluginRoot: string,
+  options: CodexPluginGenerationOptions,
+): Promise<{
+  version: string;
+  path: string;
+  relative_path: string;
+}> {
+  const sourcePath = runtimeBundleSourcePath(options);
+  const runtimeRoot = join(pluginRoot, "runtime", "native-runtime");
+  const relativePath = join("runtime", "native-runtime", PLUGIN_VERSION, "index.mjs");
+  const outputPath = join(pluginRoot, relativePath);
+  const resolvedSourcePath = resolve(sourcePath);
+  const resolvedOutputPath = resolve(outputPath);
+  if (resolvedSourcePath === resolvedOutputPath) {
+    return {
+      version: PLUGIN_VERSION,
+      path: outputPath,
+      relative_path: relativePath,
+    };
+  }
+
+  const temporarySourcePath = join(pluginRoot, ".codex-plugin", "native-runtime-copy.tmp");
+  const copySourcePath = isPathInsideDirectory(resolvedSourcePath, resolve(runtimeRoot))
+    ? temporarySourcePath
+    : resolvedSourcePath;
+  if (copySourcePath === temporarySourcePath) {
+    await copyFile(resolvedSourcePath, temporarySourcePath);
+  }
+
+  await rm(runtimeRoot, { recursive: true, force: true });
+  await mkdir(dirname(outputPath), { recursive: true });
+  try {
+    await copyFile(copySourcePath, outputPath);
+  } finally {
+    if (copySourcePath === temporarySourcePath) {
+      await rm(temporarySourcePath, { force: true });
+    }
+  }
+  return {
+    version: PLUGIN_VERSION,
+    path: outputPath,
+    relative_path: relativePath,
+  };
+}
+
+function runtimeBundleSourcePath(options: CodexPluginGenerationOptions): string {
+  const override = stringValue(options.runtime_bundle_path);
+  if (override) {
+    return resolve(override);
+  }
   const entrypoint = process.argv[1]?.trim()
     ? resolve(process.argv[1])
     : resolve(process.cwd(), "dist/native-runtime/index.mjs");
-  return {
-    command: process.execPath,
-    args: [...process.execArgv, entrypoint, "codex-mcp"],
-  };
+  return stableNativeRuntimeEntrypoint(entrypoint);
+}
+
+function stableNativeRuntimeEntrypoint(entrypoint: string): string {
+  const sourceEntrypointSuffix = join("src", "native-runtime", "index.ts");
+  if (!entrypoint.endsWith(sourceEntrypointSuffix)) {
+    return entrypoint;
+  }
+  const packageRoot = entrypoint.slice(0, -sourceEntrypointSuffix.length);
+  return join(packageRoot, "dist", "native-runtime", "index.mjs");
 }
 
 async function maybeRefreshMarketplace(
@@ -288,11 +414,12 @@ type CapabilityReferenceBuildResult = {
 };
 
 async function writeCapabilityReferences(
+  pluginRoot: string,
   skillRoot: string,
   options: CodexPluginGenerationOptions,
 ): Promise<CapabilityReferenceBuildResult> {
   const referencesRoot = join(skillRoot, "references");
-  await mkdir(referencesRoot, { recursive: true });
+  const gearProjectionRoot = join(pluginRoot, "gears");
   const list = await listCodexExportCapabilities({
     detail: "schema",
     gear_roots: stringArray(options.gear_roots),
@@ -301,6 +428,11 @@ async function writeCapabilityReferences(
   const capabilitiesByGear = groupedCapabilities(capabilities);
   const gearReferences: CapabilityReferenceBuildResult["gearReferences"] = [];
   const files: string[] = [];
+
+  await rm(referencesRoot, { recursive: true, force: true });
+  await rm(gearProjectionRoot, { recursive: true, force: true });
+  await mkdir(referencesRoot, { recursive: true });
+  await mkdir(gearProjectionRoot, { recursive: true });
 
   for (const [gearID, gearCapabilities] of capabilitiesByGear.entries()) {
     const fileName = `${safeReferenceFileName(gearID)}.md`;
@@ -311,6 +443,14 @@ async function writeCapabilityReferences(
       "utf8",
     );
     files.push(relativePath);
+    const gearDirectoryName = safeReferenceFileName(gearID);
+    const gearManifestRelativePath = `gears/${gearDirectoryName}/gear.json`;
+    await mkdir(join(gearProjectionRoot, gearDirectoryName), { recursive: true });
+    await writeJson(
+      join(gearProjectionRoot, gearDirectoryName, "gear.json"),
+      projectedGearManifest(gearID, gearCapabilities),
+    );
+    files.push(gearManifestRelativePath);
     gearReferences.push({
       gear_id: gearID,
       gear_name: gearCapabilities[0]?.gear_name ?? gearID,
@@ -333,6 +473,42 @@ async function writeCapabilityReferences(
     issues: list.issues,
     gearReferences,
   };
+}
+
+function projectedGearManifest(
+  gearID: string,
+  capabilities: CodexExportCapability[],
+): Record<string, unknown> {
+  return {
+    schema: "gee.gear.v1",
+    id: gearID,
+    name: capabilities[0]?.gear_name ?? gearID,
+    agent: {
+      enabled: true,
+      capabilities: capabilities.map(projectedGearCapability),
+    },
+  };
+}
+
+function projectedGearCapability(capability: CodexExportCapability): Record<string, unknown> {
+  return compactRecord({
+    id: capability.capability_id,
+    title: capability.title,
+    description: capability.description,
+    examples: capability.examples,
+    input_schema: capability.input_schema,
+    output_schema: capability.output_schema,
+    side_effect: capability.side_effect,
+    permissions: capability.permissions,
+    exports: {
+      codex: compactRecord({
+        enabled: true,
+        risk: capability.risk,
+        requires_approval: capability.requires_approval,
+        skill_hint: capability.skill_hint,
+      }),
+    },
+  });
 }
 
 function geeCapabilitiesSkill(references: CapabilityReferenceBuildResult): string {
@@ -365,7 +541,7 @@ Workflow:
 4. Call \`gee_list_capabilities\` with \`detail: "summary"\` to confirm the capability is intentionally exported in the live environment.
 5. Call \`gee_describe_capability\` before preparing non-trivial input or when schemas, permissions, side effects, approvals, artifacts, or failure semantics matter.
 6. Call \`gee_invoke_capability\`, \`gee_open_surface\`, or \`gee_get_invocation\` only through the Gee MCP tools.
-7. If \`gee_invoke_capability\` or \`gee_open_surface\` returns \`pending\` or \`running\`, call \`gee_get_invocation\` with the returned invocation id until GeeAgentMac completes or returns a structured blocked/failed/degraded state.
+7. If \`gee_invoke_capability\` or \`gee_open_surface\` returns \`pending\` or \`running\`, call \`gee_get_invocation\` with the returned invocation id and a short \`wait_ms\` window until GeeAgentMac completes or returns a structured blocked/failed/degraded state.
 
 Generated references:
 
@@ -376,7 +552,7 @@ Rules:
 
 - Gear remains the authoritative native package, permission, dependency, data, and execution boundary.
 - Only use capabilities returned by live \`gee_list_capabilities\`; do not infer hidden Gear capabilities from docs, source files, or memory.
-- \`gee_invoke_capability\` and \`gee_open_surface\` create external invocations that GeeAgentMac drains through GearHost; use \`gee_get_invocation\` when a call returns \`pending\` or \`running\`.
+- \`gee_invoke_capability\` and \`gee_open_surface\` create external invocations that GeeAgentMac drains through GearHost; \`gee_get_invocation\` reads the recorded status/result directly and can use a short \`wait_ms\` instead of model-layer sleep loops.
 - Do not run fallback scripts, package-local substitutes, shell shortcuts, or source-code workarounds when a Gee tool returns \`failed\`, \`blocked\`, or \`degraded\`.
 - If the live GeeAgent host bridge is unavailable, report the structured Gee result and recovery guidance instead of claiming task completion.
 - Provider-backed generation must only be invoked when the current user message explicitly asks for generation; do not create tasks speculatively.
@@ -500,7 +676,7 @@ ${JSON.stringify(invocationTemplate(capability, requiredArgs), null, 2)}
 
 After invocation, preserve returned artifacts and structured status. If the
 result is \`pending\` or \`running\`, call \`gee_get_invocation\` with the
-returned invocation id.`;
+returned invocation id and a short \`wait_ms\`.`;
 }
 
 function invocationTemplate(
@@ -510,7 +686,7 @@ function invocationTemplate(
   return {
     capability_ref: capability.capability_ref,
     args: schemaArgsTemplate(capability.input_schema, requiredArgs),
-    wait_ms: 30000,
+    wait_ms: capability.side_effect === "read_only" ? 2_000 : 30_000,
     caller: {
       client: "codex",
       thread_id: "<codex-thread-id>",
@@ -640,6 +816,18 @@ function outputDir(value: unknown): string {
   return resolve(path);
 }
 
+function codexCacheRoot(value: unknown, home: string, marketplaceName: string): string {
+  return resolve(
+    stringValue(value) ??
+      join(home, ".codex", "plugins", "cache", marketplaceName, PLUGIN_NAME, PLUGIN_VERSION),
+  );
+}
+
+function isPathInsideDirectory(path: string, directory: string): boolean {
+  const relativePath = relative(directory, path);
+  return relativePath.length > 0 && !relativePath.startsWith("..") && !relativePath.startsWith(sep);
+}
+
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
@@ -659,4 +847,10 @@ function objectRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function compactRecord(value: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => entry !== undefined),
+  );
 }

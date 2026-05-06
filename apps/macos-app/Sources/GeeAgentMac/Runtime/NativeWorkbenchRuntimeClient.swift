@@ -46,6 +46,7 @@ private struct RuntimeLastRunStateDTO: Decodable {
 struct XenodiaMediaBackend: Codable, Hashable, Sendable {
     let apiKey: String
     let imageGenerationsURL: String
+    let videoGenerationsURL: String
     let taskRetrievalURL: String
     let storageUploadURL: String?
     let requestTimeoutSeconds: Int
@@ -53,6 +54,7 @@ struct XenodiaMediaBackend: Codable, Hashable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case apiKey = "api_key"
         case imageGenerationsURL = "image_generations_url"
+        case videoGenerationsURL = "video_generations_url"
         case taskRetrievalURL = "task_retrieval_url"
         case storageUploadURL = "storage_upload_url"
         case requestTimeoutSeconds = "request_timeout_seconds"
@@ -856,6 +858,16 @@ private final class AgentRuntimeProcess {
         try decodeSnapshot(arguments: ["submit-quick-prompt", prompt])
     }
 
+    func submitChannelMessage(_ payload: TelegramChannelMessagePayload) throws -> RuntimeSnapshotDTO {
+        let data = try encoder.encode(payload)
+        guard let raw = String(data: data, encoding: .utf8) else {
+            throw RuntimeProcessError.runtimeInvocation(
+                "Could not encode Telegram channel message as UTF-8 JSON."
+            )
+        }
+        return try decodeSnapshot(arguments: ["submit-channel-message", raw])
+    }
+
     func completeHostActionTurn(_ completions: [WorkbenchHostActionCompletion]) throws -> RuntimeSnapshotDTO {
         let data = try encoder.encode(completions)
         guard let raw = String(data: data, encoding: .utf8) else {
@@ -1202,7 +1214,7 @@ private final class AgentRuntimeProcess {
             75
         case "complete-host-action-turn":
             150
-        case "submit-workspace-message", "submit-routed-workspace-message", "perform-task-action":
+        case "submit-workspace-message", "submit-routed-workspace-message", "submit-channel-message", "perform-task-action":
             150
         default:
             60
@@ -1212,6 +1224,7 @@ private final class AgentRuntimeProcess {
     private static let statefulRuntimeCommands: Set<String> = [
         "submit-workspace-message",
         "submit-routed-workspace-message",
+        "submit-channel-message",
         "submit-quick-prompt",
         "perform-task-action",
         "complete-host-action-turn",
@@ -1721,6 +1734,18 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
         guard !trimmed.isEmpty else { return snapshot }
         let nextSnapshot = try await runOffMainThread {
             try self.runtime.submitQuickPrompt(trimmed)
+        }
+        storeRawSnapshot(nextSnapshot)
+        return map(nextSnapshot)
+    }
+
+    func submitChannelMessage(
+        _ payload: TelegramChannelMessagePayload,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        _ = snapshot
+        let nextSnapshot = try await runOffMainThread {
+            try self.runtime.submitChannelMessage(payload)
         }
         storeRawSnapshot(nextSnapshot)
         return map(nextSnapshot)
@@ -3501,46 +3526,7 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
     }
 
     private func formattedConversationTimestamp(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return "--"
-        }
-
-        let lowered = trimmed.lowercased()
-        if lowered == "now" || lowered == "just now" {
-            return "Just now"
-        }
-
-        guard let date = Self.parseConversationTimestamp(trimmed) else {
-            return trimmed
-        }
-
-        let now = Date()
-        let interval = now.timeIntervalSince(date)
-
-        if interval < -60 {
-            return date.formatted(Self.absoluteConversationTimestampFormat)
-        }
-
-        if interval < 60 {
-            return "Just now"
-        }
-
-        if interval < 3_600 {
-            return "\(max(Int(interval / 60), 1))m ago"
-        }
-
-        if interval < 86_400 {
-            return "\(max(Int(interval / 3_600), 1))h ago"
-        }
-
-        if interval < 604_800 {
-            let days = max(Int(interval / 86_400), 1)
-            let hours = Int(interval.truncatingRemainder(dividingBy: 86_400) / 3_600)
-            return hours > 0 ? "\(days)d \(hours)h ago" : "\(days)d ago"
-        }
-
-        return date.formatted(Self.absoluteConversationTimestampFormat)
+        GeeAgentTimeFormatting.conversationTimestampLabel(raw)
     }
 
     private func humanize(_ raw: String) -> String {
@@ -3564,26 +3550,5 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
 
     private func yesNo(_ value: Bool) -> String {
         value ? "Yes" : "No"
-    }
-}
-
-private extension NativeWorkbenchRuntimeClient {
-    static let absoluteConversationTimestampFormat: Date.FormatStyle = .dateTime
-        .year()
-        .month(.twoDigits)
-        .day(.twoDigits)
-        .hour(.twoDigits(amPM: .omitted))
-        .minute(.twoDigits)
-
-    static func parseConversationTimestamp(_ raw: String) -> Date? {
-        let formatterWithFractionalSeconds = ISO8601DateFormatter()
-        formatterWithFractionalSeconds.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatterWithFractionalSeconds.date(from: raw) {
-            return date
-        }
-
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: raw)
     }
 }

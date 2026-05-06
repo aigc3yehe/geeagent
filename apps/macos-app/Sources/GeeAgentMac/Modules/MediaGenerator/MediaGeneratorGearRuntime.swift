@@ -65,13 +65,32 @@ enum MediaGeneratorTaskFilter: String, CaseIterable, Identifiable {
 enum MediaGeneratorModelID: String, Codable, CaseIterable, Identifiable {
     case nanoBananaPro = "nano-banana-pro"
     case gptImage2 = "gpt-image-2"
+    case veo31 = "veo3.1"
+    case veo31Fast = "veo3.1_fast"
+    case veo31Lite = "veo3.1_lite"
+    case seedance2 = "seedance-2"
+    case seedance2Fast = "seedance-2-fast"
 
     var id: String { rawValue }
+
+    var category: MediaGeneratorCategory {
+        switch self {
+        case .nanoBananaPro, .gptImage2:
+            .image
+        case .veo31, .veo31Fast, .veo31Lite, .seedance2, .seedance2Fast:
+            .video
+        }
+    }
 
     var title: String {
         switch self {
         case .nanoBananaPro: "Nano Banana Pro"
         case .gptImage2: "GPT Image-2"
+        case .veo31: "Veo3.1"
+        case .veo31Fast: "Veo3.1 Fast"
+        case .veo31Lite: "Veo3.1 Lite"
+        case .seedance2: "Seedance 2.0"
+        case .seedance2Fast: "Seedance 2.0 Fast"
         }
     }
 
@@ -79,12 +98,36 @@ enum MediaGeneratorModelID: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .nanoBananaPro: "Xenodia image model with aspect ratio, resolution, output format, and up to 8 references."
         case .gptImage2: "Xenodia GPT Image-2 with prompt/reference routing, resolution controls, and up to 16 references."
+        case .veo31: "Xenodia Veo3.1 quality video model with task-only polling."
+        case .veo31Fast: "Xenodia Veo3.1 fast video model and default for reference-to-video."
+        case .veo31Lite: "Xenodia Veo3.1 lite video model for lower-cost drafts."
+        case .seedance2: "Xenodia Seedance 2.0 video model with 480p, 720p, and 1080p output."
+        case .seedance2Fast: "Xenodia Seedance 2.0 fast video model with multimodal reference support."
+        }
+    }
+
+    var isVeo: Bool {
+        switch self {
+        case .veo31, .veo31Fast, .veo31Lite:
+            true
+        default:
+            false
+        }
+    }
+
+    var isSeedance: Bool {
+        switch self {
+        case .seedance2, .seedance2Fast:
+            true
+        default:
+            false
         }
     }
 }
 
 enum MediaGeneratorAspectRatio: String, Codable, CaseIterable, Identifiable {
     case auto
+    case adaptive
     case square = "1:1"
     case tall = "2:3"
     case wide = "3:2"
@@ -103,8 +146,28 @@ enum MediaGeneratorResolution: String, Codable, CaseIterable, Identifiable {
     case oneK = "1K"
     case twoK = "2K"
     case fourK = "4K"
+    case p480 = "480p"
+    case p720 = "720p"
+    case p1080 = "1080p"
+    case video4K = "4k"
 
     var id: String { rawValue }
+}
+
+enum MediaGeneratorVideoGenerationType: String, Codable, CaseIterable, Identifiable {
+    case textToVideo = "TEXT_2_VIDEO"
+    case firstAndLastFrames = "FIRST_AND_LAST_FRAMES_2_VIDEO"
+    case referenceToVideo = "REFERENCE_2_VIDEO"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .textToVideo: "Text"
+        case .firstAndLastFrames: "First/Last"
+        case .referenceToVideo: "Reference"
+        }
+    }
 }
 
 enum MediaGeneratorOutputFormat: String, Codable, CaseIterable, Identifiable {
@@ -123,6 +186,37 @@ struct MediaGeneratorReference: Codable, Identifiable, Hashable, Sendable {
     var isRemote: Bool {
         url != nil
     }
+
+    var previewURL: URL? {
+        if let localPath {
+            return URL(fileURLWithPath: localPath)
+        }
+        guard let url,
+              let parsed = URL(string: url),
+              parsed.scheme?.hasPrefix("http") == true
+        else {
+            return nil
+        }
+        return parsed
+    }
+}
+
+struct MediaGeneratorVideoOptions: Hashable, Sendable {
+    var generationType: MediaGeneratorVideoGenerationType = .textToVideo
+    var duration: Int = 5
+    var generateAudio: Bool = false
+    var webSearch: Bool = false
+    var nsfwChecker: Bool = false
+    var seed: Int?
+    var enableTranslation: Bool = true
+    var watermark: String?
+    var firstFrameURL: String?
+    var lastFrameURL: String?
+    var referenceVideoURLs: [String] = []
+    var referenceAudioURLs: [String] = []
+    var callbackURL: String?
+
+    static let `default` = MediaGeneratorVideoOptions()
 }
 
 struct MediaGeneratorQuickPrompt: Codable, Identifiable, Hashable, Sendable {
@@ -271,6 +365,9 @@ struct MediaGeneratorTask: Codable, Identifiable, Hashable, Sendable {
             if !ext.isEmpty {
                 return ext
             }
+        }
+        if category == .video {
+            return "mp4"
         }
         return parameters["output_format"] == "jpg" ? "jpg" : "png"
     }
@@ -461,7 +558,7 @@ enum MediaGeneratorError: LocalizedError {
         case .emptyPrompt:
             "Enter a prompt before generating media."
         case let .unsupportedCategory(category):
-            "\(category.title) generation is reserved for future Xenodia media endpoints."
+            "\(category.title) generation is not available through the current Xenodia media channel."
         case let .missingXenodiaChannel(message):
             message
         case let .invalidOption(message):
@@ -541,6 +638,16 @@ struct MediaGeneratorFileDatabase {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(history)
         try data.write(to: url, options: .atomic)
+    }
+
+    func saveReferenceImageData(_ data: Data, suggestedExtension: String) throws -> URL {
+        let directory = try gearRoot().appendingPathComponent("reference-uploads", isDirectory: true)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let outputURL = directory.appendingPathComponent(
+            "reference-\(UUID().uuidString).\(sanitizedFileExtension(suggestedExtension))"
+        )
+        try data.write(to: outputURL, options: .atomic)
+        return outputURL
     }
 
     func save(_ task: MediaGeneratorTask) throws {
@@ -733,6 +840,46 @@ struct XenodiaImageGenerationClient {
         return try parseCreationResponse(responseData)
     }
 
+    func createVideoTask(
+        modelID: MediaGeneratorModelID,
+        prompt: String,
+        aspectRatio: MediaGeneratorAspectRatio,
+        resolution: MediaGeneratorResolution,
+        references: [MediaGeneratorReference],
+        parameters: [String: String]
+    ) async throws -> (providerTaskID: String?, resultURL: String?) {
+        let fields = try videoRequestFields(
+            modelID: modelID,
+            prompt: prompt,
+            aspectRatio: aspectRatio,
+            resolution: resolution,
+            references: references,
+            parameters: parameters
+        )
+        let responseData = try await postVideoJSON(fields: fields)
+        return try parseCreationResponse(responseData)
+    }
+
+    func uploadReferenceAsset(fileURL: URL) async throws -> String {
+        guard let uploadURLString = backend.storageUploadURL,
+              let url = URL(string: uploadURLString)
+        else {
+            throw MediaGeneratorError.missingXenodiaChannel(
+                "Xenodia storage upload URL is not configured. Video local reference images must be uploaded before they can be used as asset:// references."
+            )
+        }
+        let boundary = "GeeMediaAssetUpload-\(UUID().uuidString)"
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = Self.requestTimeoutInterval(for: backend)
+        request.setValue("Bearer \(backend.apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try assetUploadBody(boundary: boundary, fileURL: fileURL)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validateHTTP(response: response, data: data)
+        return try Self.parseAssetUploadReference(data)
+    }
+
     func pollTask(taskID: String) async throws -> XenodiaTaskPollResult {
         let taskBase = backend.taskRetrievalURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: "\(taskBase)/\(taskID)") else {
@@ -759,6 +906,15 @@ struct XenodiaImageGenerationClient {
         return XenodiaTaskPollResult(state: state, progress: progress, resultURL: resultURL, error: error)
     }
 
+    static func parseAssetUploadReference(_ data: Data) throws -> String {
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let reference = firstAssetReference(in: object)
+        else {
+            throw MediaGeneratorError.invalidResponse("Xenodia asset upload response did not include an asset URL or ID.")
+        }
+        return reference
+    }
+
     private func imageRequestFields(
         modelID: MediaGeneratorModelID,
         prompt: String,
@@ -783,8 +939,92 @@ struct XenodiaImageGenerationClient {
         case .gptImage2:
             fields["aspect_ratio"] = aspectRatio.rawValue
             fields["resolution"] = resolution.rawValue
+        case .veo31, .veo31Fast, .veo31Lite, .seedance2, .seedance2Fast:
+            break
         }
         return fields
+    }
+
+    private func videoRequestFields(
+        modelID: MediaGeneratorModelID,
+        prompt: String,
+        aspectRatio: MediaGeneratorAspectRatio,
+        resolution: MediaGeneratorResolution,
+        references: [MediaGeneratorReference],
+        parameters: [String: String]
+    ) throws -> [String: Any] {
+        let imageURLs = references.compactMap(\.url)
+        var fields: [String: Any] = [
+            "model": modelID.rawValue,
+            "prompt": prompt,
+            "resolution": resolution.rawValue
+        ]
+
+        if modelID.isVeo {
+            let generationType = parameters["generation_type"]
+                .flatMap(MediaGeneratorVideoGenerationType.init(rawValue:))
+                ?? (imageURLs.isEmpty ? .textToVideo : .referenceToVideo)
+            fields["generationType"] = generationType.rawValue
+            fields["aspect_ratio"] = aspectRatio == .auto ? "Auto" : aspectRatio.rawValue
+            if !imageURLs.isEmpty {
+                fields["imageUrls"] = imageURLs
+            }
+            if let seed = intParameter(parameters["seed"]) {
+                fields["seeds"] = seed
+            }
+            if let enableTranslation = boolParameter(parameters["enable_translation"]) {
+                fields["enableTranslation"] = enableTranslation
+            }
+            if let watermark = nonEmptyParameter(parameters["watermark"]) {
+                fields["watermark"] = watermark
+            }
+            if let callbackURL = nonEmptyParameter(parameters["callback_url"]) {
+                fields["callBackUrl"] = callbackURL
+            }
+            return fields
+        }
+
+        if modelID.isSeedance {
+            fields["aspect_ratio"] = aspectRatio.rawValue
+            fields["duration"] = intParameter(parameters["duration"]) ?? 5
+            if let generateAudio = boolParameter(parameters["generate_audio"]) {
+                fields["generate_audio"] = generateAudio
+            }
+            let hasFrameMode = nonEmptyParameter(parameters["first_frame_url"]) != nil
+                || nonEmptyParameter(parameters["last_frame_url"]) != nil
+            if let firstFrameURL = nonEmptyParameter(parameters["first_frame_url"]) {
+                fields["first_frame_url"] = firstFrameURL
+            }
+            if let lastFrameURL = nonEmptyParameter(parameters["last_frame_url"]) {
+                fields["last_frame_url"] = lastFrameURL
+            }
+            let referenceImageURLs = stringArrayParameter(parameters["reference_image_urls"])
+            if !hasFrameMode, !referenceImageURLs.isEmpty {
+                fields["reference_image_urls"] = referenceImageURLs
+            } else if !hasFrameMode, !imageURLs.isEmpty {
+                fields["reference_image_urls"] = imageURLs
+            }
+            let referenceVideoURLs = stringArrayParameter(parameters["reference_video_urls"])
+            if !referenceVideoURLs.isEmpty {
+                fields["reference_video_urls"] = referenceVideoURLs
+            }
+            let referenceAudioURLs = stringArrayParameter(parameters["reference_audio_urls"])
+            if !referenceAudioURLs.isEmpty {
+                fields["reference_audio_urls"] = referenceAudioURLs
+            }
+            if let webSearch = boolParameter(parameters["web_search"]) {
+                fields["web_search"] = webSearch
+            }
+            if let nsfwChecker = boolParameter(parameters["nsfw_checker"]) {
+                fields["nsfw_checker"] = nsfwChecker
+            }
+            if let callbackURL = nonEmptyParameter(parameters["callback_url"]) {
+                fields["callBackUrl"] = callbackURL
+            }
+            return fields
+        }
+
+        throw MediaGeneratorError.unsupportedCategory(.video)
     }
 
     private func postJSON(fields: [String: Any], imageInputURLs: [String], maxReferenceCount: Int) async throws -> Data {
@@ -802,6 +1042,21 @@ struct XenodiaImageGenerationClient {
         request.setValue("Bearer \(backend.apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validateHTTP(response: response, data: data)
+        return data
+    }
+
+    private func postVideoJSON(fields: [String: Any]) async throws -> Data {
+        guard let url = URL(string: backend.videoGenerationsURL) else {
+            throw MediaGeneratorError.invalidResponse("Invalid Xenodia video generation URL.")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = Self.requestTimeoutInterval(for: backend)
+        request.setValue("Bearer \(backend.apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: fields)
         let (data, response) = try await URLSession.shared.data(for: request)
         try validateHTTP(response: response, data: data)
         return data
@@ -867,6 +1122,18 @@ struct XenodiaImageGenerationClient {
         return data
     }
 
+    private func assetUploadBody(boundary: String, fileURL: URL) throws -> Data {
+        var data = Data()
+        let fileData = try Data(contentsOf: fileURL)
+        data.appendString("--\(boundary)\r\n")
+        data.appendString("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileURL.lastPathComponent)\"\r\n")
+        data.appendString("Content-Type: \(mimeType(for: fileURL))\r\n\r\n")
+        data.append(fileData)
+        data.appendString("\r\n")
+        data.appendString("--\(boundary)--\r\n")
+        return data
+    }
+
     private func parseCreationResponse(_ data: Data) throws -> (providerTaskID: String?, resultURL: String?) {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw MediaGeneratorError.invalidResponse("Xenodia creation response was not a JSON object.")
@@ -897,6 +1164,42 @@ struct XenodiaImageGenerationClient {
         }
     }
 
+    private func nonEmptyParameter(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    private func boolParameter(_ value: String?) -> Bool? {
+        guard let value else {
+            return nil
+        }
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "true", "yes", "1":
+            return true
+        case "false", "no", "0":
+            return false
+        default:
+            return nil
+        }
+    }
+
+    private func intParameter(_ value: String?) -> Int? {
+        guard let value else {
+            return nil
+        }
+        return Int(value.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private func stringArrayParameter(_ value: String?) -> [String] {
+        guard let value,
+              let data = value.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode([String].self, from: data)
+        else {
+            return []
+        }
+        return decoded
+    }
+
     private static func firstResultURL(in object: [String: Any]) -> String? {
         if let url = object["url"] as? String {
             return url
@@ -923,6 +1226,43 @@ struct XenodiaImageGenerationClient {
         }
         return nil
     }
+
+    private static func firstAssetReference(in object: [String: Any]) -> String? {
+        for key in ["asset_url", "assetUrl", "asset_uri", "assetUri", "url", "uri"] {
+            if let reference = normalizeAssetReference(object[key]) {
+                return reference
+            }
+        }
+        for key in ["asset_id", "assetId", "id", "file_id", "fileId"] {
+            if let reference = normalizeAssetReference(object[key], defaultAssetScheme: true) {
+                return reference
+            }
+        }
+        for key in ["data", "result", "asset", "file"] {
+            if let nested = object[key] as? [String: Any],
+               let reference = firstAssetReference(in: nested) {
+                return reference
+            }
+            if let array = object[key] as? [[String: Any]] {
+                return array.compactMap(firstAssetReference).first
+            }
+        }
+        return nil
+    }
+
+    private static func normalizeAssetReference(_ value: Any?, defaultAssetScheme: Bool = false) -> String? {
+        guard let string = value as? String else {
+            return nil
+        }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+        if let url = URL(string: trimmed), url.scheme != nil {
+            return trimmed
+        }
+        return defaultAssetScheme ? "asset://\(trimmed)" : nil
+    }
 }
 
 @MainActor
@@ -936,6 +1276,11 @@ final class MediaGeneratorGearStore: ObservableObject {
     @Published var resolution: MediaGeneratorResolution = .oneK
     @Published var outputFormat: MediaGeneratorOutputFormat = .png
     @Published var imageCount = 1
+    @Published var videoGenerationType: MediaGeneratorVideoGenerationType = .textToVideo
+    @Published var videoDuration = 5
+    @Published var generateAudio = false
+    @Published var webSearch = false
+    @Published var nsfwChecker = false
     @Published var useAsync = true
     @Published var references: [MediaGeneratorReference] = []
     @Published var taskFilter: MediaGeneratorTaskFilter = .all
@@ -1023,12 +1368,25 @@ final class MediaGeneratorGearStore: ObservableObject {
         resumePollingForRunningTasks()
     }
 
+    func selectCategory(_ category: MediaGeneratorCategory) {
+        self.category = category
+        if category != .audio, selectedModel.category != category {
+            selectedModel = Self.defaultModel(for: category)
+        }
+        normalizeSelectionForCurrentModel()
+    }
+
     func selectModel(_ model: MediaGeneratorModelID) {
         selectedModel = model
+        category = model.category
         normalizeSelectionForCurrentModel()
     }
 
     func addReferenceFiles() {
+        guard category == .image || category == .video else {
+            statusMessage = "\(category.title) references are not available."
+            return
+        }
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
@@ -1041,6 +1399,100 @@ final class MediaGeneratorGearStore: ObservableObject {
                 addReferenceFileURL(url)
             }
         }
+    }
+
+    func addClipboardReferenceImage(from pasteboard: NSPasteboard = .general) {
+        guard category == .image || category == .video else {
+            statusMessage = "\(category.title) references are not available."
+            return
+        }
+        if let urls = Self.pasteboardReferenceFileURLs(pasteboard), !urls.isEmpty {
+            for url in urls {
+                guard references.count < selectedModelReferenceLimit else {
+                    statusMessage = "\(selectedModel.title) references are limited to \(selectedModelReferenceLimit)."
+                    return
+                }
+                addReferenceFileURL(url)
+            }
+            return
+        }
+        guard let imageData = Self.referenceImageData(from: pasteboard) else {
+            statusMessage = "Clipboard does not contain a reusable image."
+            return
+        }
+        addReferenceImageData(imageData.data, suggestedExtension: imageData.fileExtension)
+    }
+
+    func addReferenceImageData(_ data: Data, suggestedExtension: String = "png") {
+        guard references.count < selectedModelReferenceLimit else {
+            statusMessage = "\(selectedModel.title) references are limited to \(selectedModelReferenceLimit)."
+            return
+        }
+        do {
+            let fileURL = try database.saveReferenceImageData(data, suggestedExtension: suggestedExtension)
+            addReferenceFileURL(fileURL)
+            statusMessage = "Added clipboard image as a reference."
+        } catch {
+            statusMessage = "Clipboard image import failed: \(error.localizedDescription)"
+        }
+    }
+
+    nonisolated static func pasteboardHasReferenceImage(_ pasteboard: NSPasteboard = .general) -> Bool {
+        if let urls = Self.pasteboardReferenceFileURLs(pasteboard), !urls.isEmpty {
+            return true
+        }
+        return referenceImageData(from: pasteboard) != nil
+    }
+
+    nonisolated private static func pasteboardReferenceFileURLs(_ pasteboard: NSPasteboard) -> [URL]? {
+        guard let objects = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) else {
+            return nil
+        }
+        let urls = objects.compactMap { object -> URL? in
+            if let url = object as? URL {
+                return url
+            }
+            if let nsURL = object as? NSURL {
+                return nsURL as URL
+            }
+            return nil
+        }
+        .filter { url in
+            guard url.isFileURL else {
+                return false
+            }
+            let values = try? url.resourceValues(forKeys: [.contentTypeKey])
+            guard let type = values?.contentType ?? UTType(filenameExtension: url.pathExtension) else {
+                return false
+            }
+            return supportedReferenceContentTypes.contains { type.conforms(to: $0) }
+        }
+        return urls.isEmpty ? nil : urls
+    }
+
+    nonisolated private static func referenceImageData(from pasteboard: NSPasteboard) -> (data: Data, fileExtension: String)? {
+        if let png = pasteboard.data(forType: .png) {
+            return (png, "png")
+        }
+        if let image = NSImage(pasteboard: pasteboard),
+           let png = pngData(from: image) {
+            return (png, "png")
+        }
+        if let tiff = pasteboard.data(forType: .tiff),
+           let bitmap = NSBitmapImageRep(data: tiff),
+           let png = bitmap.representation(using: .png, properties: [:]) {
+            return (png, "png")
+        }
+        return nil
+    }
+
+    nonisolated private static func pngData(from image: NSImage) -> Data? {
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff)
+        else {
+            return nil
+        }
+        return bitmap.representation(using: .png, properties: [:])
     }
 
     func addReferenceFileURL(_ url: URL) {
@@ -1065,11 +1517,18 @@ final class MediaGeneratorGearStore: ObservableObject {
 
     func addReferenceURL(_ url: String, recordHistory: Bool = true) {
         let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard references.count < selectedModelReferenceLimit,
-              let parsed = URL(string: trimmed),
-              parsed.scheme?.hasPrefix("http") == true
+        guard references.count < selectedModelReferenceLimit else {
+            statusMessage = "\(selectedModel.title) references are limited to \(selectedModelReferenceLimit)."
+            return
+        }
+        guard let parsed = URL(string: trimmed),
+              (category == .video
+                  ? (parsed.scheme?.hasPrefix("http") == true || parsed.scheme == "asset")
+                  : parsed.scheme?.hasPrefix("http") == true)
         else {
-            statusMessage = "Paste a valid image URL. \(selectedModel.title) references are limited to \(selectedModelReferenceLimit)."
+            statusMessage = category == .video
+                ? "Paste a valid public media URL or Xenodia asset:// reference."
+                : "Paste a valid image URL. \(selectedModel.title) references are limited to \(selectedModelReferenceLimit)."
             return
         }
         let reference = MediaGeneratorReference(
@@ -1079,7 +1538,7 @@ final class MediaGeneratorGearStore: ObservableObject {
             displayName: parsed.lastPathComponent.isEmpty ? parsed.host ?? "Reference URL" : parsed.lastPathComponent
         )
         references.append(reference)
-        if recordHistory {
+        if recordHistory, category != .audio {
             addImageHistoryReference(reference)
         }
     }
@@ -1106,6 +1565,10 @@ final class MediaGeneratorGearStore: ObservableObject {
     }
 
     func useResultAsReference(_ task: MediaGeneratorTask) {
+        guard task.category == .image else {
+            statusMessage = "Only generated images can be reused as image references."
+            return
+        }
         guard let resultURL = task.resultURL else {
             statusMessage = "No result URL to use as a reference."
             return
@@ -1121,9 +1584,15 @@ final class MediaGeneratorGearStore: ObservableObject {
         references = Array(task.references.prefix(Self.maxReferenceCount(for: task.modelID)))
         aspectRatio = task.parameters["aspect_ratio"].flatMap(MediaGeneratorAspectRatio.init(rawValue:))
             ?? Self.defaultAspectRatio(for: task.modelID)
-        resolution = task.parameters["resolution"].flatMap(MediaGeneratorResolution.init(rawValue:)) ?? .oneK
+        resolution = task.parameters["resolution"].flatMap(MediaGeneratorResolution.init(rawValue:))
+            ?? Self.defaultResolution(for: task.modelID, aspectRatio: aspectRatio)
         outputFormat = task.parameters["output_format"].flatMap(MediaGeneratorOutputFormat.init(rawValue:)) ?? .png
         imageCount = task.batchCount
+        videoGenerationType = task.parameters["generation_type"].flatMap(MediaGeneratorVideoGenerationType.init(rawValue:)) ?? .textToVideo
+        videoDuration = task.parameters["duration"].flatMap(Int.init) ?? 5
+        generateAudio = Bool(task.parameters["generate_audio"] ?? "false") ?? false
+        webSearch = Bool(task.parameters["web_search"] ?? "false") ?? false
+        nsfwChecker = Bool(task.parameters["nsfw_checker"] ?? "false") ?? false
         useAsync = Bool(task.parameters["async"] ?? "true") ?? true
         normalizeSelectionForCurrentModel()
         selectedTaskID = task.id
@@ -1200,34 +1669,6 @@ final class MediaGeneratorGearStore: ObservableObject {
             update(updated)
         }
         statusMessage = shouldStar ? "Added batch to starred results." : "Removed batch from starred results."
-    }
-
-    func confirmAndDelete(_ task: MediaGeneratorTask) {
-        let alert = NSAlert()
-        alert.messageText = "Delete this generation task?"
-        alert.informativeText = "This removes the task record from Media Generator history. Downloaded files you saved elsewhere are not removed."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Delete")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else {
-            return
-        }
-        delete(task)
-    }
-
-    func confirmAndDelete(_ group: MediaGeneratorTaskGroup) {
-        let alert = NSAlert()
-        alert.messageText = group.isBatch ? "Delete this generation batch?" : "Delete this generation task?"
-        alert.informativeText = group.isBatch
-            ? "This removes \(group.tasks.count) task records from Media Generator history. Downloaded files you saved elsewhere are not removed."
-            : "This removes the task record from Media Generator history. Downloaded files you saved elsewhere are not removed."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Delete")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else {
-            return
-        }
-        delete(group)
     }
 
     func delete(_ task: MediaGeneratorTask) {
@@ -1311,9 +1752,28 @@ final class MediaGeneratorGearStore: ObservableObject {
                 aspectRatio: self?.aspectRatio ?? .square,
                 resolution: self?.resolution ?? .oneK,
                 outputFormat: self?.outputFormat ?? .png,
-                references: self?.references ?? []
+                references: self?.references ?? [],
+                videoOptions: self?.currentVideoOptions() ?? .default
             )
         }
+    }
+
+    private func currentVideoOptions() -> MediaGeneratorVideoOptions {
+        MediaGeneratorVideoOptions(
+            generationType: videoGenerationType,
+            duration: min(max(videoDuration, 4), 15),
+            generateAudio: generateAudio,
+            webSearch: webSearch,
+            nsfwChecker: nsfwChecker,
+            seed: nil,
+            enableTranslation: true,
+            watermark: nil,
+            firstFrameURL: videoGenerationType == .firstAndLastFrames ? references.first?.url : nil,
+            lastFrameURL: videoGenerationType == .firstAndLastFrames ? references.dropFirst().first?.url : nil,
+            referenceVideoURLs: [],
+            referenceAudioURLs: [],
+            callbackURL: nil
+        )
     }
 
     private func download(task: MediaGeneratorTask, to destinationURL: URL) async {
@@ -1335,7 +1795,7 @@ final class MediaGeneratorGearStore: ObservableObject {
                 }
                 try data.write(to: destinationURL, options: .atomic)
             }
-            statusMessage = "Downloaded image to \(destinationURL.lastPathComponent)."
+            statusMessage = "Downloaded \(task.category.rawValue) to \(destinationURL.lastPathComponent)."
         } catch {
             statusMessage = "Download failed: \(error.localizedDescription)"
         }
@@ -1343,13 +1803,29 @@ final class MediaGeneratorGearStore: ObservableObject {
 
     func createAgentTask(args: [String: Any]) async -> [String: Any] {
         let prompt = (args["prompt"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let model = Self.modelIDArg(args["model"]) ?? .nanoBananaPro
-        let category = (args["category"] as? String).flatMap(MediaGeneratorCategory.init(rawValue:)) ?? .image
+        let requestedModel = Self.modelIDArg(args["model"])
+        let category = Self.categoryArg(args["category"])
+            ?? requestedModel?.category
+            ?? .image
+        guard category != .audio else {
+            statusMessage = MediaGeneratorError.unsupportedCategory(category).localizedDescription
+            return [
+                "gear_id": MediaGeneratorGearDescriptor.gearID,
+                "capability_id": "media_generator.create_task",
+                "status": "failed",
+                "error": statusMessage
+            ]
+        }
+        let model = requestedModel ?? Self.defaultModel(for: category)
         let aspectRatio = Self.aspectRatioArg(args["aspect_ratio"])
             ?? Self.defaultAspectRatio(for: model)
-        let resolution = Self.resolutionArg(args["resolution"]) ?? .oneK
+        let resolution = Self.normalizedResolution(
+            Self.resolutionArg(args["resolution"]),
+            for: model
+        ) ?? Self.defaultResolution(for: model, aspectRatio: aspectRatio)
         let outputFormat = Self.outputFormatArg(args["output_format"]) ?? .png
         let useAsync = Self.boolArg(args["async"], defaultValue: true)
+        let videoOptions = Self.videoOptionsArg(args)
         let providerImageCount: Int
         let batchCount: Int
         do {
@@ -1357,6 +1833,7 @@ final class MediaGeneratorGearStore: ObservableObject {
             try Self.validateResponseFormat(args["response_format"])
             providerImageCount = try Self.imageCountArg(args["n"])
             batchCount = try Self.batchCountArg(args["batch_count"])
+            try Self.validateBatchCount(batchCount, category: category)
         } catch {
             statusMessage = error.localizedDescription
             return [
@@ -1366,12 +1843,15 @@ final class MediaGeneratorGearStore: ObservableObject {
                 "error": statusMessage
             ]
         }
-        let urls = (args["reference_urls"] as? [String]) ?? []
-        let paths = (args["reference_paths"] as? [String]) ?? []
-        let maxReferenceCount = Self.maxReferenceCount(for: model)
-        let refs = urls.prefix(maxReferenceCount).map {
+        let urls = Self.videoFrameURLs(from: videoOptions)
+            + Self.stringArrayArg(args["reference_urls"])
+            + Self.stringArrayArg(args["image_urls"])
+            + Self.stringArrayArg(args["imageUrls"])
+            + Self.stringArrayArg(args["reference_image_urls"])
+        let paths = Self.stringArrayArg(args["reference_paths"])
+        let refs = urls.map {
             MediaGeneratorReference(id: UUID().uuidString, url: $0, localPath: nil, displayName: URL(string: $0)?.lastPathComponent ?? "Reference URL")
-        } + paths.prefix(max(0, maxReferenceCount - urls.count)).map {
+        } + paths.map {
             MediaGeneratorReference(id: UUID().uuidString, url: nil, localPath: $0, displayName: URL(fileURLWithPath: $0).lastPathComponent)
         }
         guard providerImageCount == 1 else {
@@ -1392,7 +1872,8 @@ final class MediaGeneratorGearStore: ObservableObject {
             aspectRatio: aspectRatio,
             resolution: resolution,
             outputFormat: outputFormat,
-            references: refs
+            references: refs,
+            videoOptions: videoOptions
         ) else {
             return [
                 "gear_id": MediaGeneratorGearDescriptor.gearID,
@@ -1440,7 +1921,7 @@ final class MediaGeneratorGearStore: ObservableObject {
                 [
                     "model": model.rawValue,
                     "title": model.title,
-                    "category": "image",
+                    "category": model.category.rawValue,
                     "description": model.subtitle,
                     "default_parameters": Self.defaultParameterPayload(for: model),
                     "supported_fields": Self.supportedFields(for: model),
@@ -1454,13 +1935,19 @@ final class MediaGeneratorGearStore: ObservableObject {
                 "response_format": ["enum": ["url"], "default": "url"],
                 "max_total_references_by_model": [
                     MediaGeneratorModelID.nanoBananaPro.rawValue: Self.maxReferenceCount(for: .nanoBananaPro),
-                    MediaGeneratorModelID.gptImage2.rawValue: Self.maxReferenceCount(for: .gptImage2)
+                    MediaGeneratorModelID.gptImage2.rawValue: Self.maxReferenceCount(for: .gptImage2),
+                    MediaGeneratorModelID.veo31.rawValue: Self.maxReferenceCount(for: .veo31),
+                    MediaGeneratorModelID.veo31Fast.rawValue: Self.maxReferenceCount(for: .veo31Fast),
+                    MediaGeneratorModelID.veo31Lite.rawValue: Self.maxReferenceCount(for: .veo31Lite),
+                    MediaGeneratorModelID.seedance2.rawValue: Self.maxReferenceCount(for: .seedance2),
+                    MediaGeneratorModelID.seedance2Fast.rawValue: Self.maxReferenceCount(for: .seedance2Fast)
                 ],
                 "max_reference_file_bytes": MediaGeneratorError.maxReferenceFileBytes,
-                "accepted_mime_types": ["image/jpeg", "image/png", "image/webp"]
+                "accepted_mime_types": ["image/jpeg", "image/png", "image/webp"],
+                "video_reference_url_schemes": ["http", "https", "asset"],
+                "video_local_reference_upload": "requires configured Xenodia storage_upload_url"
             ],
             "placeholders": [
-                "video": "Reserved for future Xenodia video generation endpoints.",
                 "audio": "Reserved for future Xenodia audio generation endpoints."
             ]
         ]
@@ -1509,10 +1996,11 @@ final class MediaGeneratorGearStore: ObservableObject {
         aspectRatio: MediaGeneratorAspectRatio,
         resolution: MediaGeneratorResolution,
         outputFormat: MediaGeneratorOutputFormat,
-        references: [MediaGeneratorReference]
+        references: [MediaGeneratorReference],
+        videoOptions: MediaGeneratorVideoOptions = .default
     ) async -> MediaGeneratorTaskGroup? {
         do {
-            try Self.validateBatchCount(batchCount)
+            try Self.validateBatchCount(batchCount, category: category)
         } catch {
             statusMessage = error.localizedDescription
             return nil
@@ -1533,6 +2021,7 @@ final class MediaGeneratorGearStore: ObservableObject {
                 resolution: resolution,
                 outputFormat: outputFormat,
                 references: references,
+                videoOptions: videoOptions,
                 batchID: batchID,
                 batchIndex: index,
                 batchCount: normalizedBatchCount
@@ -1582,6 +2071,7 @@ final class MediaGeneratorGearStore: ObservableObject {
         resolution: MediaGeneratorResolution,
         outputFormat: MediaGeneratorOutputFormat,
         references: [MediaGeneratorReference],
+        videoOptions: MediaGeneratorVideoOptions = .default,
         batchID: String? = nil,
         batchIndex: Int = 1,
         batchCount: Int = 1
@@ -1590,14 +2080,18 @@ final class MediaGeneratorGearStore: ObservableObject {
             statusMessage = MediaGeneratorError.emptyPrompt.localizedDescription
             return nil
         }
-        guard category == .image else {
+        guard category == modelID.category else {
+            statusMessage = "\(modelID.title) is a \(modelID.category.rawValue) model, not \(category.rawValue)."
+            return nil
+        }
+        guard category == .image || category == .video else {
             statusMessage = MediaGeneratorError.unsupportedCategory(category).localizedDescription
             return nil
         }
         do {
             try Self.validateImageCount(providerImageCount)
             try Self.validateModelParameters(modelID: modelID, aspectRatio: aspectRatio, resolution: resolution)
-            try Self.validateReferences(modelID: modelID, references)
+            try Self.validateReferences(modelID: modelID, references, videoOptions: videoOptions)
         } catch {
             statusMessage = error.localizedDescription
             return nil
@@ -1623,7 +2117,8 @@ final class MediaGeneratorGearStore: ObservableObject {
                 useAsync: useAsync,
                 aspectRatio: aspectRatio,
                 resolution: resolution,
-                outputFormat: outputFormat
+                outputFormat: outputFormat,
+                videoOptions: videoOptions
             ),
             references: Array(references.prefix(Self.maxReferenceCount(for: modelID))),
             batchID: batchID,
@@ -1650,17 +2145,39 @@ final class MediaGeneratorGearStore: ObservableObject {
         do {
             let backend = try await channel.loadBackend()
             let client = XenodiaImageGenerationClient(backend: backend)
-            let created = try await client.createImageTask(
-                modelID: enqueuedTask.modelID,
-                prompt: enqueuedTask.prompt,
-                imageCount: Int(enqueuedTask.parameters["n"] ?? "1") ?? 1,
-                useAsync: Bool(enqueuedTask.parameters["async"] ?? "true") ?? true,
-                aspectRatio: enqueuedTask.parameters["aspect_ratio"].flatMap(MediaGeneratorAspectRatio.init(rawValue:))
-                    ?? Self.defaultAspectRatio(for: enqueuedTask.modelID),
-                resolution: enqueuedTask.parameters["resolution"].flatMap(MediaGeneratorResolution.init(rawValue:)) ?? .oneK,
-                outputFormat: enqueuedTask.parameters["output_format"].flatMap(MediaGeneratorOutputFormat.init(rawValue:)) ?? .png,
-                references: enqueuedTask.references
-            )
+            var providerTask = enqueuedTask
+            if providerTask.category == .video {
+                providerTask = try await resolveVideoLocalReferences(for: providerTask, client: client)
+            }
+            let aspectRatio = providerTask.parameters["aspect_ratio"].flatMap(MediaGeneratorAspectRatio.init(rawValue:))
+                ?? Self.defaultAspectRatio(for: providerTask.modelID)
+            let resolution = providerTask.parameters["resolution"].flatMap(MediaGeneratorResolution.init(rawValue:))
+                ?? Self.defaultResolution(for: providerTask.modelID, aspectRatio: aspectRatio)
+            let created: (providerTaskID: String?, resultURL: String?)
+            switch providerTask.category {
+            case .image:
+                created = try await client.createImageTask(
+                    modelID: providerTask.modelID,
+                    prompt: providerTask.prompt,
+                    imageCount: Int(providerTask.parameters["n"] ?? "1") ?? 1,
+                    useAsync: Bool(providerTask.parameters["async"] ?? "true") ?? true,
+                    aspectRatio: aspectRatio,
+                    resolution: resolution,
+                    outputFormat: providerTask.parameters["output_format"].flatMap(MediaGeneratorOutputFormat.init(rawValue:)) ?? .png,
+                    references: providerTask.references
+                )
+            case .video:
+                created = try await client.createVideoTask(
+                    modelID: providerTask.modelID,
+                    prompt: providerTask.prompt,
+                    aspectRatio: aspectRatio,
+                    resolution: resolution,
+                    references: providerTask.references,
+                    parameters: providerTask.parameters
+                )
+            case .audio:
+                throw MediaGeneratorError.unsupportedCategory(.audio)
+            }
             guard var task = tasks.first(where: { $0.id == taskID }) else {
                 return nil
             }
@@ -1676,7 +2193,7 @@ final class MediaGeneratorGearStore: ObservableObject {
             }
             update(task)
             statusMessage = task.status == .completed
-                ? (task.isLocallyCached ? "Generated and cached image." : "Generated image.")
+                ? (task.isLocallyCached ? "Generated and cached \(task.category.rawValue)." : "Generated \(task.category.rawValue).")
                 : "Task created. Polling Xenodia..."
             if let providerTaskID = task.providerTaskID, task.resultURL == nil {
                 Task { [weak self] in
@@ -1695,6 +2212,44 @@ final class MediaGeneratorGearStore: ObservableObject {
             statusMessage = error.localizedDescription
             return task
         }
+    }
+
+    private func resolveVideoLocalReferences(
+        for task: MediaGeneratorTask,
+        client: XenodiaImageGenerationClient
+    ) async throws -> MediaGeneratorTask {
+        guard task.category == .video,
+              task.references.contains(where: { $0.localPath != nil })
+        else {
+            return task
+        }
+
+        var resolvedReferences: [MediaGeneratorReference] = []
+        for reference in task.references {
+            guard let localPath = reference.localPath else {
+                resolvedReferences.append(reference)
+                continue
+            }
+            let fileURL = URL(fileURLWithPath: localPath)
+            try Self.validateLocalReferenceFile(fileURL)
+            statusMessage = "Uploading reference image for video..."
+            let assetReference = try await client.uploadReferenceAsset(fileURL: fileURL)
+            var resolved = reference
+            resolved.url = assetReference
+            resolved.localPath = nil
+            resolvedReferences.append(resolved)
+            addImageHistoryReference(resolved)
+        }
+
+        var updated = task
+        updated.references = resolvedReferences
+        updated.parameters = Self.videoParametersAfterResolvingReferences(
+            updated.parameters,
+            references: resolvedReferences
+        )
+        updated.updatedAt = Date()
+        update(updated)
+        return updated
     }
 
     private func poll(taskID: String, providerTaskID: String) async {
@@ -1745,7 +2300,9 @@ final class MediaGeneratorGearStore: ObservableObject {
                     task.updatedAt = Date()
                     task = await cacheGeneratedResultIfPossible(task)
                     update(task)
-                    statusMessage = task.isLocallyCached ? "Generated and cached image." : "Generated image."
+                    statusMessage = task.isLocallyCached
+                        ? "Generated and cached \(task.category.rawValue)."
+                        : "Generated \(task.category.rawValue)."
                     return
                 }
                 if status.isFailed {
@@ -1759,9 +2316,7 @@ final class MediaGeneratorGearStore: ObservableObject {
                 task.status = .running
                 task.updatedAt = Date()
                 update(task)
-                if let progress = status.progress {
-                    statusMessage = "Xenodia task \(progress)%..."
-                }
+                statusMessage = "Xenodia task is still running..."
             }
             guard var task = tasks.first(where: { $0.id == taskID }) else {
                 return
@@ -1816,7 +2371,7 @@ final class MediaGeneratorGearStore: ObservableObject {
             updated.updatedAt = Date()
             return updated
         } catch {
-            statusMessage = "Generated image. Local cache failed: \(error.localizedDescription)"
+            statusMessage = "Generated \(task.category.rawValue). Local cache failed: \(error.localizedDescription)"
             return task
         }
     }
@@ -1828,24 +2383,85 @@ final class MediaGeneratorGearStore: ObservableObject {
         useAsync: Bool,
         aspectRatio: MediaGeneratorAspectRatio,
         resolution: MediaGeneratorResolution,
-        outputFormat: MediaGeneratorOutputFormat
+        outputFormat: MediaGeneratorOutputFormat,
+        videoOptions: MediaGeneratorVideoOptions = .default
     ) -> [String: String] {
         var parameters = [
-            "response_format": "url",
-            "n": "\(imageCount)",
-            "batch_count": "\(batchCount)",
-            "async": "\(useAsync)"
+            "batch_count": "\(batchCount)"
         ]
         switch modelID {
         case .nanoBananaPro:
+            parameters["response_format"] = "url"
+            parameters["n"] = "\(imageCount)"
+            parameters["async"] = "\(useAsync)"
             parameters["aspect_ratio"] = aspectRatio.rawValue
             parameters["resolution"] = resolution.rawValue
             parameters["output_format"] = outputFormat.rawValue
         case .gptImage2:
+            parameters["response_format"] = "url"
+            parameters["n"] = "\(imageCount)"
+            parameters["async"] = "\(useAsync)"
             parameters["aspect_ratio"] = aspectRatio.rawValue
             parameters["resolution"] = resolution.rawValue
+        case .veo31, .veo31Fast, .veo31Lite:
+            parameters["aspect_ratio"] = aspectRatio.rawValue
+            parameters["resolution"] = resolution.rawValue
+            parameters["generation_type"] = videoOptions.generationType.rawValue
+            parameters["enable_translation"] = "\(videoOptions.enableTranslation)"
+            if let seed = videoOptions.seed {
+                parameters["seed"] = "\(seed)"
+            }
+            if let watermark = videoOptions.watermark {
+                parameters["watermark"] = watermark
+            }
+            if let callbackURL = videoOptions.callbackURL {
+                parameters["callback_url"] = callbackURL
+            }
+        case .seedance2, .seedance2Fast:
+            parameters["aspect_ratio"] = aspectRatio.rawValue
+            parameters["resolution"] = resolution.rawValue
+            parameters["generation_type"] = videoOptions.generationType.rawValue
+            parameters["duration"] = "\(videoOptions.duration)"
+            parameters["generate_audio"] = "\(videoOptions.generateAudio)"
+            parameters["web_search"] = "\(videoOptions.webSearch)"
+            parameters["nsfw_checker"] = "\(videoOptions.nsfwChecker)"
+            if let firstFrameURL = videoOptions.firstFrameURL {
+                parameters["first_frame_url"] = firstFrameURL
+            }
+            if let lastFrameURL = videoOptions.lastFrameURL {
+                parameters["last_frame_url"] = lastFrameURL
+            }
+            if !videoOptions.referenceVideoURLs.isEmpty {
+                parameters["reference_video_urls"] = Self.jsonStringArray(videoOptions.referenceVideoURLs)
+            }
+            if !videoOptions.referenceAudioURLs.isEmpty {
+                parameters["reference_audio_urls"] = Self.jsonStringArray(videoOptions.referenceAudioURLs)
+            }
+            if let callbackURL = videoOptions.callbackURL {
+                parameters["callback_url"] = callbackURL
+            }
         }
         return parameters
+    }
+
+    private static func videoParametersAfterResolvingReferences(
+        _ parameters: [String: String],
+        references: [MediaGeneratorReference]
+    ) -> [String: String] {
+        guard parameters["generation_type"] == MediaGeneratorVideoGenerationType.firstAndLastFrames.rawValue else {
+            return parameters
+        }
+        var updated = parameters
+        let urls = references.compactMap(\.url)
+        if let firstURL = urls.first {
+            updated["first_frame_url"] = firstURL
+        }
+        if urls.count > 1 {
+            updated["last_frame_url"] = urls[1]
+        } else {
+            updated.removeValue(forKey: "last_frame_url")
+        }
+        return updated
     }
 
     private func update(_ task: MediaGeneratorTask) {
@@ -1861,7 +2477,7 @@ final class MediaGeneratorGearStore: ObservableObject {
         let item: MediaGeneratorImageHistoryItem
         if let url = reference.url?.trimmingCharacters(in: .whitespacesAndNewlines),
            let parsed = URL(string: url),
-           parsed.scheme?.hasPrefix("http") == true {
+           parsed.scheme?.hasPrefix("http") == true || parsed.scheme == "asset" {
             item = MediaGeneratorImageHistoryItem(url: url, displayName: reference.displayName)
         } else if let localPath = reference.localPath, !localPath.isEmpty {
             item = MediaGeneratorImageHistoryItem(localPath: localPath, displayName: reference.displayName)
@@ -1906,7 +2522,7 @@ final class MediaGeneratorGearStore: ObservableObject {
         return formatter.string(from: Date())
     }
 
-    private static var supportedReferenceContentTypes: [UTType] {
+    nonisolated private static var supportedReferenceContentTypes: [UTType] {
         var types: [UTType] = [.jpeg, .png]
         if let webP = UTType(filenameExtension: "webp") {
             types.append(webP)
@@ -1920,13 +2536,73 @@ final class MediaGeneratorGearStore: ObservableObject {
             return [.jpeg]
         case "webp":
             return UTType(filenameExtension: "webp").map { [$0] } ?? []
+        case "mp4":
+            return UTType(filenameExtension: "mp4").map { [$0] } ?? [.movie]
+        case "mov":
+            return [.quickTimeMovie]
+        case "webm":
+            return UTType(filenameExtension: "webm").map { [$0] } ?? [.movie]
         default:
-            return [.png]
+            return task.category == .video ? [.movie] : [.png]
+        }
+    }
+
+    private static func defaultModel(for category: MediaGeneratorCategory) -> MediaGeneratorModelID {
+        switch category {
+        case .image:
+            return .nanoBananaPro
+        case .video:
+            return .veo31Fast
+        case .audio:
+            return .nanoBananaPro
         }
     }
 
     private static func defaultAspectRatio(for modelID: MediaGeneratorModelID) -> MediaGeneratorAspectRatio {
-        modelID == .gptImage2 ? .auto : .square
+        switch modelID {
+        case .gptImage2:
+            return .auto
+        case .veo31, .veo31Fast, .veo31Lite, .seedance2, .seedance2Fast:
+            return .landscape
+        case .nanoBananaPro:
+            return .square
+        }
+    }
+
+    private static func defaultResolution(
+        for modelID: MediaGeneratorModelID,
+        aspectRatio: MediaGeneratorAspectRatio
+    ) -> MediaGeneratorResolution {
+        supportedResolutions(for: modelID, aspectRatio: aspectRatio).first
+            ?? (modelID.category == .video ? .p720 : .oneK)
+    }
+
+    nonisolated static func availableModels(for category: MediaGeneratorCategory) -> [MediaGeneratorModelID] {
+        MediaGeneratorModelID.allCases.filter { $0.category == category }
+    }
+
+    nonisolated static func supportedVideoGenerationTypes(
+        for modelID: MediaGeneratorModelID
+    ) -> [MediaGeneratorVideoGenerationType] {
+        switch modelID {
+        case .veo31, .veo31Lite:
+            return [.textToVideo, .firstAndLastFrames]
+        case .veo31Fast:
+            return MediaGeneratorVideoGenerationType.allCases
+        case .seedance2, .seedance2Fast:
+            return [.textToVideo, .firstAndLastFrames, .referenceToVideo]
+        case .nanoBananaPro, .gptImage2:
+            return []
+        }
+    }
+
+    private static func categoryArg(_ value: Any?) -> MediaGeneratorCategory? {
+        guard let string = value as? String else {
+            return nil
+        }
+        return MediaGeneratorCategory(
+            rawValue: string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        )
     }
 
     private static func modelIDArg(_ value: Any?) -> MediaGeneratorModelID? {
@@ -1943,8 +2619,19 @@ final class MediaGeneratorGearStore: ObservableObject {
             return .nanoBananaPro
         case "gpt-image-2", "gptimage2", "image-2", "image2":
             return .gptImage2
+        case "veo3.1", "veo-3.1", "veo31":
+            return .veo31
+        case "veo3.1-fast", "veo-3.1-fast", "veo31-fast":
+            return .veo31Fast
+        case "veo3.1-lite", "veo-3.1-lite", "veo31-lite":
+            return .veo31Lite
+        case "seedance-2", "seedance2", "seedance-2.0", "seedance2.0":
+            return .seedance2
+        case "seedance-2-fast", "seedance2-fast", "seedance-2.0-fast", "seedance2.0-fast":
+            return .seedance2Fast
         default:
-            return MediaGeneratorModelID(rawValue: normalized)
+            return MediaGeneratorModelID(rawValue: string.trimmingCharacters(in: .whitespacesAndNewlines))
+                ?? MediaGeneratorModelID(rawValue: normalized)
         }
     }
 
@@ -1952,22 +2639,55 @@ final class MediaGeneratorGearStore: ObservableObject {
         guard let string = value as? String else {
             return nil
         }
-        return MediaGeneratorAspectRatio(
-            rawValue: string
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .replacingOccurrences(of: "：", with: ":")
-        )
+        let normalized = string
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "：", with: ":")
+        switch normalized.lowercased() {
+        case "auto":
+            return .auto
+        case "adaptive":
+            return .adaptive
+        default:
+            return MediaGeneratorAspectRatio(rawValue: normalized)
+        }
     }
 
     private static func resolutionArg(_ value: Any?) -> MediaGeneratorResolution? {
         guard let string = value as? String else {
             return nil
         }
-        return MediaGeneratorResolution(
-            rawValue: string
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .uppercased()
-        )
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch trimmed.lowercased() {
+        case "480p":
+            return .p480
+        case "720p":
+            return .p720
+        case "1080p":
+            return .p1080
+        case "4k":
+            if trimmed == "4K" {
+                return .fourK
+            }
+            return .video4K
+        default:
+            return MediaGeneratorResolution(rawValue: trimmed.uppercased())
+        }
+    }
+
+    private static func normalizedResolution(
+        _ resolution: MediaGeneratorResolution?,
+        for modelID: MediaGeneratorModelID
+    ) -> MediaGeneratorResolution? {
+        guard let resolution else {
+            return nil
+        }
+        if modelID.category == .video, resolution == .fourK {
+            return .video4K
+        }
+        if modelID.category == .image, resolution == .video4K {
+            return .fourK
+        }
+        return resolution
     }
 
     private static func outputFormatArg(_ value: Any?) -> MediaGeneratorOutputFormat? {
@@ -1987,6 +2707,10 @@ final class MediaGeneratorGearStore: ObservableObject {
             return [.square, .tall, .wide, .classicPortrait, .classicLandscape, .portrait, .vertical, .story, .landscape, .cinema, .auto]
         case .gptImage2:
             return [.auto, .square, .story, .landscape, .classicLandscape, .classicPortrait]
+        case .veo31, .veo31Fast, .veo31Lite:
+            return [.landscape, .story, .auto]
+        case .seedance2, .seedance2Fast:
+            return [.square, .classicLandscape, .classicPortrait, .landscape, .story, .cinema, .adaptive]
         }
     }
 
@@ -2002,6 +2726,14 @@ final class MediaGeneratorGearStore: ObservableObject {
                 return [.oneK, .twoK]
             }
             return [.oneK, .twoK, .fourK]
+        case .veo31, .veo31Fast:
+            return [.p720, .p1080, .video4K]
+        case .veo31Lite:
+            return [.p720, .p1080]
+        case .seedance2:
+            return [.p720, .p480, .p1080]
+        case .seedance2Fast:
+            return [.p720, .p480]
         }
     }
 
@@ -2011,6 +2743,10 @@ final class MediaGeneratorGearStore: ObservableObject {
             return 8
         case .gptImage2:
             return 16
+        case .veo31, .veo31Fast, .veo31Lite:
+            return 3
+        case .seedance2, .seedance2Fast:
+            return 9
         }
     }
 
@@ -2020,6 +2756,18 @@ final class MediaGeneratorGearStore: ObservableObject {
             ["model", "prompt", "n", "batch_count", "async", "response_format", "aspect_ratio", "resolution", "output_format", "image_input"]
         case .gptImage2:
             ["model", "prompt", "n", "batch_count", "async", "response_format", "aspect_ratio", "resolution", "image_input"]
+        case .veo31, .veo31Fast, .veo31Lite:
+            [
+                "model", "prompt", "batch_count", "generation_type", "aspect_ratio", "resolution",
+                "image_urls", "seed", "enable_translation", "watermark", "callback_url"
+            ]
+        case .seedance2, .seedance2Fast:
+            [
+                "model", "prompt", "batch_count", "aspect_ratio", "resolution", "duration",
+                "first_frame_url", "last_frame_url", "reference_image_urls",
+                "reference_video_urls", "reference_audio_urls", "generate_audio",
+                "web_search", "nsfw_checker", "callback_url"
+            ]
         }
     }
 
@@ -2052,44 +2800,80 @@ final class MediaGeneratorGearStore: ObservableObject {
     private static func supportedValuesPayload(for modelID: MediaGeneratorModelID) -> [String: Any] {
         var payload: [String: Any] = [
             "aspect_ratio": supportedAspectRatios(for: modelID).map(\.rawValue),
-            "resolution": MediaGeneratorResolution.allCases.map(\.rawValue)
+            "resolution": supportedResolutions(
+                for: modelID,
+                aspectRatio: defaultAspectRatio(for: modelID)
+            ).map(\.rawValue)
         ]
         if modelID == .nanoBananaPro {
             payload["output_format"] = MediaGeneratorOutputFormat.allCases.map(\.rawValue)
+        }
+        if modelID.category == .video {
+            payload["generation_type"] = supportedVideoGenerationTypes(for: modelID).map(\.rawValue)
+            payload["reference_url_schemes"] = ["http", "https", "asset"]
+        }
+        if modelID.isSeedance {
+            payload["duration"] = ["minimum": 4, "maximum": 15, "default": 5]
+            payload["generate_audio"] = [true, false]
+            payload["web_search"] = [true, false]
+            payload["nsfw_checker"] = [true, false]
         }
         return payload
     }
 
     private static func defaultParameterPayload(for modelID: MediaGeneratorModelID) -> [String: Any] {
-        var payload: [String: Any] = [
-            "n": 1,
-            "batch_count": 1,
-            "async": true,
-            "response_format": "url",
-            "aspect_ratio": defaultAspectRatio(for: modelID).rawValue
-        ]
+        var payload: [String: Any] = ["aspect_ratio": defaultAspectRatio(for: modelID).rawValue]
         switch modelID {
         case .nanoBananaPro:
+            payload["n"] = 1
+            payload["batch_count"] = 1
+            payload["async"] = true
+            payload["response_format"] = "url"
             payload["resolution"] = MediaGeneratorResolution.oneK.rawValue
             payload["output_format"] = MediaGeneratorOutputFormat.png.rawValue
         case .gptImage2:
+            payload["n"] = 1
+            payload["batch_count"] = 1
+            payload["async"] = true
+            payload["response_format"] = "url"
             payload["resolution"] = MediaGeneratorResolution.oneK.rawValue
+        case .veo31, .veo31Fast, .veo31Lite:
+            payload["batch_count"] = 1
+            payload["resolution"] = MediaGeneratorResolution.p720.rawValue
+            payload["generation_type"] = MediaGeneratorVideoGenerationType.textToVideo.rawValue
+            payload["enable_translation"] = true
+        case .seedance2, .seedance2Fast:
+            payload["batch_count"] = 1
+            payload["resolution"] = MediaGeneratorResolution.p720.rawValue
+            payload["duration"] = 5
+            payload["generate_audio"] = false
+            payload["web_search"] = false
+            payload["nsfw_checker"] = false
         }
         return payload
     }
 
     func normalizeSelectionForCurrentModel() {
+        if category != .audio, selectedModel.category != category {
+            selectedModel = Self.defaultModel(for: category)
+        }
         let supportedRatios = Self.supportedAspectRatios(for: selectedModel)
         if !supportedRatios.contains(aspectRatio) {
             aspectRatio = Self.defaultAspectRatio(for: selectedModel)
         }
         let supportedResolutions = Self.supportedResolutions(for: selectedModel, aspectRatio: aspectRatio)
         if !supportedResolutions.contains(resolution) {
-            resolution = supportedResolutions.first ?? .oneK
+            resolution = Self.defaultResolution(for: selectedModel, aspectRatio: aspectRatio)
+        }
+        if !Self.supportedVideoGenerationTypes(for: selectedModel).contains(videoGenerationType) {
+            videoGenerationType = .textToVideo
         }
         if references.count > Self.maxReferenceCount(for: selectedModel) {
             references = Array(references.prefix(Self.maxReferenceCount(for: selectedModel)))
             statusMessage = "\(selectedModel.title) accepts at most \(Self.maxReferenceCount(for: selectedModel)) references."
+        }
+        if selectedModel.category == .video {
+            videoDuration = min(max(videoDuration, 4), 15)
         }
         imageCount = min(max(imageCount, 1), 4)
     }
@@ -2109,6 +2893,129 @@ final class MediaGeneratorGearStore: ObservableObject {
             }
         }
         return defaultValue
+    }
+
+    private static func intArg(_ value: Any?) -> Int? {
+        if let int = value as? Int {
+            return int
+        }
+        if let double = value as? Double, double.rounded() == double {
+            return Int(double)
+        }
+        if let string = value as? String {
+            return Int(string.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return nil
+    }
+
+    private static func stringArg(_ value: Any?) -> String? {
+        guard let string = value as? String else {
+            return nil
+        }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func stringArrayArg(_ value: Any?) -> [String] {
+        if let strings = value as? [String] {
+            return strings.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        }
+        if let anyValues = value as? [Any] {
+            return anyValues.compactMap(stringArg)
+        }
+        if let string = stringArg(value) {
+            return [string]
+        }
+        return []
+    }
+
+    private static func videoFrameURLs(from options: MediaGeneratorVideoOptions) -> [String] {
+        [options.firstFrameURL, options.lastFrameURL].compactMap { value in
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed?.isEmpty == false ? trimmed : nil
+        }
+    }
+
+    private static func videoOptionsArg(_ args: [String: Any]) -> MediaGeneratorVideoOptions {
+        let firstFrameURL = stringArg(args["first_frame_url"])
+            ?? stringArg(args["firstFrameUrl"])
+            ?? stringArg(args["firstFrameURL"])
+        let lastFrameURL = stringArg(args["last_frame_url"])
+            ?? stringArg(args["lastFrameUrl"])
+            ?? stringArg(args["lastFrameURL"])
+        let referenceVideoURLs = stringArrayArg(args["reference_video_urls"])
+            + stringArrayArg(args["referenceVideoUrls"])
+            + stringArrayArg(args["referenceVideoURLs"])
+        let referenceAudioURLs = stringArrayArg(args["reference_audio_urls"])
+            + stringArrayArg(args["referenceAudioUrls"])
+            + stringArrayArg(args["referenceAudioURLs"])
+        let explicitGenerationType = videoGenerationTypeArg(
+            args["generation_type"] ?? args["generationType"]
+        )
+        let inferredGenerationType: MediaGeneratorVideoGenerationType
+        if let explicitGenerationType {
+            inferredGenerationType = explicitGenerationType
+        } else if firstFrameURL != nil || lastFrameURL != nil {
+            inferredGenerationType = .firstAndLastFrames
+        } else if !referenceVideoURLs.isEmpty
+            || !referenceAudioURLs.isEmpty
+            || !stringArrayArg(args["reference_image_urls"]).isEmpty
+            || !stringArrayArg(args["reference_urls"]).isEmpty
+            || !stringArrayArg(args["image_urls"]).isEmpty
+            || !stringArrayArg(args["imageUrls"]).isEmpty {
+            inferredGenerationType = .referenceToVideo
+        } else {
+            inferredGenerationType = .textToVideo
+        }
+        return MediaGeneratorVideoOptions(
+            generationType: inferredGenerationType,
+            duration: intArg(args["duration"]).map { min(max($0, 4), 15) } ?? 5,
+            generateAudio: boolArg(args["generate_audio"], defaultValue: false),
+            webSearch: boolArg(args["web_search"], defaultValue: false),
+            nsfwChecker: boolArg(args["nsfw_checker"], defaultValue: false),
+            seed: intArg(args["seed"] ?? args["seeds"]),
+            enableTranslation: boolArg(
+                args["enable_translation"] ?? args["enableTranslation"],
+                defaultValue: true
+            ),
+            watermark: stringArg(args["watermark"]),
+            firstFrameURL: firstFrameURL,
+            lastFrameURL: lastFrameURL,
+            referenceVideoURLs: referenceVideoURLs,
+            referenceAudioURLs: referenceAudioURLs,
+            callbackURL: stringArg(args["callback_url"] ?? args["callBackUrl"] ?? args["callbackUrl"])
+        )
+    }
+
+    private static func videoGenerationTypeArg(_ value: Any?) -> MediaGeneratorVideoGenerationType? {
+        guard let string = value as? String else {
+            return nil
+        }
+        let normalized = string
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+        switch normalized {
+        case "text", "text_to_video", "text_2_video":
+            return .textToVideo
+        case "first_last", "first_and_last", "first_and_last_frames", "first_and_last_frames_2_video":
+            return .firstAndLastFrames
+        case "reference", "reference_to_video", "reference_2_video":
+            return .referenceToVideo
+        default:
+            return MediaGeneratorVideoGenerationType(rawValue: string)
+        }
+    }
+
+    private static func jsonStringArray(_ values: [String]) -> String {
+        guard let data = try? JSONEncoder().encode(values),
+              let json = String(data: data, encoding: .utf8)
+        else {
+            return "[]"
+        }
+        return json
     }
 
     private static func imageCountArg(_ value: Any?) throws -> Int {
@@ -2158,6 +3065,10 @@ final class MediaGeneratorGearStore: ObservableObject {
         }
     }
 
+    private static func validateBatchCount(_ batchCount: Int, category _: MediaGeneratorCategory) throws {
+        try validateBatchCount(batchCount)
+    }
+
     private static func validateResponseFormat(_ value: Any?) throws {
         guard let value else {
             return
@@ -2165,18 +3076,30 @@ final class MediaGeneratorGearStore: ObservableObject {
         if let string = value as? String, string == "url" {
             return
         }
-        throw MediaGeneratorError.invalidOption("Xenodia image generation currently supports only response_format=url.")
+        throw MediaGeneratorError.invalidOption("Xenodia media generation currently supports only response_format=url.")
     }
 
     private static func validateUnsupportedModelArgs(modelID: MediaGeneratorModelID, args: [String: Any]) throws {
-        guard modelID == .gptImage2 else {
-            return
+        if modelID.category == .video, args["output_format"] != nil {
+            throw MediaGeneratorError.invalidOption("\(modelID.title) does not support output_format.")
         }
-        if args["output_format"] != nil {
-            throw MediaGeneratorError.invalidOption("GPT Image-2 does not support output_format in the current Xenodia API.")
+        if modelID == .gptImage2 {
+            if args["output_format"] != nil {
+                throw MediaGeneratorError.invalidOption("GPT Image-2 does not support output_format in the current Xenodia API.")
+            }
+            if args["nsfw_checker"] != nil {
+                throw MediaGeneratorError.invalidOption("GPT Image-2 does not support nsfw_checker in the current Xenodia API.")
+            }
         }
-        if args["nsfw_checker"] != nil {
-            throw MediaGeneratorError.invalidOption("GPT Image-2 does not support nsfw_checker in the current Xenodia API.")
+        if modelID.isVeo {
+            for key in ["duration", "generate_audio", "web_search", "nsfw_checker", "reference_video_urls", "reference_audio_urls"] where args[key] != nil {
+                throw MediaGeneratorError.invalidOption("\(modelID.title) does not support \(key).")
+            }
+        }
+        if modelID.isSeedance {
+            for key in ["seed", "seeds", "enable_translation", "enableTranslation", "watermark"] where args[key] != nil {
+                throw MediaGeneratorError.invalidOption("\(modelID.title) does not support \(key).")
+            }
         }
     }
 
@@ -2193,15 +3116,105 @@ final class MediaGeneratorGearStore: ObservableObject {
         }
     }
 
-    private static func validateReferences(modelID: MediaGeneratorModelID, _ references: [MediaGeneratorReference]) throws {
+    private static func validateReferences(
+        modelID: MediaGeneratorModelID,
+        _ references: [MediaGeneratorReference],
+        videoOptions: MediaGeneratorVideoOptions
+    ) throws {
         let maxCount = maxReferenceCount(for: modelID)
         guard references.count <= maxCount else {
-            throw MediaGeneratorError.invalidReference("\(modelID.title) image_input accepts at most \(maxCount) total references.")
+            throw MediaGeneratorError.invalidReference("\(modelID.title) accepts at most \(maxCount) total references.")
         }
+        guard modelID.category == .video else {
+            for reference in references {
+                if let url = reference.url {
+                    try validateReferenceURL(url, allowedSchemes: ["http", "https"], label: "Reference image")
+                }
+                if let localPath = reference.localPath {
+                    try validateLocalReferenceFile(URL(fileURLWithPath: localPath))
+                }
+            }
+            return
+        }
+
         for reference in references {
             if let localPath = reference.localPath {
                 try validateLocalReferenceFile(URL(fileURLWithPath: localPath))
             }
+            if let url = reference.url {
+                try validateReferenceURL(url, allowedSchemes: ["http", "https", "asset"], label: "Video reference")
+            }
+        }
+
+        if modelID.isVeo {
+            if let seed = videoOptions.seed, !(10_000...99_999).contains(seed) {
+                throw MediaGeneratorError.invalidOption("Veo3.1 seeds must be between 10000 and 99999.")
+            }
+            switch videoOptions.generationType {
+            case .textToVideo:
+                guard references.isEmpty else {
+                    throw MediaGeneratorError.invalidReference("Veo3.1 TEXT_2_VIDEO does not accept imageUrls.")
+                }
+            case .firstAndLastFrames:
+                guard (1...2).contains(references.count) else {
+                    throw MediaGeneratorError.invalidReference("Veo3.1 FIRST_AND_LAST_FRAMES_2_VIDEO requires 1-2 imageUrls.")
+                }
+            case .referenceToVideo:
+                guard modelID == .veo31Fast else {
+                    throw MediaGeneratorError.invalidOption("Veo3.1 REFERENCE_2_VIDEO only supports veo3.1_fast.")
+                }
+                guard (1...3).contains(references.count) else {
+                    throw MediaGeneratorError.invalidReference("Veo3.1 REFERENCE_2_VIDEO requires 1-3 imageUrls.")
+                }
+            }
+            return
+        }
+
+        if modelID.isSeedance {
+            guard (4...15).contains(videoOptions.duration) else {
+                throw MediaGeneratorError.invalidOption("Seedance 2.0 duration must be an integer from 4 to 15 seconds.")
+            }
+            try validateURLList(videoOptions.referenceVideoURLs, maxCount: 3, label: "reference_video_urls")
+            try validateURLList(videoOptions.referenceAudioURLs, maxCount: 3, label: "reference_audio_urls")
+            if videoOptions.lastFrameURL != nil, videoOptions.firstFrameURL == nil {
+                throw MediaGeneratorError.invalidReference("Seedance 2.0 last_frame_url requires first_frame_url.")
+            }
+            if videoOptions.generationType == .firstAndLastFrames
+                || videoOptions.firstFrameURL != nil
+                || videoOptions.lastFrameURL != nil {
+                let frameURLCount = videoFrameURLs(from: videoOptions).count
+                guard (1...2).contains(references.count) else {
+                    throw MediaGeneratorError.invalidReference("Seedance 2.0 first/last frame mode accepts at most 2 frame URLs.")
+                }
+                guard frameURLCount == 0 || references.count == frameURLCount else {
+                    throw MediaGeneratorError.invalidReference("Seedance 2.0 first/last frame URLs cannot be combined with multimodal reference arrays.")
+                }
+                guard videoOptions.referenceVideoURLs.isEmpty, videoOptions.referenceAudioURLs.isEmpty else {
+                    throw MediaGeneratorError.invalidReference("Seedance 2.0 first/last frame URLs cannot be combined with multimodal reference arrays.")
+                }
+            }
+        }
+    }
+
+    private static func validateURLList(_ urls: [String], maxCount: Int, label: String) throws {
+        guard urls.count <= maxCount else {
+            throw MediaGeneratorError.invalidReference("\(label) accepts at most \(maxCount) URLs.")
+        }
+        for url in urls {
+            try validateReferenceURL(url, allowedSchemes: ["http", "https", "asset"], label: label)
+        }
+    }
+
+    private static func validateReferenceURL(
+        _ value: String,
+        allowedSchemes: Set<String>,
+        label: String
+    ) throws {
+        guard let url = URL(string: value),
+              let scheme = url.scheme?.lowercased(),
+              allowedSchemes.contains(scheme)
+        else {
+            throw MediaGeneratorError.invalidReference("\(label) must use \(allowedSchemes.sorted().joined(separator: ", ")) URL schemes.")
         }
     }
 

@@ -17,6 +17,7 @@ export type ChatProviderConfig = {
   chat_completions_url: string;
   model_discovery_url: string;
   image_generations_url?: string;
+  video_generations_url?: string;
   task_retrieval_url?: string;
   storage_upload_url?: string;
   model_override_env: string;
@@ -59,6 +60,7 @@ export type XenodiaGatewayBackend = {
 export type XenodiaMediaBackend = {
   api_key: string;
   image_generations_url: string;
+  video_generations_url: string;
   task_retrieval_url: string;
   storage_upload_url?: string;
   request_timeout_seconds: number;
@@ -414,6 +416,10 @@ export function parseChatRuntimeConfig(raw: string): ChatRuntimeConfig {
         provider.image_generations_url,
         `providers.${name}.image_generations_url`,
       ),
+      video_generations_url: optionalString(
+        provider.video_generations_url,
+        `providers.${name}.video_generations_url`,
+      ),
       task_retrieval_url: optionalString(
         provider.task_retrieval_url,
         `providers.${name}.task_retrieval_url`,
@@ -730,6 +736,9 @@ export async function loadXenodiaMediaBackend(
     image_generations_url:
       providerConfig.image_generations_url ??
       "https://api.xenodia.xyz/v1/images/generations",
+    video_generations_url:
+      providerConfig.video_generations_url ??
+      "https://api.xenodia.xyz/v1/videos/generations",
     task_retrieval_url:
       providerConfig.task_retrieval_url ?? "https://api.xenodia.xyz/v1/tasks",
     ...(providerConfig.storage_upload_url

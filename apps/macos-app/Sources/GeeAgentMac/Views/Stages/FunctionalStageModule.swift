@@ -38,6 +38,8 @@ struct FunctionalStageModule: View {
             EmptyView()
         case .chat:
             ChatView(store: store)
+        case .telegram:
+            TelegramConversationsView()
         case .tasks:
             LogsView(store: store)
         case .automations:

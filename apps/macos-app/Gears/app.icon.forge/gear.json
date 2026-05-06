@@ -2,7 +2,7 @@
   "schema": "gee.gear.v1",
   "id": "app.icon.forge",
   "name": "App Icon Forge",
-  "description": "Native macOS icon generator that turns one source image into a rounded, inset app icon set, .icns bundle, and Xcode appiconset.",
+  "description": "Native macOS icon processor that turns one source image into app icon packages or simple Gear catalog icons.",
   "developer": "Gee",
   "version": "0.1.0",
   "category": "Developer",
@@ -96,6 +96,85 @@
             "risk": "high",
             "requires_approval": false,
             "skill_hint": "Use only when the current user explicitly asks Codex to generate macOS app icons from a local image path. Pass only local source_path/output_dir values supplied by the user or returned by Gee capabilities, and report the returned icns_path/iconset_path/appiconset_path/preview_path exactly as Gee returns them."
+          }
+        }
+      },
+      {
+        "id": "gear_icon.generate",
+        "title": "Generate Gear list icons",
+        "description": "Generate a Gee Gear list icon package from one local image path, including a 780x580 assets/icon.png tile, preview-780x580.png, and a gear-icon.json spec file.",
+        "examples": [
+          "Generate a Gear list icon from this image path",
+          "Create assets/icon.png for a Gear manifest"
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": ["source_path"],
+          "additionalProperties": false,
+          "properties": {
+            "source_path": {
+              "type": "string",
+              "description": "Local image path selected or supplied by the user."
+            },
+            "output_dir": {
+              "type": "string",
+              "description": "Optional output directory. Defaults to App Icon Forge gear data."
+            },
+            "name": {
+              "type": "string",
+              "description": "Output folder base name. Defaults to GearIcon."
+            },
+            "content_scale": {
+              "type": "number",
+              "minimum": 0.6,
+              "maximum": 0.95,
+              "description": "Visual scale of the rounded icon inside the transparent canvas."
+            },
+            "corner_radius_ratio": {
+              "type": "number",
+              "minimum": 0.08,
+              "maximum": 0.28,
+              "description": "Corner radius as a ratio of the inset icon rect."
+            },
+            "shadow": {
+              "type": "boolean",
+              "description": "Whether to add a subtle macOS-style drop shadow."
+            }
+          }
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "status": { "type": "string", "enum": ["succeeded", "failed"] },
+            "gear_id": { "type": "string" },
+            "capability_id": { "type": "string" },
+            "source_path": { "type": "string" },
+            "output_dir": { "type": "string" },
+            "assets_path": { "type": "string" },
+            "icon_path": { "type": "string" },
+            "manifest_icon": { "type": "string" },
+            "preview_path": { "type": "string" },
+            "metadata_path": { "type": "string" },
+            "generated_files": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "code": { "type": "string" },
+            "error": { "type": "string" },
+            "recovery": { "type": "string" }
+          }
+        },
+        "side_effect": "filesystem.write.user_selected",
+        "permissions": [
+          "filesystem.read.user_selected",
+          "filesystem.write.user_selected"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "high",
+            "requires_approval": false,
+            "skill_hint": "Use only when the current user explicitly asks Codex to generate Gee Gear catalog icons from a local image path. Pass only local source_path/output_dir values supplied by the user or returned by Gee capabilities, and report the returned icon_path, manifest_icon, preview_path, and metadata_path exactly as Gee returns them."
           }
         }
       }

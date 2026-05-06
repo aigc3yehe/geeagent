@@ -1913,6 +1913,56 @@ describe("native runtime command modules", () => {
     );
   });
 
+  it("builds a focused Phase 3.6 plan for Media Generator video requests", () => {
+    const plan = buildRuntimeRunPlan(
+      "use the video generator with seedance2.0, 720p, 9:16, 8 seconds, prompt: product reveal with soft studio lighting",
+      "gear_first",
+    );
+
+    assert.ok(plan);
+    assert.equal(plan.current_stage_id, "stage_create_media_generation_task");
+    assert.deepEqual(
+      plan.stages[0]?.capability_args?.["media.generator/media_generator.create_task"],
+      {
+        category: "video",
+        model: "seedance-2",
+        prompt: "product reveal with soft studio lighting",
+        aspect_ratio: "9:16",
+        resolution: "720p",
+        duration: 8,
+      },
+    );
+
+    const veoPlan = buildRuntimeRunPlan("generate a 4k veo3.1 fast video, prompt: launch trailer", "gear_first");
+    assert.deepEqual(
+      veoPlan?.stages[0]?.capability_args?.["media.generator/media_generator.create_task"],
+      {
+        category: "video",
+        model: "veo3.1_fast",
+        prompt: "launch trailer",
+        resolution: "4K",
+      },
+    );
+
+    const videoBatchPlan = buildRuntimeRunPlan("generate 3 videos with veo3.1 fast, prompt: launch teaser", "gear_first");
+    assert.equal(
+      videoBatchPlan?.stages[0]?.capability_args?.["media.generator/media_generator.create_task"]
+        ?.batch_count,
+      3,
+    );
+
+    const videoGeneratorBatchPlan = buildRuntimeRunPlan("use the video generator to generate 4 videos, prompt: launch teaser", "gear_first");
+    assert.deepEqual(
+      videoGeneratorBatchPlan?.stages[0]?.capability_args?.["media.generator/media_generator.create_task"],
+      {
+        category: "video",
+        model: "veo3.1_fast",
+        prompt: "launch teaser",
+        batch_count: 4,
+      },
+    );
+  });
+
   it("adds research and synthesis stages for cross-domain Twitter requests", () => {
     const plan = buildRuntimeRunPlan(
       "save this tweet to bookmarks https://x.com/YaReYaRu30Life/status/2049545035176362120?s=20, download its media into the media library gear, then search related information and explain the technologies involved.",
@@ -3139,6 +3189,39 @@ describe("native runtime command modules", () => {
     const outcome = JSON.parse(raw);
     assert.equal(outcome.kind, "completed");
     assert.equal(await readFile(join(configDir, "tool-output.txt"), "utf8"), "from highest auth");
+  });
+
+  it("pre-approves available SDK tools when highest authorization is enabled", () => {
+    const approved = __sdkTurnRunnerTestHooks.sdkAutoApproveToolsForSecurity({
+      requestedAutoApproveTools: ["Read", "mcp__gee__gear_list_capabilities"],
+      availableTools: [
+        "Bash",
+        "Read",
+        "Write",
+        "WebSearch",
+        "mcp__gee__gear_list_capabilities",
+      ],
+      disallowedTools: ["WebSearch"],
+      highestAuthorizationEnabled: true,
+      toolBoundaryMode: "default",
+    });
+
+    assert.equal(approved.includes("Bash"), true);
+    assert.equal(approved.includes("Write"), true);
+    assert.equal(approved.includes("WebSearch"), false);
+    assert.equal(approved.includes("mcp__gee__gear_list_capabilities"), true);
+  });
+
+  it("keeps highest authorization scoped to the Gee bridge on Gear-first turns", () => {
+    const approved = __sdkTurnRunnerTestHooks.sdkAutoApproveToolsForSecurity({
+      requestedAutoApproveTools: ["Read", "mcp__gee__gear_list_capabilities"],
+      availableTools: ["Bash", "Read", "mcp__gee__gear_list_capabilities"],
+      disallowedTools: [],
+      highestAuthorizationEnabled: true,
+      toolBoundaryMode: "gear_first",
+    });
+
+    assert.deepEqual(approved, ["mcp__gee__gear_list_capabilities"]);
   });
 
   it("records SDK runtime setup failures as real failed chat turns", async () => {

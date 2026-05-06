@@ -2,7 +2,7 @@
 
 ## Status And Date
 
-Document date: 2026-05-01.
+Document date: 2026-05-04.
 
 Status: Gear Platform V1 public development standard. This document records both current implementation state and the target architecture. Implemented behavior is marked as current. Confirmed direction that is not fully implemented yet is described as target state or V1 standard.
 
@@ -19,7 +19,7 @@ Core goals:
 - If a gear folder is deleted, GeeAgent should stop showing that gear after restart or registry refresh.
 - If a valid gear folder is copied into the user data location, GeeAgent should show that gear after restart or registry refresh.
 - A broken, missing, policy-blocked, or partially installed gear must not break GeeAgent chat, tasks, settings, runtime startup, or unrelated gears.
-- A gear declares its name, description, developer, cover image, version, entry, dependencies, permissions, and future agent capabilities through `gear.json`.
+- A gear declares its name, description, developer, icon/cover image, version, entry, dependencies, permissions, and future agent capabilities through `gear.json`.
 - GeeAgent owns discovery, validation, preparation, default enablement, window opening, widget rendering, and the future agent bridge.
 - The gear owns its business logic, resources, data, dependency declarations, and callable capability declarations.
 - The future root agent controls gears through one control bridge, not by adding gear-specific pseudo-tools to the agent runtime.
@@ -112,14 +112,14 @@ Current capabilities already present:
 - `hyperframes.studio` dependency plan for Node, npm, Hyperframes, FFmpeg, and FFprobe.
 - Gears catalog states for checking, installing, failed, and open.
 - Native windows for first-party `media.library` and `hyperframes.studio`.
-- `media.generator` is a current first-party Gear app. It provides a native media-generation surface, uses the global Xenodia provider channel for image generation, and exposes structured agent capabilities for listing models, creating generation tasks, and reading task state.
+- `media.generator` is a current first-party Gear app. It provides a native media-generation surface, uses the global Xenodia provider channel for image and video generation, and exposes structured agent capabilities for listing models, creating generation tasks, and reading task state.
 - First V1 host bridge surface for `gee.app.openSurface`, progressive Gear capability disclosure, and shared Gear invocation.
 - `bookmark.vault` is a current first-party Gear app. It saves arbitrary text or URLs into `gear-data/bookmark.vault`, enriches media URLs through the same `yt-dlp` metadata family used by `smartyt.media`, enriches Twitter/X tweet URLs through an embed metadata path, and falls back to basic web metadata fetch for other sites.
 - `wespy.reader` is a current first-party Gear app. It wraps the MIT-licensed WeSpy Python package to fetch WeChat public-account articles, WeChat albums, and general article pages into Markdown-first local task files.
-- `app.icon.forge` is a current first-party Gear app. It converts one local source image into a macOS app icon package with rounded safe-area rendering, `AppIcon.icns`, `AppIcon.iconset`, `AppIcon.appiconset`, and a 1024px preview.
-- `telegram.bridge` is a current first-party Gear. It provides a native Telegram Bridge surface, GearHost/Keychain-backed push-only Telegram delivery, a worker polling service for Codex remote control and GeeAgent direct chat, and Phase 3 channel ingress for Gee direct messages. Codex export is enabled for status/list/send push capabilities; channel creation remains Gee-native setup because bot token binding and target confirmation are local configuration steps.
+- `app.icon.forge` is a current first-party Gear app. It converts one local source image into either a macOS app icon package with rounded safe-area rendering, `AppIcon.icns`, `AppIcon.iconset`, `AppIcon.appiconset`, and a 1024px preview, or a simple Gear catalog icon package with a 780x580 `assets/icon.png` list tile, `preview-780x580.png`, and `gear-icon.json`.
+- `telegram.bridge` is a current first-party Gear. It provides a native Telegram Bridge surface, GearHost-backed push-only Telegram delivery with tokens stored in GeeAgent local app data, an app-started polling service for GeeAgent direct chat and Codex Remote commands, and Phase 3 channel ingress for Gee direct messages. Its setup surface separates two-way conversation bots from one-way push channels, labels first-setup required fields, can fetch the latest Telegram update chat ID from a provided bot token into the push target field, can fill the latest Telegram sender user ID into a Gee/Codex conversation bot allowlist from local conversation history, runtime channel ingress history, or Bot API updates, and includes a separate Telegram Conversations view for inbound/outbound bridge threads. Gee Direct supports `/new` to reset the bound runtime conversation and can send validated local files back to the active Telegram chat through contextual native GearHost execution. Codex Remote supports `/start`/`/help`, `/list`/`/recent`, `/tracked`, `/open`, `/latest`, `/desktop`, `/cancel`, `/send <text>`, and `/send <session_id> <prompt>` through explicit CLI resume mode. Its native bridge registers Telegram bot command menus, sends inline keyboard buttons for paginated project selection, paginated thread browsing, Track/Untrack, and thread actions, groups `/list` by project root, and only lists Codex Desktop-originated non-subagent sessions so Telegram does not expose internal conversations that are invisible in the Codex app. Selecting a Codex thread and sending plain text now stages the prompt for explicit Confirm/Cancel instead of immediately resuming the session. The native file-scan list path reads Codex JSONL session summaries incrementally so very large session files do not block Telegram replies, long conversational replies are split into multiple Telegram messages instead of being truncated, and long plain-text push messages are also split while long parse-mode push messages remain blocked to avoid invalid formatting chunks; unavailable app-server modes return structured failure instead of falling back. Codex export is enabled for status/list/send push capabilities; channel creation and contextual direct file send remain Gee-native because bot token binding, target confirmation, and active-chat identity are local configuration/runtime steps.
 - Transitional host action intents let first-party runtime turns hand native Gear actions back to GeeAgentMac while full SDK/MCP tool exposure is still being completed.
-- External Codex calls now use the generated `geeagent-codex` plugin plus the Gee MCP server to create shared-store external invocations. GeeAgentMac polls that queue and drains `gee_invoke_capability` / `gee_open_surface` through the same GearHost bridge used by the runtime, then Codex reads results with `gee_get_invocation`. The exported built-in capabilities include low-risk `media.generator` model/task queries, high-risk explicit-user `media.generator/media_generator.create_task` image task or batch creation, `media.library` view filtering/folder focus plus explicit local file import, high-risk explicit-user `app.icon.forge/app_icon.generate` icon package generation, medium-risk `bookmark.vault/bookmark.save` for Gear-owned bookmark writes, and medium-risk `telegram.bridge/telegram_push.send_message` for configured push-only Telegram channels.
+- External Codex calls now use the generated `geeagent-codex` plugin plus the Gee MCP server to create shared-store external invocations. GeeAgentMac polls that queue and drains `gee_invoke_capability` / `gee_open_surface` through the same GearHost bridge used by the runtime, while Codex reads recorded results with `gee_get_invocation`; read-only `media.generator` model/task queries are prioritized and use short wait windows. The exported built-in capabilities include low-risk `media.generator` model/task queries, high-risk explicit-user `media.generator/media_generator.create_task` image task, image batch, or video task creation, `media.library` view filtering/folder focus plus explicit local file import, high-risk explicit-user `app.icon.forge/app_icon.generate` app icon package generation, high-risk explicit-user `app.icon.forge/gear_icon.generate` Gear catalog icon generation, medium-risk `bookmark.vault/bookmark.save` for Gear-owned bookmark writes, and medium-risk `telegram.bridge/telegram_push.send_message` for configured push-only Telegram channels. Contextual `telegram_direct.send_file` is intentionally not exported to detached Codex calls.
 - Home widget direction for `btc.price` and `system.monitor`.
 
 Current gaps:
@@ -129,7 +129,7 @@ Current gaps:
 - Third-party gear import is not implemented yet.
 - Full agent-runtime SDK/MCP tool injection for every Gear capability is not complete yet.
 - Broad external Codex coverage is intentionally narrow. Only capabilities with explicit `exports.codex.enabled: true` are visible, and additional provider-generating, download, import, user-file, and high-side-effect capabilities remain hidden or explicitly disabled until their approval, artifact, and failure semantics are audited end to end.
-- `telegram.bridge` still needs production daemon management and broader setup polish, but its current bridge already includes native GearHost push delivery, Keychain token lookup, push-channel creation, worker polling, Codex remote commands, and Phase 3 direct-chat ingress.
+- `telegram.bridge` still needs production daemon management and broader setup polish, but its current bridge already includes native GearHost push delivery, local app-data token lookup, push-channel creation, app-started polling, Codex remote commands with Telegram command menus, inline buttons, project grouping, pagination, Track/Untrack project lists, explicit send confirmation, long conversation/push splitting, Codex Desktop-visible session filtering, Phase 3 direct-chat ingress, `/new` conversation reset, allowlist user-ID fetch, and contextual Gee Direct local-file sending.
 - `GearKit` and `GearHost` have not been split into separate SwiftPM targets yet.
 
 ## Target Architecture
@@ -358,6 +358,13 @@ Recommended fields:
 - `permissions`
 - `dependencies`
 - `agent.capabilities`
+
+Current Gear icon convention:
+
+- `icon` is used by the Gears catalog/list surface.
+- The simple spec is `gee.gear.icon.v1`: a 780x580 PNG tile at `assets/icon.png`, referenced from the manifest as `"icon": "assets/icon.png"`.
+- If the icon file is missing, the catalog falls back to `cover` and then to the built-in placeholder.
+- `cover` remains optional wider visual art for surfaces that want a broader card image.
 
 During migration, V1 should accept existing `kind` values:
 
@@ -673,10 +680,10 @@ Rules:
 
 - Main app runtime owns provider routing, API keys, endpoint URLs, readiness checks, and secret storage.
 - Gear packages must not store provider API keys, long-term tokens, or channel-specific secrets in `gear.json`, package files, or `gear-data/<gear-id>/`.
-- A Gear may declare that it needs a global network capability, such as Xenodia image generation, but it must request the configured channel through the Gee host/runtime boundary.
-- Xenodia image generation is exposed as a global provider channel alongside chat routing. The channel currently includes image generation and task retrieval endpoints, and may later include a dedicated storage upload endpoint.
-- Reference images for generation should use the global Xenodia media channel. When no separate Xenodia storage API is configured, local reference images may be sent directly through the Xenodia image generation request as multipart `image_input`; Gears must not reintroduce Qiniu or another package-local object store.
-- First-party Gears may show future provider placeholders, such as video or audio generation, but they must not wire non-Xenodia providers copied from reference projects until the global provider layer supports them.
+- A Gear may declare that it needs a global network capability, such as Xenodia image or video generation, but it must request the configured channel through the Gee host/runtime boundary.
+- Xenodia media generation is exposed as a global provider channel alongside chat routing. The channel currently includes image generation, video generation, and task retrieval endpoints, and may later include a dedicated storage upload endpoint.
+- Reference inputs for generation should use the global Xenodia media channel. When no separate Xenodia storage API is configured, local reference images may be sent directly through the Xenodia image generation request as multipart `image_input`; video references should use public URLs or Xenodia `asset://` IDs. Gears must not reintroduce Qiniu or another package-local object store.
+- First-party Gears may show future provider placeholders, such as audio generation, but they must not wire non-Xenodia providers copied from reference projects until the global provider layer supports them.
 - Provider failures must return structured errors to the active run. The Gear UI may show a concise state, but final user-facing prose still belongs to the active agent/LLM.
 
 ## Agent Control Bridge
@@ -753,7 +760,7 @@ This does not convert Gears into Codex plugins. Gear remains the authoritative p
 
 The core export standard lives in `docs/planning/gee-capability-export-standard-v0.md`.
 
-Current implementation status: the agent runtime has manifest-backed export status/list/describe commands, a Codex-facing MCP stdio server, a shared-store external invocation queue, a local `geeagent-codex` plugin generator, and a home-local install command. The generated `gee-capabilities` skill is Codex's first entry point: it explains the GeeAgent plugin, points to a generated capability index and per-Gear reference files, and requires live MCP discovery/description before invocation. The install command writes `~/plugins/geeagent-codex` and refreshes `~/.agents/plugins/marketplace.json` by default. `gee_status`, `gee_list_capabilities`, and `gee_describe_capability` are backed by manifest projection. `gee_invoke_capability` and `gee_open_surface` create external invocations that GeeAgentMac drains through the live GearHost bridge; `gee_get_invocation` returns the recorded status/result. `media.generator/media_generator.create_task` is exported for explicit user-requested image generation, including `batch_count` 1-4 fan-out, and returns task or batch status/artifact references through that same queue. `telegram.bridge/telegram_push.send_message` is exported for configured push-only Telegram channels and returns real Telegram delivery metadata or structured failure/degraded state. If GeeAgentMac is not running or cannot drain the queue, Codex gets a pending/failed/blocked/degraded structured result with `fallback_attempted: false`; stale `running` invocations degrade with manual-retry recovery instead of being retried automatically. The MCP server does not execute Gear business logic or run fallback scripts.
+Current implementation status: the agent runtime has manifest-backed export status/list/describe commands, a Codex-facing MCP stdio server, a shared-store external invocation queue, a local `geeagent-codex` plugin generator, and a home-local install command. The generated `gee-capabilities` skill is Codex's first entry point: it explains the GeeAgent plugin, points to a generated capability index and per-Gear reference files, and requires live MCP discovery/description before invocation. The install command writes `~/plugins/geeagent-codex`, refreshes `~/.agents/plugins/marketplace.json`, and refreshes the Codex-loaded cache package at `~/.codex/plugins/cache/geeagent-local/geeagent-codex/<plugin-version>` by default. The cache package is derived from the home-local plugin package, not from the development checkout. The plugin package includes a versioned built native runtime bundle at `runtime/native-runtime/<plugin-version>/index.mjs` and generated `gears/<gear-id>/gear.json` manifest projections for exported capabilities; the generated `.mcp.json` points Codex at that plugin-local bundle so Codex starts the bridge from any project cwd without the development checkout or a `tsx` loader. `gee_status`, `gee_list_capabilities`, and `gee_describe_capability` are backed by manifest projection. `gee_invoke_capability` and `gee_open_surface` create external invocations that GeeAgentMac drains through the live GearHost bridge; `gee_get_invocation` is a direct recorded status/result read and can briefly wait for a terminal state with `wait_ms`. GeeAgentMac prioritizes read-only `media.generator` model and task status queries while still completing them through the same external invocation record. `media.generator/media_generator.create_task` is exported for explicit user-requested image or video generation, including `batch_count` 1-4 fan-out for both categories, and returns task or batch status/artifact references through that same queue. `app.icon.forge/app_icon.generate` and `app.icon.forge/gear_icon.generate` are exported for explicit user-requested icon generation and return structured file artifacts through GearHost. `telegram.bridge/telegram_push.send_message` is exported for configured push-only Telegram channels and returns real Telegram delivery metadata or structured failure/degraded state. `telegram.bridge/telegram_direct.send_file` remains native runtime-only because it depends on the active Gee Direct Telegram chat. If GeeAgentMac is not running or cannot drain the queue, Codex gets a pending/failed/blocked/degraded structured result with `fallback_attempted: false`; stale `running` invocations degrade with manual-retry recovery instead of being retried automatically. The MCP server does not execute Gear business logic or run fallback scripts.
 
 Target Codex-facing package shape:
 
@@ -762,13 +769,19 @@ geeagent-codex/
 ├── .codex-plugin/
 │   └── plugin.json
 ├── .mcp.json
+├── runtime/
+│   └── native-runtime/
+│       └── <plugin-version>/
+│           └── index.mjs
+├── gears/
+│   └── <gear-id>/
+│       └── gear.json
 ├── skills/
 │   └── gee-capabilities/
 │       ├── SKILL.md
 │       └── references/
 │           ├── capability-index.md
 │           └── <gear-id>.md
-└── assets/
 ```
 
 Target Gee MCP export tools:
@@ -780,7 +793,7 @@ Target Gee MCP export tools:
 - `gee_open_surface`
 - `gee_get_invocation`
 
-The generated plugin package contains `.codex-plugin/plugin.json`, `.mcp.json`, `skills/gee-capabilities/SKILL.md`, `references/capability-index.md`, and generated per-Gear reference files. The references are an offline orientation snapshot; `.mcp.json` points Codex at `native-runtime codex-mcp`, and installed Gear availability remains live data from the MCP server, not static plugin metadata.
+The generated plugin package contains `.codex-plugin/plugin.json`, `.mcp.json`, the versioned native runtime bundle, `gears/<gear-id>/gear.json` manifest projections, `skills/gee-capabilities/SKILL.md`, `references/capability-index.md`, and generated per-Gear reference files. The references and manifest projections are offline orientation and discovery snapshots, not Gear business logic; `.mcp.json` points Codex at the plugin-local `native-runtime codex-mcp` bundle, and live execution remains data from the MCP server and GearHost, not static plugin metadata.
 
 Only ready, enabled, policy-allowed, export-eligible Gear capabilities are visible to Codex. Disabled, failed, installing, invalid, blocked, or explicitly non-exported Gears are invisible. The export bridge must not create one Codex tool per Gear feature, duplicate Gear business logic, store provider secrets, or call package-local fallback scripts.
 
@@ -849,7 +862,7 @@ First-party gears should gradually move into real package boundaries.
 - Target: complete Eagle-compatible local media manager.
 - Package includes manifest, README, assets, setup metadata, storage notes, and future capability declarations.
 - Native Swift implementation may remain host-compiled during migration, but the business boundary must move out of the main app.
-- Folder management, filtering, starring, Quick Look, Finder handoff, video / gif hover playback, and live presentation mode belong to the media gear, not the main workbench.
+- Folder management, filtering, starring, Quick Look, Finder handoff, video edit handoff, video / gif hover playback, and live presentation mode belong to the media gear, not the main workbench.
 - Agent capabilities include `media.filter`, `media.focus_folder`, and `media.import_files`. `media.import_files` is available to both GeeAgent root-agent conversations and Codex conversations when the current user explicitly asks to import local files. It imports local media paths into the authorized media library, restores saved access when possible, and returns item proof for multi-Gear workflows. New files appear in `imported_items`; duplicate files are treated as idempotent success with `action: "import_noop"`, `existing_items`, and `duplicate_paths`; source files that cannot be found appear in `missing_paths`; unsupported files appear in `unsupported_paths`. If no supported imported or existing media item is available, the capability returns structured failure with `code: "gear.media.no_supported_files"` instead of reporting success with `imported_count: 0`. If authorization is missing, it keeps readable paths as `pending_paths`, opens the Media Library surface, and returns a structured failure for the active agent/LLM to explain.
 
 `hyperframes.studio`:
@@ -862,21 +875,21 @@ First-party gears should gradually move into real package boundaries.
 `media.generator`:
 
 - Target: native media generation Gear adapted from the Dailystarter generator module.
-- The Gear supports image generation first through the global Xenodia channel. The current enabled models are `nano-banana-pro` and `gpt-image-2`; `image-2` is accepted as a user-facing alias for `gpt-image-2`.
+- The Gear supports image and video generation through the global Xenodia channel. The current enabled image models are `nano-banana-pro` and `gpt-image-2`; `image-2` is accepted as a user-facing alias for `gpt-image-2`. The current enabled video models are `veo3.1`, `veo3.1_fast`, `veo3.1_lite`, `seedance-2`, and `seedance-2-fast`.
 - Nano Banana Pro exposes `n=1`, `async`, `response_format=url`, `aspect_ratio`, `resolution`, `output_format`, and reference images. GPT Image-2 exposes `n=1`, `async`, `response_format=url`, `aspect_ratio`, `resolution`, and reference images; do not send `output_format` or `nsfw_checker` for GPT Image-2.
-- Multi-image generation uses Gear-level `batch_count` from 1 to 4. Gee creates one persisted Xenodia `n=1` task per requested image, groups those child tasks under one `batch_id`, and the native task list shows that batch as one row with a grid of results.
-- Reference image limits are model-specific: Nano Banana Pro allows up to 8 total inputs, and GPT Image-2 allows up to 16 total inputs. Local references must be JPEG, PNG, or WebP and 30MB or smaller.
-- Video and audio generation are present as product surfaces and capability placeholders, but V1 must not connect the reference project's non-Xenodia providers. They should return structured unsupported-category results until Xenodia-backed endpoints are available through the global provider channel.
-- Reference image upload must not use Qiniu from the reference project. Local references should flow through the Xenodia request or a future global Xenodia storage upload endpoint owned by the main app runtime.
+- Multi-result generation uses Gear-level `batch_count` from 1 to 4 for image and video tasks. Gee creates one persisted Xenodia task per requested result, groups those child tasks under one `batch_id`, and the native task list shows that batch as one row with a grid of results.
+- Reference image limits are model-specific: Nano Banana Pro allows up to 8 total inputs, GPT Image-2 allows up to 16 total inputs, Veo allows up to 3 image references, and Seedance allows up to 9 image references. Local references must be JPEG, PNG, or WebP and 30MB or smaller.
+- Veo3.1 video uses Xenodia `/v1/videos/generations`: `REFERENCE_2_VIDEO` requires `veo3.1_fast`; text-to-video rejects image references; first/last frame mode accepts 1-2 image URLs; reference mode accepts 1-3 image URLs. Seedance 2.0 video uses the same endpoint with 4-15 second duration, first/last frame URLs, multimodal reference URL arrays, optional audio generation, web search, and NSFW screening. Audio generation remains a structured unsupported-category placeholder.
+- Reference image upload must not use Qiniu from the reference project. Image tasks send local references through the Xenodia image request; video tasks upload local references through the configured global Xenodia `storage_upload_url` and then pass the returned public URL or `asset://` ID to the video request. Missing upload configuration is a structured failure, not a fallback to local paths.
 - Task state belongs in `~/Library/Application Support/GeeAgent/gear-data/media.generator/tasks/<task-id>/task.json`. Batch rows are projections over child task records, not a replacement storage path. Current batch task records use schema version 2; older task history may be cleared during this schema cutover.
 - Generated results should be cached under `~/Library/Application Support/GeeAgent/gear-data/media.generator/tasks/<task-id>/outputs/` when possible. Preview and download should prefer the Gear-owned local artifact while preserving the remote URL as a fallback.
 - Reusable quick prompts belong in `~/Library/Application Support/GeeAgent/gear-data/media.generator/quick-prompts.json`; users can add, edit, delete, and reset them from the native Gear UI.
-- Recent reference images from pasted URLs and local files belong in `~/Library/Application Support/GeeAgent/gear-data/media.generator/image-history.json`. The History sheet reuses those references without opening a file picker; generated results remain in task records and output caches instead of being added to reference history automatically.
+- Recent reference images from pasted URLs, clipboard images, and local files belong in `~/Library/Application Support/GeeAgent/gear-data/media.generator/image-history.json`. The History sheet reuses those references in both image and video modes without opening a file picker; generated results remain in task records and output caches instead of being added to reference history automatically.
 - Async task polling must resume for `running` or `queued` tasks when the Gear opens or reloads history. Polling should treat Xenodia `success` as completed, `fail` as failed, and read generated URLs from the normalized `result` payload.
-- Xenodia image generation is long-running: create, multipart, and task-status requests must use a minimum 30-minute timeout floor. A timed-out status request should keep the local task `running` and continue polling instead of marking the task failed while the provider is still generating.
+- Xenodia image and video generation are long-running: create, multipart image upload, video create, and task-status requests must use a minimum 30-minute timeout floor. A timed-out status request should keep the local task `running` and continue polling instead of marking the task failed while the provider is still generating.
 - The native Generate button must stay available for new prompts after a task row is queued locally. Provider creation, result caching, and polling continue as background task state rather than monopolizing the creation control.
-- The native task workbench supports status filters, model filters, search, starred results, local-cache badges, Finder reveal, large preview, URL copy, user-chosen download, task Apply that restores prompt/model/parameters/references, separate reuse-as-reference, and confirmed task-history deletion.
-- Agent capabilities are `media_generator.list_models`, `media_generator.create_task`, and `media_generator.get_task`. `media_generator.create_task` can be triggered from both GeeAgent root-agent conversations and Codex conversations, accepts `batch_count` 1-4 for multi-image requests while keeping provider `n=1`, and returns structured task or batch/model data for the active agent/LLM to summarize.
+- The native task workbench supports status filters, model filters, search, starred results, local-cache badges, Finder reveal, fit-to-window large preview, click-to-preview displayable reference thumbnails, generated-video hover autoplay with sound muted by default and a manual sound toggle, URL copy, user-chosen download, task Apply that restores prompt/model/parameters/references, separate reuse-as-reference, and direct task-history deletion from task rows.
+- Agent capabilities are `media_generator.list_models`, `media_generator.create_task`, and `media_generator.get_task`. `media_generator.create_task` can be triggered from both GeeAgent root-agent conversations and Codex conversations, accepts `batch_count` 1-4 for multi-result image or video requests while keeping provider image `n=1`, and returns structured task or batch/model data for the active agent/LLM to summarize.
 
 `smartyt.media`:
 
@@ -917,11 +930,12 @@ First-party gears should gradually move into real package boundaries.
 
 `app.icon.forge`:
 
-- Target: native macOS app icon production Gear.
-- The Gear accepts one user-selected local image, center-crops it to a square, renders the source inside a rounded safe-area on a transparent 1024px canvas, and exports the complete icon package.
-- Generated artifacts include `<name>.icns`, `<name>.iconset`, `<name>.appiconset`, `preview-1024.png`, and `icon-export.json`.
-- Agent capability `app_icon.generate` accepts `source_path`, optional `output_dir`, `name`, `content_scale`, `corner_radius_ratio`, and `shadow`, then returns structured artifact paths and generation specs.
-- The capability is available to GeeAgent root-agent conversations and Codex conversations through the GearHost bridge. Codex callers must pass only explicit user-provided local paths and report the returned artifact paths without running package-local image scripts.
+- Target: native icon processing Gear for macOS app icons and Gear catalog icons.
+- The app icon mode accepts one user-selected local image, center-crops it to a square, renders the source inside a rounded safe-area on a transparent 1024px canvas, and exports the complete app icon package.
+- App icon artifacts include `<name>.icns`, `<name>.iconset`, `<name>.appiconset`, `preview-1024.png`, and `icon-export.json`.
+- The Gear icon mode exports the `gee.gear.icon.v1` package: `assets/icon.png` as a 780x580 PNG tile for the Gears catalog/list surface, `preview-780x580.png`, and `gear-icon.json`.
+- Agent capabilities are `app_icon.generate` and `gear_icon.generate`. Both accept `source_path`, optional `output_dir`, `name`, `content_scale`, `corner_radius_ratio`, and `shadow`, then return structured artifact paths and generation specs.
+- The capabilities are available to GeeAgent root-agent conversations and Codex conversations through the GearHost bridge. Codex callers must pass only explicit user-provided local paths and report the returned artifact paths without running package-local image scripts.
 
 Information capture workflow:
 

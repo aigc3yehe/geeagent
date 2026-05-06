@@ -205,8 +205,11 @@ final class WorkbenchStore {
             return updated
         }
     }
+    private var userFacingChatConversations: [ConversationThread] {
+        conversations.filter { !isTelegramBridgeConversation($0) }
+    }
     var displayConversations: [ConversationThread] {
-        conversations.map(displayConversation)
+        userFacingChatConversations.map(displayConversation)
     }
     var tasks: [WorkbenchTaskRecord] { snapshot.tasks }
     var automations: [AutomationRecord] { snapshot.automations }
@@ -246,7 +249,7 @@ final class WorkbenchStore {
     }
 
     var selectedConversation: ConversationThread? {
-        conversations.first(where: { $0.id == selectedConversationID }) ?? conversations.first
+        userFacingChatConversations.first(where: { $0.id == selectedConversationID }) ?? userFacingChatConversations.first
     }
 
     var selectedRuntimeRunID: String? {
@@ -821,12 +824,17 @@ final class WorkbenchStore {
             return
         }
         pending.forEach { scheduledExternalInvocationIDs.insert($0.id) }
+        let orderedPending = pending.sorted {
+            Self.externalInvocationDrainPriority($0) < Self.externalInvocationDrainPriority($1)
+        }
 
         let runtimeClient = self.runtimeClient
         let currentSnapshot = snapshot
-        Task { [weak self, runtimeClient, pending, currentSnapshot] in
-            for invocation in pending {
-                guard let toolInvocation = Self.toolInvocation(for: invocation) else {
+        Task { [weak self, runtimeClient, orderedPending, currentSnapshot] in
+            var latestSnapshot = currentSnapshot
+            for invocation in orderedPending {
+                let toolInvocation = Self.toolInvocation(for: invocation)
+                if toolInvocation == nil && !Self.canFastDrainExternalInvocation(invocation) {
                     let completion = WorkbenchExternalInvocationCompletion(
                         externalInvocationID: invocation.id,
                         status: .failed,
@@ -834,11 +842,13 @@ final class WorkbenchStore {
                         code: "gee.external_invocation.invalid",
                         message: "External invocation payload could not be converted into a Gee host tool invocation."
                     )
-                    await self?.completeExternalInvocation(
+                    if let completedSnapshot = await self?.completeExternalInvocation(
                         completion,
                         runtimeClient: runtimeClient,
-                        snapshot: currentSnapshot
-                    )
+                        snapshot: latestSnapshot
+                    ) {
+                        latestSnapshot = completedSnapshot
+                    }
                     continue
                 }
 
@@ -853,8 +863,9 @@ final class WorkbenchStore {
                 do {
                     runningSnapshot = try await runtimeClient.completeExternalInvocation(
                         runningCompletion,
-                        in: currentSnapshot
+                        in: latestSnapshot
                     )
+                    latestSnapshot = runningSnapshot
                     await MainActor.run {
                         guard let self else { return }
                         self.snapshot = runningSnapshot
@@ -867,18 +878,33 @@ final class WorkbenchStore {
                 }
 
                 do {
-                    let rawOutcome = try await runtimeClient.invokeTool(toolInvocation)
-                    let outcome = await GeeHostToolRouter.resolveCompletedIntent(rawOutcome) ?? rawOutcome
+                    let outcome: WorkbenchToolOutcome
+                    if Self.canFastDrainExternalInvocation(invocation) {
+                        outcome = await Self.fastExternalInvocationOutcome(for: invocation)
+                    } else if let toolInvocation {
+                        let rawOutcome = try await runtimeClient.invokeTool(toolInvocation)
+                        outcome = await GeeHostToolRouter.resolveCompletedIntent(rawOutcome) ?? rawOutcome
+                    } else {
+                        outcome = .error(
+                            toolID: "gee.gear.invoke",
+                            code: "gee.external_invocation.invalid",
+                            message: "External invocation payload could not be converted into a Gee host tool invocation."
+                        )
+                    }
                     let completion = Self.externalInvocationCompletion(for: invocation, outcome: outcome)
                     await MainActor.run {
                         guard let self else { return }
-                        self.applyToolOutcome(outcome, from: toolInvocation)
+                        if let toolInvocation {
+                            self.applyToolOutcome(outcome, from: toolInvocation)
+                        }
                     }
-                    await self?.completeExternalInvocation(
+                    if let completedSnapshot = await self?.completeExternalInvocation(
                         completion,
                         runtimeClient: runtimeClient,
                         snapshot: runningSnapshot
-                    )
+                    ) {
+                        latestSnapshot = completedSnapshot
+                    }
                 } catch {
                     let completion = WorkbenchExternalInvocationCompletion(
                         externalInvocationID: invocation.id,
@@ -887,21 +913,58 @@ final class WorkbenchStore {
                         code: "gee.external_invocation.host_error",
                         message: error.localizedDescription
                     )
-                    await self?.completeExternalInvocation(
+                    if let completedSnapshot = await self?.completeExternalInvocation(
                         completion,
                         runtimeClient: runtimeClient,
                         snapshot: runningSnapshot
-                    )
+                    ) {
+                        latestSnapshot = completedSnapshot
+                    }
                 }
             }
         }
+    }
+
+    private static func externalInvocationDrainPriority(_ invocation: WorkbenchExternalInvocation) -> Int {
+        canFastDrainExternalInvocation(invocation) ? 0 : 1
+    }
+
+    private static func canFastDrainExternalInvocation(_ invocation: WorkbenchExternalInvocation) -> Bool {
+        guard let capabilityID = invocation.capabilityID else {
+            return false
+        }
+        return invocation.tool == .invokeCapability
+            && invocation.gearID == MediaGeneratorGearDescriptor.gearID
+            && (
+                capabilityID == "media_generator.get_task" ||
+                capabilityID == "media_generator.list_models"
+            )
+    }
+
+    private static func fastExternalInvocationOutcome(
+        for invocation: WorkbenchExternalInvocation
+    ) async -> WorkbenchToolOutcome {
+        guard let gearID = invocation.gearID,
+              let capabilityID = invocation.capabilityID
+        else {
+            return .error(
+                toolID: "gee.gear.invoke",
+                code: "gee.external_invocation.invalid",
+                message: "External invocation payload could not be converted into a Gee host tool invocation."
+            )
+        }
+        return await GeeHostToolRouter.invokeExternalCapability(
+            gearID: gearID,
+            capabilityID: capabilityID,
+            args: WorkbenchToolArgumentCodec.encode(invocation.args)
+        )
     }
 
     private func completeExternalInvocation(
         _ completion: WorkbenchExternalInvocationCompletion,
         runtimeClient: any WorkbenchRuntimeClient,
         snapshot: WorkbenchSnapshot
-    ) async {
+    ) async -> WorkbenchSnapshot? {
         do {
             let nextSnapshot = try await runtimeClient.completeExternalInvocation(
                 completion,
@@ -910,10 +973,12 @@ final class WorkbenchStore {
             await MainActor.run {
                 self.snapshot = nextSnapshot
             }
+            return nextSnapshot
         } catch {
             await MainActor.run {
                 self.lastErrorMessage = error.localizedDescription
             }
+            return nil
         }
     }
 
@@ -1403,6 +1468,17 @@ final class WorkbenchStore {
         quickInputDraft = ""
         quickInputLatestResult = nil
         isSubmittingQuickInput = false
+    }
+
+    func submitTelegramChannelMessage(_ payload: TelegramChannelMessagePayload) async throws -> String? {
+        let currentSnapshot = snapshot
+        let nextSnapshot = try await runtimeClient.submitChannelMessage(payload, in: currentSnapshot)
+        snapshot = nextSnapshot
+        return nextSnapshot.conversations
+            .first(where: \.isActive)?
+            .visibleMessages
+            .last { $0.role == .assistant && $0.kind == .chat && !$0.isSeedPlaceholder }?
+            .content
     }
 
     var canCreateConversation: Bool {
@@ -2309,15 +2385,19 @@ final class WorkbenchStore {
     }
 
     private func normalizeSelectedConversation() {
-        let preferredID = conversations.first(where: \.isActive)?.id ?? conversations.first?.id
+        let preferredID = userFacingChatConversations.first(where: \.isActive)?.id ?? userFacingChatConversations.first?.id
         let normalizedID = normalizedID(
             selectedConversationID,
-            validIDs: conversations.map(\.id),
+            validIDs: userFacingChatConversations.map(\.id),
             preferredID: preferredID
         )
         if selectedConversationID != normalizedID {
             selectedConversationID = normalizedID
         }
+    }
+
+    private func isTelegramBridgeConversation(_ conversation: ConversationThread) -> Bool {
+        conversation.tags.contains("telegram.bridge")
     }
 
     private func normalizeSelectedTask() {

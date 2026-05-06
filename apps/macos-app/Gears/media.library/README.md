@@ -8,6 +8,8 @@ Current implementation status:
 - Manifest and package metadata live in this folder.
 - Native Swift implementation is currently compiled from
   `Sources/GeeAgentMac/Modules/MediaLibrary/`.
+- Video items expose an `Edit Video` action from the tile context menu and the
+  inspector, opening the media library's internal native video editor window.
 - The target package standard is to move the gear implementation, assets, setup
   files, and private dependencies under this folder so deleting this folder fully
   removes the app after restart.
