@@ -1,8 +1,14 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ChatView: View {
     @Bindable var store: WorkbenchStore
     @State private var draftMessage = ""
+    @State private var draftAttachments: [ChatAttachmentDraft] = []
+    @State private var pendingDraftRecovery: String?
+    @State private var pendingAttachmentRecovery: [ChatAttachmentDraft] = []
+    @State private var isAttachmentDropTargeted = false
     @State private var chatViewportHeight: CGFloat = 0
     @State private var chatBottomMaxY: CGFloat = 0
     @State private var isChatScrolledNearBottom = true
@@ -21,6 +27,13 @@ struct ChatView: View {
 
                 if let conversation = store.selectedDisplayConversation {
                     conversationDetail(conversation)
+                } else if store.isSendingMessage {
+                    ContentUnavailableView {
+                        Label("Starting Chat", systemImage: "brain.head.profile")
+                    } description: {
+                        Text("Request sent. Waiting for the first agent event…")
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ContentUnavailableView(
                         "No Chat Selected",
@@ -34,8 +47,33 @@ struct ChatView: View {
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
         }
         .navigationTitle("Chat")
+        .onDrop(
+            of: ChatAttachmentTransfer.fileDropTypes,
+            isTargeted: $isAttachmentDropTargeted,
+            perform: handleAttachmentDrop
+        )
         .onChange(of: store.selectedConversationID) { _, _ in
             store.activateSelectedConversation()
+        }
+        .onChange(of: store.lastErrorMessage) { _, newValue in
+            guard newValue != nil else {
+                return
+            }
+
+            if let pendingDraftRecovery, draftMessage.isEmpty {
+                draftMessage = pendingDraftRecovery
+                self.pendingDraftRecovery = nil
+            }
+            if draftAttachments.isEmpty {
+                draftAttachments = pendingAttachmentRecovery
+            }
+            pendingAttachmentRecovery = []
+        }
+        .onChange(of: store.isSendingMessage) { _, isSending in
+            if !isSending, store.lastErrorMessage == nil {
+                pendingDraftRecovery = nil
+                pendingAttachmentRecovery = []
+            }
         }
     }
 
@@ -116,6 +154,10 @@ struct ChatView: View {
                             errorCard
 
                             ChatTurnBlockList(store: store, conversation: conversation)
+
+                            if store.shouldShowChatActivityFallback(for: conversation) {
+                                TransientAgentActivityCard(label: store.chatActivityFallbackLabel(for: conversation))
+                            }
 
                             Color.clear
                                 .frame(height: 1)
@@ -204,7 +246,23 @@ struct ChatView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if !draftAttachments.isEmpty {
+                attachmentDraftStrip
+            }
+
             HStack(spacing: 12) {
+                Button {
+                    showAttachmentPicker()
+                } label: {
+                    Image(systemName: "paperclip")
+                        .font(.system(size: 14, weight: .semibold))
+                        .frame(width: 34, height: 34)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Attach files or folders")
+                .disabled(store.isSendingMessage || !store.canSendMessages)
+
                 TextField(
                     "",
                     text: $draftMessage,
@@ -227,21 +285,40 @@ struct ChatView: View {
 
                 ContextBudgetIndicator(budget: store.contextBudget)
 
-                Button {
-                    sendDraftMessage()
-                } label: {
-                    Label("Send", systemImage: "arrow.up")
-                        .font(.geeDisplaySemibold(11))
-                        .frame(height: 38)
-                        .padding(.horizontal, 13)
-                        .background(
-                            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                                .fill(canSendDraft ? Color.accentColor : Color.secondary.opacity(0.22))
-                        )
-                        .foregroundStyle(canSendDraft ? Color.white : Color.secondary)
+                if store.isSendingMessage {
+                    Button {
+                        store.stopActiveChatRun()
+                    } label: {
+                        Label(store.isStoppingMessage ? "Stopping" : "Stop", systemImage: "stop.fill")
+                            .font(.geeDisplaySemibold(11))
+                            .frame(height: 38)
+                            .padding(.horizontal, 13)
+                            .background(
+                                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                    .fill(store.isStoppingMessage ? Color.secondary.opacity(0.24) : Color.red.opacity(0.78))
+                            )
+                            .foregroundStyle(store.isStoppingMessage ? Color.secondary : Color.white)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(store.isStoppingMessage)
+                    .help(store.isStoppingMessage ? "Stopping the current run" : "Stop the current run")
+                } else {
+                    Button {
+                        sendDraftMessage()
+                    } label: {
+                        Label("Send", systemImage: "arrow.up")
+                            .font(.geeDisplaySemibold(11))
+                            .frame(height: 38)
+                            .padding(.horizontal, 13)
+                            .background(
+                                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                    .fill(canSendDraft ? Color.accentColor : Color.secondary.opacity(0.22))
+                            )
+                            .foregroundStyle(canSendDraft ? Color.white : Color.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canSendDraft)
                 }
-                .buttonStyle(.plain)
-                .disabled(!canSendDraft)
             }
 
         }
@@ -252,14 +329,36 @@ struct ChatView: View {
         )
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: 0.8)
+                .stroke(
+                    isAttachmentDropTargeted ? Color.accentColor.opacity(0.7) : Color.white.opacity(0.08),
+                    lineWidth: isAttachmentDropTargeted ? 1.2 : 0.8
+                )
+        }
+        .onDrop(
+            of: [UTType.fileURL.identifier],
+            isTargeted: $isAttachmentDropTargeted,
+            perform: handleAttachmentDrop
+        )
+        .onPasteCommand(
+            of: [.fileURL, .image, .png, .jpeg],
+            perform: handleAttachmentPaste
+        )
+    }
+
+    private var attachmentDraftStrip: some View {
+        ChatAttachmentDraftStrip(attachments: draftAttachments) { id in
+            draftAttachments.removeAll { $0.id == id }
         }
     }
 
     private var canSendDraft: Bool {
         !store.isSendingMessage &&
-        !draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        store.canSendMessages
+            (!draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasSendableAttachmentDraft) &&
+            store.canSendMessages
+    }
+
+    private var hasSendableAttachmentDraft: Bool {
+        draftAttachments.contains { $0.isSendable }
     }
 
     private func sendDraftMessage() {
@@ -268,8 +367,40 @@ struct ChatView: View {
         }
 
         let message = draftMessage
+        let attachments = sendableAttachmentDrafts.map(\.runtimeAttachment)
+        pendingDraftRecovery = message
+        pendingAttachmentRecovery = draftAttachments
         draftMessage = ""
-        store.sendMessage(message)
+        draftAttachments = []
+        store.sendMessage(message, attachments: attachments)
+    }
+
+    private var sendableAttachmentDrafts: [ChatAttachmentDraft] {
+        draftAttachments.filter(\.isSendable)
+    }
+
+    private func handleAttachmentDrop(_ providers: [NSItemProvider]) -> Bool {
+        ChatAttachmentTransfer.handleFileDrop(providers, appendURLs: appendAttachmentURLs)
+    }
+
+    private func handleAttachmentPaste(_ providers: [NSItemProvider]) {
+        ChatAttachmentTransfer.handlePaste(
+            providers,
+            appendURLs: appendAttachmentURLs,
+            appendDrafts: appendAttachmentDrafts
+        )
+    }
+
+    private func showAttachmentPicker() {
+        ChatAttachmentTransfer.showAttachmentPicker(appendURLs: appendAttachmentURLs)
+    }
+
+    private func appendAttachmentURLs(_ urls: [URL]) {
+        appendAttachmentDrafts(urls.map(ChatAttachmentDraft.make(fileURL:)))
+    }
+
+    private func appendAttachmentDrafts(_ drafts: [ChatAttachmentDraft]) {
+        draftAttachments.appendUniqueAttachmentDrafts(drafts)
     }
 
     private func conversationMessageSignatures(_ conversation: ConversationThread) -> [String] {
@@ -381,10 +512,10 @@ struct ChatView: View {
 
     @ViewBuilder
     private var errorCard: some View {
-        if let lastErrorMessage = store.lastErrorMessage {
+        if let chatErrorMessage = store.chatErrorMessage {
             InlineStatusCard(
                 title: "Couldn’t finish that request",
-                detail: lastErrorMessage,
+                detail: chatErrorMessage,
                 systemImage: "exclamationmark.triangle.fill",
                 tint: .red,
                 actionLabel: "Dismiss"

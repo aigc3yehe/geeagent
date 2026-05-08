@@ -12,6 +12,7 @@ enum GearHost {
     static let appIconForgeWindowID = "app-icon-forge"
     static let telegramBridgeWindowID = "telegram-bridge"
     static let todoManagerWindowID = "todo-manager"
+    static let powerVideoManagerWindowID = "power-video-manager"
     static let mediaLibraryWindowDescriptor = GearNativeWindowDescriptor(
         gearID: MediaLibraryGearDescriptor.gearID,
         windowID: mediaLibraryWindowID,
@@ -82,6 +83,13 @@ enum GearHost {
         defaultWidth: 1120,
         defaultHeight: 720
     )
+    static let powerVideoManagerWindowDescriptor = GearNativeWindowDescriptor(
+        gearID: PowerVideoManagerGearDescriptor.gearID,
+        windowID: powerVideoManagerWindowID,
+        title: "Power Video Manager",
+        defaultWidth: 1240,
+        defaultHeight: 780
+    )
     static let nativeWindowDescriptors: [GearNativeWindowDescriptor] = [
         mediaLibraryWindowDescriptor,
         hyperframesStudioWindowDescriptor,
@@ -92,7 +100,8 @@ enum GearHost {
         mediaGeneratorWindowDescriptor,
         appIconForgeWindowDescriptor,
         telegramBridgeWindowDescriptor,
-        todoManagerWindowDescriptor
+        todoManagerWindowDescriptor,
+        powerVideoManagerWindowDescriptor
     ]
 
     private static let manifestFileName = "gear.json"
@@ -201,6 +210,8 @@ enum GearHost {
             return AnyView(TelegramBridgeGearModuleView())
         case TodoManagerGearDescriptor.gearID:
             return AnyView(TodoManagerGearModuleView())
+        case PowerVideoManagerGearDescriptor.gearID:
+            return AnyView(PowerVideoManagerGearModuleView())
         default:
             return nil
         }
@@ -232,6 +243,8 @@ enum GearHost {
             return AnyView(TelegramBridgeGearWindow())
         case TodoManagerGearDescriptor.gearID:
             return AnyView(TodoManagerGearWindow())
+        case PowerVideoManagerGearDescriptor.gearID:
+            return AnyView(PowerVideoManagerGearWindow())
         default:
             return AnyView(GearUnavailableWindowView(title: displayTitle(for: gearID)))
         }

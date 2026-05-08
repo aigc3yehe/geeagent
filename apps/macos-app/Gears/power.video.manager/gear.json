@@ -1,0 +1,30 @@
+{
+  "schema": "gee.gear.v1",
+  "id": "power.video.manager",
+  "name": "Power Video Manager",
+  "description": "Read-only AI video run viewer for scripts, character looks, storyboards, first frames, shot videos, edit renders, finals, and lightweight cost evidence.",
+  "developer": "Gee",
+  "version": "0.1.0",
+  "category": "Media",
+  "kind": "atmosphere",
+  "display_mode": "full_canvas",
+  "cover": "assets/cover.png",
+  "icon": "assets/icon.png",
+  "entry": {
+    "type": "native",
+    "native_id": "power.video.manager"
+  },
+  "permissions": [
+    "filesystem.read.user_selected",
+    "filesystem.read.gear_storage",
+    "filesystem.write.gear_storage"
+  ],
+  "dependencies": {
+    "install_strategy": "on_open",
+    "items": []
+  },
+  "agent": {
+    "enabled": false,
+    "capabilities": []
+  }
+}

@@ -142,6 +142,204 @@ describe("gateway protocol conversion", () => {
     ]);
   });
 
+  it("preserves Anthropic image blocks as OpenAI image content parts", () => {
+    const request = __gatewayTestHooks.toOpenAIChatCompletionRequest(
+      {
+        model: "sonnet",
+        max_tokens: 8_000,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "Compare this screenshot." },
+              {
+                type: "image",
+                source: {
+                  type: "base64",
+                  media_type: "image/png",
+                  data: "iVBORw0KGgo=",
+                },
+              },
+            ],
+          },
+        ],
+      },
+      {
+        xenodiaApiKey: "test-key",
+      },
+    );
+
+    assert.deepEqual(request.messages, [
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "Compare this screenshot.",
+          },
+          {
+            type: "image_url",
+            image_url: {
+              url: "data:image/png;base64,iVBORw0KGgo=",
+            },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("recognizes namespaced vision backend model ids", () => {
+    assert.equal(
+      __gatewayTestHooks.modelSupportsImageInput("google/gemini-3-flash-preview"),
+      true,
+    );
+    assert.equal(
+      __gatewayTestHooks.modelSupportsImageInput("anthropic/claude-sonnet-4.6"),
+      true,
+    );
+    assert.equal(
+      __gatewayTestHooks.modelSupportsImageInput("nvidia/nemotron-3-super-120b-a12b:free"),
+      false,
+    );
+  });
+
+  it("rejects image requests for non-vision backend models without contacting upstream", async () => {
+    let upstreamHit = false;
+    const upstream = http.createServer(
+      (_request: IncomingMessage, response: ServerResponse) => {
+        upstreamHit = true;
+        writeJsonResponse(response, 200, {
+          id: "unexpected",
+          choices: [{ message: { content: "should not happen" } }],
+        });
+      },
+    );
+    const port = await listen(upstream);
+    const gateway = await startAnthropicGateway({
+      xenodiaApiKey: "test-key",
+      backendUrl: `http://127.0.0.1:${port}/v1/chat/completions`,
+      modelOverride: "text-only-model",
+      requestTimeoutSeconds: 1,
+    });
+
+    try {
+      const response = await fetch(`${gateway.baseUrl}/v1/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": gateway.apiKey,
+        },
+        body: JSON.stringify({
+          model: "sonnet",
+          max_tokens: 1024,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "What is in this image?" },
+                {
+                  type: "image",
+                  source: {
+                    type: "base64",
+                    media_type: "image/png",
+                    data: "iVBORw0KGgo=",
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      });
+      const payload = await response.json() as {
+        error?: {
+          code?: string;
+          model?: string;
+          fallback_attempted?: boolean;
+          message?: string;
+        };
+      };
+
+      assert.equal(response.status, 400);
+      assert.equal(upstreamHit, false);
+      assert.equal(payload.error?.code, "model_unsupported_multimodal");
+      assert.equal(payload.error?.model, "text-only-model");
+      assert.equal(payload.error?.fallback_attempted, false);
+      assert.match(payload.error?.message ?? "", /does not support image input/);
+    } finally {
+      await gateway.close();
+      await closeServer(upstream);
+    }
+  });
+
+  it("streams Xenodia text chunks as Anthropic SSE deltas", async () => {
+    const seenBodies: unknown[] = [];
+    const upstream = http.createServer(
+      (request: IncomingMessage, response: ServerResponse) => {
+        void readRequestBody(request).then((raw) => {
+          seenBodies.push(JSON.parse(raw) as unknown);
+          response.writeHead(200, { "Content-Type": "text/event-stream" });
+          response.write(
+            `data: ${JSON.stringify({
+              id: "chatcmpl_stream",
+              choices: [{ delta: { content: "Hel" } }],
+            })}\n\n`,
+          );
+          response.write(
+            `data: ${JSON.stringify({
+              id: "chatcmpl_stream",
+              choices: [{ delta: { content: "lo" } }],
+            })}\n\n`,
+          );
+          response.write(
+            `data: ${JSON.stringify({
+              id: "chatcmpl_stream",
+              choices: [{ finish_reason: "stop", delta: {} }],
+              usage: { prompt_tokens: 3, completion_tokens: 2 },
+            })}\n\n`,
+          );
+          response.end("data: [DONE]\n\n");
+        });
+      },
+    );
+    const port = await listen(upstream);
+    const gateway = await startAnthropicGateway({
+      xenodiaApiKey: "test-key",
+      backendUrl: `http://127.0.0.1:${port}/v1/chat/completions`,
+      modelOverride: "primary-model",
+      requestTimeoutSeconds: 1,
+    });
+
+    try {
+      const response = await fetch(`${gateway.baseUrl}/v1/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": gateway.apiKey,
+        },
+        body: JSON.stringify({
+          model: "sonnet",
+          messages: [{ role: "user", content: "hello" }],
+          stream: true,
+        }),
+      });
+
+      const body = await response.text();
+      const upstreamBody = seenBodies[0] as { stream?: unknown; model?: unknown } | undefined;
+
+      assert.equal(response.status, 200);
+      assert.equal(upstreamBody?.stream, true);
+      assert.equal(upstreamBody?.model, "primary-model");
+      assert.match(body, /event: message_start/);
+      assert.match(body, /event: content_block_delta/);
+      assert.match(body, /"text":"Hel"/);
+      assert.match(body, /"text":"lo"/);
+      assert.match(body, /event: message_stop/);
+    } finally {
+      await gateway.close();
+      await closeServer(upstream);
+    }
+  });
+
   it("converts Xenodia tool calls back into Anthropic content blocks", () => {
     const message = __gatewayTestHooks.buildAnthropicMessageFromXenodia(
       {

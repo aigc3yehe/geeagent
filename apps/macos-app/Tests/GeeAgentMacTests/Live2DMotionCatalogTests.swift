@@ -114,6 +114,54 @@ final class Live2DMotionCatalogTests: XCTestCase {
         XCTAssertEqual(catalog.actions.first(where: { $0.relativePath == "motions/tap.motion3.json" })?.category, .action)
     }
 
+    func testScannedActionsOnlyIncludeTopLevelAssets() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let descriptor = root.appendingPathComponent("Sample.model3.json")
+        try """
+        {
+          "Version": 3,
+          "FileReferences": {
+            "Moc": "Sample.moc3",
+            "Textures": []
+          }
+        }
+        """.write(to: descriptor, atomically: true, encoding: .utf8)
+
+        try """
+        { "Meta": { "Loop": true, "Duration": 0.9 } }
+        """.write(to: root.appendingPathComponent("tap.motion3.json"), atomically: true, encoding: .utf8)
+
+        let archive = root.appendingPathComponent("Archive", isDirectory: true)
+        try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
+        try """
+        {
+          "Version": 3,
+          "FileReferences": {
+            "Moc": "Reading.moc3",
+            "Textures": [],
+            "Motions": {
+              "Idle": [
+                { "File": "reading.motion3.json" }
+              ]
+            }
+          }
+        }
+        """.write(to: archive.appendingPathComponent("reading.model3.json"), atomically: true, encoding: .utf8)
+        try """
+        { "Meta": { "Loop": true, "Duration": 7.8 } }
+        """.write(to: archive.appendingPathComponent("reading.motion3.json"), atomically: true, encoding: .utf8)
+
+        let catalog = Live2DMotionCatalog.discoverCatalog(bundlePath: descriptor.path)
+
+        XCTAssertEqual(catalog.actions.map(\.relativePath), ["tap.motion3.json"])
+        XCTAssertFalse(catalog.actions.contains { $0.relativePath == "Archive/reading.motion3.json" })
+        XCTAssertTrue(catalog.poses.isEmpty)
+    }
+
     func testLoopingTriggerAnimationHotkeyIsPromotedToPose() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

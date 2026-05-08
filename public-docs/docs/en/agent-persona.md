@@ -4,7 +4,7 @@
 
 GeeAgent is not only a generic agent runtime. It supports agent personas as a product layer on top of the shared runtime. A persona defines how an agent is identified, how it should behave, what visual presence it has, and what local capabilities it may recommend or constrain.
 
-The persona layer must remain separate from runtime execution truth. Runs, sessions, events, approvals, task continuation, and tool execution belong to the phase-2 runtime spine.
+The persona layer must remain separate from runtime execution truth. Runs, sessions, events, approvals, task continuation, and tool execution belong to the shared runtime foundation that now carries forward into Phase 4 product deepening.
 
 ## Current Status
 
@@ -128,7 +128,7 @@ The global background priority is video first, then image.
 
 If a Live2D persona does not declare `global_background`, GeeAgent renders Live2D over the default abstract home background.
 
-Live2D personas can expose poses, actions, expressions, viewport position, and scale through the local UI. On the Home surface, clicking the visible character can trigger available actions or expression changes, and the local interaction layer remains aligned after viewport position or scale adjustments.
+Live2D personas can expose poses, actions, expressions, viewport position, and scale through the local UI. On the Home surface, clicking the visible character can trigger available actions or expression changes. Action discovery only scans top-level motion assets unless a model or companion descriptor explicitly references nested files, and temporary actions stop or return to the selected pose afterward. The local interaction layer remains aligned after viewport position or scale adjustments, and GeeAgent keeps no-layout Live2D bundles contained to the visible Home frame across wide and tall window ratios while also keeping viewport translation in a recoverable visible range as scale changes so zooming back out can bring edge-clipped content back into view.
 
 ## Runtime Influence
 
@@ -184,6 +184,7 @@ Reload:
 
 - re-read the local persona workspace;
 - recompile the layered context;
+- refresh Home visual asset paths from the reloaded persona while preserving local interaction state such as Live2D position and scale;
 - refresh persona-level skill source metadata;
 - keep the previous loaded profile if validation fails.
 

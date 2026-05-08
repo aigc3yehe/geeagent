@@ -1,6 +1,6 @@
 import Foundation
 
-struct PreviewWorkbenchRuntimeClient: WorkbenchRuntimeClient {
+struct PreviewWorkbenchRuntimeClient: WorkbenchAttachmentRuntimeClient {
     func loadSnapshot() -> WorkbenchSnapshot {
         let previewApps = GearHost.mergedWithGears([
             InstalledAppRecord(
@@ -450,6 +450,22 @@ struct PreviewWorkbenchRuntimeClient: WorkbenchRuntimeClient {
         conversationID: ConversationThread.ID,
         allowAutoRouting: Bool
     ) async throws -> WorkbenchSnapshot {
+        try await sendMessage(
+            message,
+            attachments: [],
+            in: snapshot,
+            conversationID: conversationID,
+            allowAutoRouting: allowAutoRouting
+        )
+    }
+
+    func sendMessage(
+        _ message: String,
+        attachments: [WorkspaceInputAttachment],
+        in snapshot: WorkbenchSnapshot,
+        conversationID: ConversationThread.ID,
+        allowAutoRouting: Bool
+    ) async throws -> WorkbenchSnapshot {
         _ = allowAutoRouting
         var nextSnapshot = snapshot
         guard let conversationIndex = nextSnapshot.conversations.firstIndex(where: { $0.id == conversationID }) else {
@@ -467,7 +483,39 @@ struct PreviewWorkbenchRuntimeClient: WorkbenchRuntimeClient {
                 id: "msg-user-\(nextSnapshot.conversations[conversationIndex].messages.count + 1)",
                 role: .user,
                 content: trimmedMessage,
-                timestampLabel: "Just now"
+                timestampLabel: "Just now",
+                attachments: attachments.map { attachment in
+                    ConversationMessageAttachment(
+                        id: attachment.attachmentId,
+                        kind: previewAttachmentKind(attachment.kind),
+                        displayName: attachment.displayName,
+                        originalPath: attachment.originalPath,
+                        resolvedPath: attachment.resolvedPath,
+                        mimeType: attachment.mimeType,
+                        sizeBytes: attachment.sizeBytes,
+                        status: previewAttachmentStatus(attachment.status),
+                        source: attachment.source.rawValue,
+                        createdAt: attachment.createdAt,
+                        accessScope: attachment.access.scope,
+                        accessMode: attachment.access.mode,
+                        accessRoot: attachment.access.root,
+                        accessExpiresAt: attachment.access.expiresAt,
+                        imageWidth: attachment.image?.width,
+                        imageHeight: attachment.image?.height,
+                        maxBytes: attachment.limits?.maxBytes,
+                        maxEntries: attachment.limits?.maxEntries,
+                        maxDepth: attachment.limits?.maxDepth,
+                        errorCode: attachment.error?.code,
+                        errorMessage: attachment.error?.message,
+                        fallbackAttempted: attachment.fallbackAttempted
+                    )
+                },
+                detailItems: attachments.map { attachment in
+                    ConversationMessageDetailItem(
+                        label: "Attachment",
+                        value: "\(attachment.kind.rawValue) · \(attachment.displayName)"
+                    )
+                }
             )
         )
         nextSnapshot.conversations[conversationIndex].messages.append(
@@ -498,6 +546,28 @@ struct PreviewWorkbenchRuntimeClient: WorkbenchRuntimeClient {
         }
 
         return nextSnapshot
+    }
+
+    private func previewAttachmentKind(_ kind: WorkspaceInputAttachment.Kind) -> ConversationMessageAttachment.Kind {
+        switch kind {
+        case .image:
+            return .image
+        case .file:
+            return .file
+        case .directory:
+            return .directory
+        }
+    }
+
+    private func previewAttachmentStatus(_ status: WorkspaceInputAttachment.Status) -> ConversationMessageAttachment.Status {
+        switch status {
+        case .ready:
+            return .ready
+        case .degraded:
+            return .degraded
+        case .failed:
+            return .failed
+        }
     }
 
     func performTaskAction(

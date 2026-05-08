@@ -397,6 +397,33 @@ final class WorkbenchStoreTests: XCTestCase {
         XCTAssertTrue(store.snapshot.hostActionIntents.isEmpty)
     }
 
+    @MainActor
+    func testCompletedHostActionIntentIsNotInvokedAgainFromStaleSnapshot() async throws {
+        let client = DuplicateHostActionRuntimeClient()
+        let store = WorkbenchStore(runtimeClient: client)
+        var staleSnapshot = store.snapshot
+        staleSnapshot.hostActionIntents = [
+            WorkbenchHostActionIntent(
+                id: "host_action_duplicate_todo_create",
+                toolID: "gee.gear.invoke",
+                arguments: [
+                    "gear_id": .string("todo.manager"),
+                    "capability_id": .string("todo.create"),
+                    "args": .object(["title": .string("Run duplicate guard test")])
+                ]
+            )
+        ]
+
+        store.snapshot = staleSnapshot
+        try await waitUntil(timeout: 1) { client.invokedToolIDs.count == 1 && client.completedHostActionIDs.count == 1 }
+
+        store.snapshot = staleSnapshot
+        try await Task.sleep(nanoseconds: 250_000_000)
+
+        XCTAssertEqual(client.invokedToolIDs, ["gee.gear.invoke"])
+        XCTAssertEqual(client.completedHostActionIDs, ["host_action_duplicate_todo_create"])
+    }
+
     // MARK: - Plan 2: persona-driven appearance
 
     func testFreshInstallEffectiveAppearanceFollowsActivePersona() throws {
@@ -553,7 +580,7 @@ final class WorkbenchStoreTests: XCTestCase {
         store.playLive2DMotion(motion)
         let secondRequest = try XCTUnwrap(store.live2DMotionPlaybackRequest)
 
-        XCTAssertEqual(firstRequest.motion.relativePath, motion.relativePath)
+        XCTAssertEqual(firstRequest.motion?.relativePath, motion.relativePath)
         XCTAssertNotEqual(firstRequest.requestID, secondRequest.requestID)
     }
 
@@ -602,10 +629,53 @@ final class WorkbenchStoreTests: XCTestCase {
         )
 
         store.triggerLive2DAction(action)
-        XCTAssertEqual(store.live2DMotionPlaybackRequest?.motion.relativePath, "wave.motion3.json")
+        XCTAssertEqual(store.live2DMotionPlaybackRequest?.motion?.relativePath, "wave.motion3.json")
 
         try await waitUntil(timeout: 2.0) {
-            store.live2DMotionPlaybackRequest?.motion.relativePath == "idle.motion3.json"
+            store.live2DMotionPlaybackRequest?.motion?.relativePath == "idle.motion3.json"
+        }
+    }
+
+    func testTriggerLive2DActionStopsWhenNoIdlePoseExists() async throws {
+        let action = Live2DMotionRecord(
+            id: "tap.motion3.json",
+            title: "Tap",
+            relativePath: "tap.motion3.json",
+            source: .scanned,
+            category: .action,
+            isLoop: true,
+            durationSeconds: 0.05
+        )
+        let preview = PreviewWorkbenchRuntimeClient()
+        var snapshot = preview.loadSnapshot()
+        snapshot.availableAgentProfiles = [
+            AgentProfileRecord(
+                id: "gee",
+                name: "Gee",
+                tagline: "Test",
+                personalityPrompt: "",
+                appearance: .live2D(bundlePath: "/tmp/model3.json"),
+                skills: [],
+                allowedToolIDs: nil,
+                source: .firstParty,
+                version: "1.0.0"
+            )
+        ]
+        snapshot.activeAgentProfileID = "gee"
+        let store = WorkbenchStore(runtimeClient: FixedSnapshotRuntimeClient(snapshot: snapshot))
+        store.live2DActionCatalog = Live2DActionCatalog(
+            defaultPose: nil,
+            fallbackPose: nil,
+            poses: [],
+            actions: [action],
+            expressions: []
+        )
+
+        store.triggerLive2DAction(action)
+        XCTAssertEqual(store.live2DMotionPlaybackRequest?.motion?.relativePath, "tap.motion3.json")
+
+        try await waitUntil(timeout: 2.0) {
+            store.live2DMotionPlaybackRequest?.isStopRequest == true
         }
     }
 
@@ -1103,6 +1173,57 @@ final class WorkbenchStoreTests: XCTestCase {
         XCTAssertFalse(store.isSendingMessage)
     }
 
+    func testGlobalGearErrorDoesNotBecomeChatScopedError() {
+        let store = WorkbenchStore(runtimeClient: PreviewWorkbenchRuntimeClient())
+
+        store.lastErrorMessage = "Xenodia storage upload URL is not configured."
+
+        XCTAssertNil(store.chatErrorMessage)
+    }
+
+    func testSendingWithoutPendingTurnShowsChatActivityFallback() throws {
+        let store = WorkbenchStore(runtimeClient: PreviewWorkbenchRuntimeClient())
+        let conversation = try XCTUnwrap(store.selectedDisplayConversation)
+
+        XCTAssertFalse(store.shouldShowChatActivityFallback(for: conversation))
+
+        store.isSendingMessage = true
+
+        XCTAssertTrue(store.shouldShowChatActivityFallback(for: conversation))
+    }
+
+    func testPendingChatTurnStillShowsExplicitActivityFallback() throws {
+        let request = "Please inspect this directory."
+        var snapshot = PreviewWorkbenchRuntimeClient().loadSnapshot()
+        var conversation = try XCTUnwrap(snapshot.conversations.first)
+        conversation.isActive = true
+        snapshot.conversations = [conversation]
+        snapshot.preferredSection = .chat
+        let store = WorkbenchStore(runtimeClient: DelayedSendMessageRuntimeClient(snapshot: snapshot))
+
+        store.sendMessage(request, openSection: false)
+
+        let displayConversation = try XCTUnwrap(store.selectedDisplayConversation)
+        XCTAssertTrue(
+            store.shouldShowChatActivityFallback(for: displayConversation),
+            "The composer stop state must be mirrored by an explicit in-flight indicator in the chat transcript."
+        )
+        XCTAssertEqual(store.chatActivityFallbackLabel(for: displayConversation), "GeeAgent is thinking...")
+    }
+
+    func testStopActiveChatRunUnblocksComposerState() async throws {
+        let store = WorkbenchStore(runtimeClient: PreviewWorkbenchRuntimeClient())
+        store.isSendingMessage = true
+        store.chatErrorMessage = "Old chat error"
+
+        store.stopActiveChatRun()
+
+        XCTAssertTrue(store.isStoppingMessage)
+        try await waitUntil(timeout: 2.0) { !store.isStoppingMessage }
+        XCTAssertFalse(store.isSendingMessage)
+        XCTAssertNil(store.chatErrorMessage)
+    }
+
     func testPendingChatTurnIgnoresOlderDuplicateUserMessages() throws {
         let repeatedMessage = "Please repeat the same request."
         var snapshot = PreviewWorkbenchRuntimeClient().loadSnapshot()
@@ -1135,6 +1256,148 @@ final class WorkbenchStoreTests: XCTestCase {
             },
             "The first-event waiting state should stay visible until this specific runtime turn arrives."
         )
+    }
+
+    func testPendingChatTurnShowsReplyWaitAfterToolActivity() throws {
+        let request = "Extract the text from this image."
+        var snapshot = PreviewWorkbenchRuntimeClient().loadSnapshot()
+        var conversation = try XCTUnwrap(snapshot.conversations.first)
+        conversation.isActive = true
+        snapshot.conversations = [conversation]
+        snapshot.preferredSection = .chat
+        let store = WorkbenchStore(runtimeClient: DelayedSendMessageRuntimeClient(snapshot: snapshot))
+
+        store.sendMessage(request, openSection: false)
+
+        var runtimeSnapshot = snapshot
+        var runtimeConversation = conversation
+        runtimeConversation.messages.append(
+            ConversationMessage(
+                id: "runtime-user-image-request",
+                role: .user,
+                content: request,
+                timestampLabel: "Now"
+            )
+        )
+        runtimeConversation.messages.append(
+            ConversationMessage(
+                id: "runtime-tool-result",
+                role: .assistant,
+                kind: .action,
+                headerTitle: "Read",
+                content: "Image bytes loaded.",
+                timestampLabel: "Now",
+                statusLabel: "succeeded",
+                systemImage: "checkmark.circle",
+                tone: .success
+            )
+        )
+        runtimeSnapshot.conversations = [runtimeConversation]
+        store.snapshot = runtimeSnapshot
+
+        XCTAssertTrue(
+            store.selectedDisplayConversation?.messages.contains {
+                $0.id.hasPrefix("pending-thinking-") && $0.statusLabel == "waiting for reply"
+            } ?? false,
+            "Tool activity should not remove the thinking placeholder until assistant chat text arrives."
+        )
+    }
+
+    func testPendingChatTurnHidesThinkingAfterAssistantStreamArrives() throws {
+        let request = "Extract the text from this image."
+        var snapshot = PreviewWorkbenchRuntimeClient().loadSnapshot()
+        var conversation = try XCTUnwrap(snapshot.conversations.first)
+        conversation.isActive = true
+        snapshot.conversations = [conversation]
+        snapshot.preferredSection = .chat
+        let store = WorkbenchStore(runtimeClient: DelayedSendMessageRuntimeClient(snapshot: snapshot))
+
+        store.sendMessage(request, openSection: false)
+
+        var runtimeSnapshot = snapshot
+        var runtimeConversation = conversation
+        runtimeConversation.messages.append(
+            ConversationMessage(
+                id: "runtime-user-image-request",
+                role: .user,
+                content: request,
+                timestampLabel: "Now"
+            )
+        )
+        runtimeConversation.messages.append(
+            ConversationMessage(
+                id: "runtime-assistant-stream",
+                role: .assistant,
+                content: "I can read the image content now.",
+                timestampLabel: "Now"
+            )
+        )
+        runtimeSnapshot.conversations = [runtimeConversation]
+        store.snapshot = runtimeSnapshot
+
+        XCTAssertFalse(
+            store.selectedDisplayConversation?.messages.contains {
+                $0.id.hasPrefix("pending-thinking-")
+            } ?? true,
+            "Assistant chat deltas should replace the thinking placeholder as soon as they appear."
+        )
+    }
+
+    func testPendingChatTurnProjectsAttachmentsForSentMessageChips() throws {
+        var snapshot = PreviewWorkbenchRuntimeClient().loadSnapshot()
+        var conversation = try XCTUnwrap(snapshot.conversations.first)
+        conversation.isActive = true
+        snapshot.conversations = [conversation]
+        snapshot.preferredSection = .chat
+        let store = WorkbenchStore(runtimeClient: DelayedSendMessageRuntimeClient(snapshot: snapshot))
+        let attachment = WorkspaceInputAttachment(
+            attachmentId: "att_folder_01",
+            kind: .directory,
+            displayName: "Source Tree",
+            originalPath: "/tmp/source-tree",
+            resolvedPath: "/tmp/source-tree",
+            createdAt: "2026-05-07T00:00:00.000Z",
+            access: .init(root: "/tmp/source-tree"),
+            limits: .init(maxEntries: 200, maxDepth: 3)
+        )
+
+        store.sendMessage("Compare this folder.", attachments: [attachment], openSection: false)
+
+        let pendingUser = try XCTUnwrap(
+            store.selectedDisplayConversation?.messages.first {
+                $0.id.hasPrefix("pending-user-") && $0.content == "Compare this folder."
+            }
+        )
+        XCTAssertEqual(pendingUser.attachments, [
+            ConversationMessageAttachment(
+                id: "att_folder_01",
+                kind: .directory,
+                displayName: "Source Tree",
+                originalPath: "/tmp/source-tree",
+                resolvedPath: "/tmp/source-tree",
+                mimeType: nil,
+                sizeBytes: nil,
+                status: .ready,
+                source: "workspace_chat",
+                createdAt: "2026-05-07T00:00:00.000Z",
+                accessScope: "run",
+                accessMode: "read",
+                accessRoot: "/tmp/source-tree",
+                maxEntries: 200,
+                maxDepth: 3,
+                fallbackAttempted: false
+            )
+        ])
+        XCTAssertEqual(pendingUser.attachments.first?.inspectorDetailItems, [
+            ConversationMessageDetailItem(label: "Status", value: "ready"),
+            ConversationMessageDetailItem(label: "Source", value: "workspace_chat"),
+            ConversationMessageDetailItem(label: "Created", value: "2026-05-07T00:00:00.000Z"),
+            ConversationMessageDetailItem(label: "Original path", value: "/tmp/source-tree"),
+            ConversationMessageDetailItem(label: "Resolved path", value: "/tmp/source-tree"),
+            ConversationMessageDetailItem(label: "Access", value: "run · read · /tmp/source-tree"),
+            ConversationMessageDetailItem(label: "Limits", value: "200 entries · depth 3"),
+            ConversationMessageDetailItem(label: "Fallback attempted", value: "No")
+        ])
     }
 
     func testSendMessageAppliesRuntimeHostActionIntentsToGear() async throws {
@@ -1287,6 +1550,63 @@ final class WorkbenchStoreTests: XCTestCase {
         XCTAssertEqual(store.lastOutcome?.detail, "Preview reloaded agent definition local-pack.")
     }
 
+    func testReloadAgentProfileRefreshesStaleAppearanceOverridePaths() async throws {
+        let oldLive2DPath = "/tmp/sample-agent/appearance/model/reading.model3.json"
+        let newLive2DPath = "/tmp/sample-agent/appearance/model/main.model3.json"
+        let oldImagePath = "/tmp/sample-agent/appearance/old.png"
+        let newImagePath = "/tmp/sample-agent/appearance/new.png"
+        let oldVideoPath = "/tmp/sample-agent/appearance/old.mp4"
+        let newVideoPath = "/tmp/sample-agent/appearance/new.mp4"
+
+        var previousSnapshot = PreviewWorkbenchRuntimeClient().loadSnapshot()
+        let previousProfile = reloadableProfile(
+            id: "sample-agent",
+            live2DPath: oldLive2DPath,
+            imagePath: oldImagePath,
+            videoPath: oldVideoPath
+        )
+        previousSnapshot.availableAgentProfiles.append(previousProfile)
+        previousSnapshot.activeAgentProfileID = previousProfile.id
+
+        var nextSnapshot = previousSnapshot
+        nextSnapshot.availableAgentProfiles.removeAll { $0.id == previousProfile.id }
+        nextSnapshot.availableAgentProfiles.append(
+            reloadableProfile(
+                id: previousProfile.id,
+                live2DPath: newLive2DPath,
+                imagePath: newImagePath,
+                videoPath: newVideoPath
+            )
+        )
+        nextSnapshot.activeAgentProfileID = previousProfile.id
+
+        let store = WorkbenchStore(
+            runtimeClient: ReloadingAgentProfileRuntimeClient(
+                initialSnapshot: previousSnapshot,
+                reloadedSnapshot: nextSnapshot
+            )
+        )
+        defer { store.shutdownRuntime() }
+        store.setActiveAppearanceKind(.live2D)
+        store.setActiveAppearanceAssetPath(oldLive2DPath, for: .live2D)
+        store.setActiveAppearanceAssetPath(oldImagePath, for: .staticImage)
+        store.setActiveAppearanceAssetPath(oldVideoPath, for: .video)
+        store.translateLive2D(by: CGSize(width: 12, height: -8))
+        store.adjustLive2DScale(by: 1.25)
+
+        try await store.reloadAgentProfile(previousProfile)
+
+        XCTAssertEqual(store.selectedAgentProfileID, previousProfile.id)
+        XCTAssertEqual(store.activeProfileAppearancePreference.kind, .live2D)
+        XCTAssertEqual(store.activeProfileAppearancePreference.live2DBundlePath, newLive2DPath)
+        XCTAssertEqual(store.activeProfileAppearancePreference.staticImagePath, newImagePath)
+        XCTAssertEqual(store.activeProfileAppearancePreference.videoPath, newVideoPath)
+        XCTAssertEqual(store.live2DViewportState.offsetX, 12)
+        XCTAssertEqual(store.live2DViewportState.offsetY, -8)
+        XCTAssertEqual(store.live2DViewportState.scale, 1.25)
+        XCTAssertEqual(store.effectiveActiveAppearance, .live2D(bundlePath: newLive2DPath))
+    }
+
     func testDeleteAgentProfileRemovesImportedProfile() async throws {
         let store = WorkbenchStore(runtimeClient: PreviewWorkbenchRuntimeClient())
         let imported = AgentProfileRecord(
@@ -1433,6 +1753,44 @@ final class WorkbenchStoreTests: XCTestCase {
             isStarred: isStarred
         )
     }
+
+    private func reloadableProfile(
+        id: String,
+        live2DPath: String,
+        imagePath: String,
+        videoPath: String
+    ) -> AgentProfileRecord {
+        AgentProfileRecord(
+            id: id,
+            name: "Nyko",
+            tagline: "Reloadable Live2D persona",
+            personalityPrompt: "prompt",
+            appearance: .live2D(bundlePath: live2DPath),
+            visualOptions: AgentProfileVisualOptionsRecord(
+                live2DBundlePath: live2DPath,
+                videoAssetPath: videoPath,
+                imageAssetPath: imagePath
+            ),
+            skills: [],
+            allowedToolIDs: nil,
+            source: .modulePack,
+            version: "1.0.0",
+            fileState: AgentProfileFileStateRecord(
+                workspaceRootPath: "/tmp/\(id)",
+                manifestPath: "/tmp/\(id)/agent.json",
+                identityPromptPath: nil,
+                soulPath: nil,
+                playbookPath: nil,
+                toolsContextPath: nil,
+                memorySeedPath: nil,
+                heartbeatPath: nil,
+                visualFiles: [],
+                supplementalFiles: [],
+                canReload: true,
+                canDelete: true
+            )
+        )
+    }
 }
 
 private struct FixedSnapshotRuntimeClient: WorkbenchRuntimeClient {
@@ -1531,6 +1889,79 @@ private struct FixedSnapshotRuntimeClient: WorkbenchRuntimeClient {
     }
 }
 
+private struct ReloadingAgentProfileRuntimeClient: WorkbenchRuntimeClient {
+    var initialSnapshot: WorkbenchSnapshot
+    var reloadedSnapshot: WorkbenchSnapshot
+
+    func loadSnapshot() -> WorkbenchSnapshot { initialSnapshot }
+    func createConversation(in snapshot: WorkbenchSnapshot) async throws -> WorkbenchSnapshot { snapshot }
+    func activateConversation(
+        _ conversationID: ConversationThread.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func deleteConversation(
+        _ conversationID: ConversationThread.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func sendMessage(
+        _ message: String,
+        in snapshot: WorkbenchSnapshot,
+        conversationID: ConversationThread.ID,
+        allowAutoRouting: Bool
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func performTaskAction(
+        _ action: WorkbenchTaskAction,
+        in snapshot: WorkbenchSnapshot,
+        taskID: WorkbenchTaskRecord.ID
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func setActiveAgentProfile(
+        _ profileID: AgentProfileRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func installAgentPack(
+        at packPath: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func reloadAgentProfile(
+        _ profileID: AgentProfileRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { reloadedSnapshot }
+    func deleteAgentProfile(
+        _ profileID: AgentProfileRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func deleteTerminalPermissionRule(
+        _ ruleID: TerminalPermissionRuleRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func setHighestAuthorizationEnabled(
+        _ enabled: Bool,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func loadChatRoutingSettings() async throws -> ChatRoutingSettings {
+        try await PreviewWorkbenchRuntimeClient().loadChatRoutingSettings()
+    }
+    func saveChatRoutingSettings(
+        _ settings: ChatRoutingSettings,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func submitQuickPrompt(
+        _ prompt: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func submitChannelMessage(
+        _ payload: TelegramChannelMessagePayload,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func completeHostActionTurn(
+        _ completions: [WorkbenchHostActionCompletion],
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func invokeTool(_ invocation: ToolInvocation) async throws -> WorkbenchToolOutcome {
+        .completed(toolID: invocation.toolID, payload: [:])
+    }
+}
+
 private final class TelegramHostActionRuntimeClient: WorkbenchRuntimeClient, @unchecked Sendable {
     private let intermediateSnapshot: WorkbenchSnapshot
     private let finalSnapshot: WorkbenchSnapshot
@@ -1620,6 +2051,97 @@ private final class TelegramHostActionRuntimeClient: WorkbenchRuntimeClient, @un
             payload: [
                 "status": "succeeded",
                 "article_id": "article_fixture"
+            ]
+        )
+    }
+}
+
+private final class DuplicateHostActionRuntimeClient: WorkbenchRuntimeClient, @unchecked Sendable {
+    private(set) var invokedToolIDs: [String] = []
+    private(set) var completedHostActionIDs: [String] = []
+
+    func loadSnapshot() -> WorkbenchSnapshot { PreviewWorkbenchRuntimeClient().loadSnapshot() }
+    func loadLiveSnapshot() -> WorkbenchSnapshot { PreviewWorkbenchRuntimeClient().loadSnapshot() }
+    func createConversation(in snapshot: WorkbenchSnapshot) async throws -> WorkbenchSnapshot { snapshot }
+    func activateConversation(
+        _ conversationID: ConversationThread.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func deleteConversation(
+        _ conversationID: ConversationThread.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func sendMessage(
+        _ message: String,
+        in snapshot: WorkbenchSnapshot,
+        conversationID: ConversationThread.ID,
+        allowAutoRouting: Bool
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func performTaskAction(
+        _ action: WorkbenchTaskAction,
+        in snapshot: WorkbenchSnapshot,
+        taskID: WorkbenchTaskRecord.ID
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func setActiveAgentProfile(
+        _ profileID: AgentProfileRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func installAgentPack(
+        at packPath: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func reloadAgentProfile(
+        _ profileID: AgentProfileRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func deleteAgentProfile(
+        _ profileID: AgentProfileRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func deleteTerminalPermissionRule(
+        _ ruleID: TerminalPermissionRuleRecord.ID,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func setHighestAuthorizationEnabled(
+        _ enabled: Bool,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func loadChatRoutingSettings() async throws -> ChatRoutingSettings {
+        try await PreviewWorkbenchRuntimeClient().loadChatRoutingSettings()
+    }
+    func saveChatRoutingSettings(
+        _ settings: ChatRoutingSettings,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func submitQuickPrompt(
+        _ prompt: String,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func submitChannelMessage(
+        _ payload: TelegramChannelMessagePayload,
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot { snapshot }
+    func completeHostActionTurn(
+        _ completions: [WorkbenchHostActionCompletion],
+        in snapshot: WorkbenchSnapshot
+    ) async throws -> WorkbenchSnapshot {
+        completedHostActionIDs.append(contentsOf: completions.map(\.hostActionID))
+        var nextSnapshot = snapshot
+        nextSnapshot.hostActionIntents = []
+        return nextSnapshot
+    }
+    func invokeTool(_ invocation: ToolInvocation) async throws -> WorkbenchToolOutcome {
+        invokedToolIDs.append(invocation.toolID)
+        return .completed(
+            toolID: invocation.toolID,
+            payload: [
+                "gear_id": "todo.manager",
+                "capability_id": "todo.create",
+                "status": "created",
+                "task": [
+                    "id": "todo_duplicate_guard",
+                    "title": "Run duplicate guard test"
+                ]
             ]
         )
     }

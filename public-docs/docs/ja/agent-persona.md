@@ -4,7 +4,7 @@
 
 GeeAgent は単なる汎用 agent runtime ではありません。共有 runtime の上に agent persona という製品レイヤーを持ちます。persona は agent の identity、振る舞い、視覚的な存在感、推奨または制約されるローカル能力を定義します。
 
-persona レイヤーは runtime execution truth から分離されます。run、session、event、approval、task continuation、tool execution は phase-2 runtime spine に属します。
+persona レイヤーは runtime execution truth から分離されます。run、session、event、approval、task continuation、tool execution は shared runtime foundation に属し、Phase 4 product deepening に carry forward されます。
 
 ## 現在の状態
 
@@ -128,7 +128,7 @@ global background の優先順位は video、次に image です。
 
 Live2D persona が `global_background` を宣言していない場合、GeeAgent は default abstract Home background の上に Live2D を描画します。
 
-Live2D persona はローカル UI から poses、actions、expressions、viewport position、scale を扱えます。Home surface では、表示されている character をクリックすると利用可能な actions や expression changes を発火でき、local interaction layer は viewport position や scale の調整後も整合します。
+Live2D persona はローカル UI から poses、actions、expressions、viewport position、scale を扱えます。Home surface では、表示されている character をクリックすると利用可能な actions や expression changes を発火できます。Action discovery は top-level motion assets だけを scan し、model または companion descriptor が nested files を明示的に参照している場合だけそれらを使います。Temporary action は終了後に stop するか、選択中の pose に戻ります。local interaction layer は viewport position や scale の調整後も整合し、GeeAgent は Cubism Layout を持たない Live2D bundle でも wide / tall の window ratio をまたいで character 全体を Home の可視 frame に収めつつ、scale の変化に合わせて viewport translation を回復可能な可視範囲に保つため、端で切れた content も縮小すると再び view 内へ戻せます。
 
 ## Runtime Influence
 
@@ -184,6 +184,7 @@ Reload：
 
 - local persona workspace を再読込する；
 - layered context を再 compile する；
+- reload 後の persona に合わせて Home visual asset paths を refresh し、Live2D position や scale などの local interaction state は保持する；
 - persona-level skill source metadata を refresh する；
 - validation が失敗した場合、以前に load 済みの profile を保持する。
 

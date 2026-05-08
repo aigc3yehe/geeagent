@@ -8,6 +8,8 @@
   "category": "Communication",
   "kind": "atmosphere",
   "display_mode": "full_canvas",
+  "cover": "assets/cover.png",
+  "icon": "assets/icon.png",
   "entry": {
     "type": "native",
     "native_id": "telegram.bridge"
@@ -30,7 +32,9 @@
         "required": false,
         "detect": {
           "command": "node",
-          "args": ["--version"],
+          "args": [
+            "--version"
+          ],
           "min_version": "22.0.0"
         },
         "installer": {
@@ -104,7 +108,12 @@
         ],
         "input_schema": {
           "type": "object",
-          "required": ["channel_id", "account_id", "target_kind", "target_value"],
+          "required": [
+            "channel_id",
+            "account_id",
+            "target_kind",
+            "target_value"
+          ],
           "additionalProperties": false,
           "properties": {
             "channel_id": {
@@ -123,7 +132,12 @@
             },
             "target_kind": {
               "type": "string",
-              "enum": ["chat_id", "group_id", "channel_id", "channel_username"]
+              "enum": [
+                "chat_id",
+                "group_id",
+                "channel_id",
+                "channel_username"
+              ]
             },
             "target_value": {
               "type": "string"
@@ -133,7 +147,12 @@
             },
             "parse_mode": {
               "type": "string",
-              "enum": ["Markdown", "MarkdownV2", "HTML", "plain"]
+              "enum": [
+                "Markdown",
+                "MarkdownV2",
+                "HTML",
+                "plain"
+              ]
             },
             "disable_web_preview": {
               "type": "boolean"
@@ -162,7 +181,11 @@
         ],
         "input_schema": {
           "type": "object",
-          "required": ["channel_id", "message", "idempotency_key"],
+          "required": [
+            "channel_id",
+            "message",
+            "idempotency_key"
+          ],
           "additionalProperties": false,
           "properties": {
             "channel_id": {
@@ -183,7 +206,12 @@
             },
             "parse_mode": {
               "type": "string",
-              "enum": ["Markdown", "MarkdownV2", "HTML", "plain"],
+              "enum": [
+                "Markdown",
+                "MarkdownV2",
+                "HTML",
+                "plain"
+              ],
               "description": "Optional Telegram parse mode override."
             },
             "disable_web_preview": {
@@ -192,51 +220,91 @@
             },
             "artifact_refs": {
               "type": "array",
-              "items": { "type": "string" },
+              "items": {
+                "type": "string"
+              },
               "description": "Optional Gee artifact refs summarized or delivered by policy."
             }
           }
         },
         "output_schema": {
           "type": "object",
-          "required": ["status", "fallback_attempted", "channelId", "error"],
+          "required": [
+            "status",
+            "fallback_attempted",
+            "channelId",
+            "error"
+          ],
           "additionalProperties": false,
           "properties": {
             "status": {
               "type": "string",
-              "enum": ["success", "partial", "blocked", "degraded", "failed"]
+              "enum": [
+                "success",
+                "partial",
+                "blocked",
+                "degraded",
+                "failed"
+              ]
             },
-            "fallback_attempted": { "type": "boolean" },
-            "channelId": { "type": "string" },
-            "accountId": { "type": "string" },
+            "fallback_attempted": {
+              "type": "boolean"
+            },
+            "channelId": {
+              "type": "string"
+            },
+            "accountId": {
+              "type": "string"
+            },
             "target": {
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "kind": { "type": "string" },
-                "redacted": { "type": "string" }
+                "kind": {
+                  "type": "string"
+                },
+                "redacted": {
+                  "type": "string"
+                }
               }
             },
             "delivery": {
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "telegramMessageId": { "type": "string" },
-                "sentAt": { "type": "string" },
-                "idempotencyKey": { "type": "string" }
+                "telegramMessageId": {
+                  "type": "string"
+                },
+                "sentAt": {
+                  "type": "string"
+                },
+                "idempotencyKey": {
+                  "type": "string"
+                }
               }
             },
             "error": {
               "oneOf": [
-                { "type": "null" },
+                {
+                  "type": "null"
+                },
                 {
                   "type": "object",
-                  "required": ["code", "message"],
+                  "required": [
+                    "code",
+                    "message"
+                  ],
                   "additionalProperties": false,
                   "properties": {
-                    "code": { "type": "string" },
-                    "message": { "type": "string" },
-                    "retryAfterMs": { "type": "number" }
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "retryAfterMs": {
+                      "type": "number"
+                    }
                   }
                 }
               ]
@@ -269,7 +337,11 @@
         ],
         "input_schema": {
           "type": "object",
-          "required": ["channel_id", "file_path", "idempotency_key"],
+          "required": [
+            "channel_id",
+            "file_path",
+            "idempotency_key"
+          ],
           "additionalProperties": false,
           "properties": {
             "channel_id": {
@@ -294,60 +366,105 @@
             },
             "artifact_refs": {
               "type": "array",
-              "items": { "type": "string" },
+              "items": {
+                "type": "string"
+              },
               "description": "Optional Gee artifact refs related to the local file."
             }
           }
         },
         "output_schema": {
           "type": "object",
-          "required": ["status", "fallback_attempted", "error"],
+          "required": [
+            "status",
+            "fallback_attempted",
+            "error"
+          ],
           "additionalProperties": false,
           "properties": {
             "status": {
               "type": "string",
-              "enum": ["success", "partial", "blocked", "degraded", "failed"]
+              "enum": [
+                "success",
+                "partial",
+                "blocked",
+                "degraded",
+                "failed"
+              ]
             },
-            "fallback_attempted": { "type": "boolean" },
-            "channelId": { "type": "string" },
-            "accountId": { "type": "string" },
+            "fallback_attempted": {
+              "type": "boolean"
+            },
+            "channelId": {
+              "type": "string"
+            },
+            "accountId": {
+              "type": "string"
+            },
             "target": {
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "kind": { "type": "string" },
-                "redacted": { "type": "string" }
+                "kind": {
+                  "type": "string"
+                },
+                "redacted": {
+                  "type": "string"
+                }
               }
             },
             "file": {
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "path": { "type": "string" },
-                "name": { "type": "string" }
+                "path": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
               }
             },
             "delivery": {
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "telegramMessageId": { "type": "string" },
-                "sentAt": { "type": "string" },
-                "idempotencyKey": { "type": "string" },
-                "reused": { "type": "boolean" }
+                "telegramMessageId": {
+                  "type": "string"
+                },
+                "sentAt": {
+                  "type": "string"
+                },
+                "idempotencyKey": {
+                  "type": "string"
+                },
+                "reused": {
+                  "type": "boolean"
+                }
               }
             },
             "error": {
               "oneOf": [
-                { "type": "null" },
+                {
+                  "type": "null"
+                },
                 {
                   "type": "object",
-                  "required": ["code", "message"],
+                  "required": [
+                    "code",
+                    "message"
+                  ],
                   "additionalProperties": false,
                   "properties": {
-                    "code": { "type": "string" },
-                    "message": { "type": "string" },
-                    "retryAfterMs": { "type": "number" }
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "retryAfterMs": {
+                      "type": "number"
+                    }
                   }
                 }
               ]
@@ -381,7 +498,10 @@
         ],
         "input_schema": {
           "type": "object",
-          "required": ["file_path", "idempotency_key"],
+          "required": [
+            "file_path",
+            "idempotency_key"
+          ],
           "additionalProperties": false,
           "properties": {
             "file_path": {
@@ -408,53 +528,99 @@
         },
         "output_schema": {
           "type": "object",
-          "required": ["status", "fallback_attempted", "accountId", "chatId", "file", "error"],
+          "required": [
+            "status",
+            "fallback_attempted",
+            "accountId",
+            "chatId",
+            "file",
+            "error"
+          ],
           "additionalProperties": false,
           "properties": {
             "status": {
               "type": "string",
-              "enum": ["success", "partial", "blocked", "degraded", "failed"]
+              "enum": [
+                "success",
+                "partial",
+                "blocked",
+                "degraded",
+                "failed"
+              ]
             },
-            "fallback_attempted": { "type": "boolean" },
-            "accountId": { "type": "string" },
-            "chatId": { "type": "string" },
+            "fallback_attempted": {
+              "type": "boolean"
+            },
+            "accountId": {
+              "type": "string"
+            },
+            "chatId": {
+              "type": "string"
+            },
             "target": {
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "kind": { "type": "string" },
-                "redacted": { "type": "string" }
+                "kind": {
+                  "type": "string"
+                },
+                "redacted": {
+                  "type": "string"
+                }
               }
             },
             "file": {
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "path": { "type": "string" },
-                "name": { "type": "string" }
+                "path": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
               }
             },
             "delivery": {
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "telegramMessageId": { "type": "string" },
-                "sentAt": { "type": "string" },
-                "idempotencyKey": { "type": "string" },
-                "reused": { "type": "boolean" }
+                "telegramMessageId": {
+                  "type": "string"
+                },
+                "sentAt": {
+                  "type": "string"
+                },
+                "idempotencyKey": {
+                  "type": "string"
+                },
+                "reused": {
+                  "type": "boolean"
+                }
               }
             },
             "error": {
               "oneOf": [
-                { "type": "null" },
+                {
+                  "type": "null"
+                },
                 {
                   "type": "object",
-                  "required": ["code", "message"],
+                  "required": [
+                    "code",
+                    "message"
+                  ],
                   "additionalProperties": false,
                   "properties": {
-                    "code": { "type": "string" },
-                    "message": { "type": "string" },
-                    "retryAfterMs": { "type": "number" }
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "retryAfterMs": {
+                      "type": "number"
+                    }
                   }
                 }
               ]

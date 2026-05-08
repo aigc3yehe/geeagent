@@ -65,10 +65,22 @@ type AnthropicMessagesRequest = {
 
 type OpenAIChatMessage = {
   role: "system" | "user" | "assistant" | "tool";
-  content?: string | null;
+  content?: string | OpenAIChatContentPart[] | null;
   tool_calls?: OpenAIToolCall[];
   tool_call_id?: string;
 };
+
+type OpenAIChatContentPart =
+  | {
+      type: "text";
+      text: string;
+    }
+  | {
+      type: "image_url";
+      image_url: {
+        url: string;
+      };
+    };
 
 type OpenAIToolCall = {
   id: string;
@@ -102,7 +114,7 @@ type OpenAIChatCompletionRequest = {
       };
   temperature?: number;
   max_completion_tokens?: number;
-  stream: false;
+  stream: boolean;
 };
 
 type XenodiaUsage = {
@@ -132,6 +144,32 @@ type XenodiaChoice = {
 };
 
 type XenodiaChatCompletionResponse = {
+  id?: unknown;
+  choices?: unknown;
+  usage?: XenodiaUsage;
+};
+
+type XenodiaStreamToolCall = {
+  index?: unknown;
+  id?: unknown;
+  type?: unknown;
+  function?: {
+    name?: unknown;
+    arguments?: unknown;
+  };
+};
+
+type XenodiaStreamChoiceDelta = {
+  content?: unknown;
+  tool_calls?: unknown;
+};
+
+type XenodiaStreamChoice = {
+  delta?: XenodiaStreamChoiceDelta;
+  finish_reason?: unknown;
+};
+
+type XenodiaChatCompletionStreamChunk = {
   id?: unknown;
   choices?: unknown;
   usage?: XenodiaUsage;
@@ -288,12 +326,14 @@ function writeAnthropicError(
   response: ServerResponse,
   statusCode: number,
   message: string,
+  metadata: Record<string, unknown> = {},
 ): void {
   writeJson(response, statusCode, {
     type: "error",
     error: {
       type: statusCode >= 500 ? "api_error" : "invalid_request_error",
       message,
+      ...metadata,
     },
   });
 }
@@ -360,6 +400,40 @@ function normalizeToolResultContent(content: unknown): string {
   }
 
   return JSON.stringify(content ?? "");
+}
+
+function anthropicImageBlockToOpenAI(block: Record<string, unknown>): OpenAIChatContentPart | null {
+  const source = asRecord(block.source);
+  if (!source) {
+    return null;
+  }
+  const sourceType = asString(source.type);
+  if (sourceType === "base64") {
+    const mediaType = asString(source.media_type);
+    const data = asString(source.data);
+    if (!mediaType || !data) {
+      return null;
+    }
+    return {
+      type: "image_url",
+      image_url: {
+        url: `data:${mediaType};base64,${data}`,
+      },
+    };
+  }
+  if (sourceType === "url") {
+    const url = asString(source.url);
+    if (!url) {
+      return null;
+    }
+    return {
+      type: "image_url",
+      image_url: {
+        url,
+      },
+    };
+  }
+  return null;
 }
 
 function normalizeSystemPrompt(system: unknown): string | null {
@@ -461,6 +535,8 @@ function anthropicMessagesToOpenAI(messages: unknown): OpenAIChatMessage[] {
 
     const blocks = asArray<Record<string, unknown>>(message.content);
     const textBlocks: string[] = [];
+    const userContentParts: OpenAIChatContentPart[] = [];
+    let hasUserImageContent = false;
     const toolCalls: OpenAIToolCall[] = [];
     const toolResults: OpenAIChatMessage[] = [];
 
@@ -470,6 +546,21 @@ function anthropicMessagesToOpenAI(messages: unknown): OpenAIChatMessage[] {
         const text = asString(block.text);
         if (text) {
           textBlocks.push(text);
+          if (role === "user") {
+            userContentParts.push({
+              type: "text",
+              text,
+            });
+          }
+        }
+        continue;
+      }
+
+      if (role === "user" && blockType === "image") {
+        const imagePart = anthropicImageBlockToOpenAI(block);
+        if (imagePart) {
+          userContentParts.push(imagePart);
+          hasUserImageContent = true;
         }
         continue;
       }
@@ -517,7 +608,12 @@ function anthropicMessagesToOpenAI(messages: unknown): OpenAIChatMessage[] {
     if (textBlocks.length > 0) {
       output.push({
         role: "user",
-        content: textBlocks.join("\n"),
+        content: hasUserImageContent ? userContentParts : textBlocks.join("\n"),
+      });
+    } else if (hasUserImageContent) {
+      output.push({
+        role: "user",
+        content: userContentParts,
       });
     }
 
@@ -602,7 +698,7 @@ function approximateTokens(text: string): number {
   if (!text.trim()) {
     return 0;
   }
-  const cjkCount = text.match(/[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g)?.length ?? 0;
+  const cjkCount = text.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu)?.length ?? 0;
   const otherCount = Math.max(0, [...text].length - cjkCount);
   const charEstimate = cjkCount + Math.ceil(otherCount / 4);
   const byteEstimate = Math.ceil(Buffer.byteLength(text, "utf8") / 4);
@@ -654,6 +750,75 @@ function requestToolNames(request: AnthropicMessagesRequest): string[] {
   return asArray<AnthropicToolDefinition>(request.tools)
     .map((tool) => asString(tool.name))
     .filter((name): name is string => Boolean(name));
+}
+
+function requestImageBlockCount(request: AnthropicMessagesRequest): number {
+  let count = 0;
+  for (const message of asArray<AnthropicMessage>(request.messages)) {
+    for (const block of asArray<Record<string, unknown>>(message.content)) {
+      if (asString(block.type) === "image") {
+        count += 1;
+      }
+    }
+  }
+  return count;
+}
+
+function modelSupportsImageInput(model: string): boolean {
+  const normalized = model.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  const modelName = normalized.split("/").at(-1) ?? normalized;
+  const candidates = [normalized, modelName];
+  if (
+    candidates.some((candidate) =>
+      /(?:^|[-_.])(?:text-only|embedding|embed|whisper|tts)(?:$|[-_.])/.test(candidate) ||
+      candidate.startsWith("gpt-image") ||
+      candidate.startsWith("dall-e"),
+    )
+  ) {
+    return false;
+  }
+  return candidates.some(
+    (candidate) =>
+      candidate.startsWith("gpt-5") ||
+      candidate.startsWith("gpt-4o") ||
+      candidate.startsWith("gpt-4.1") ||
+      candidate.startsWith("gpt-4-vision") ||
+      candidate.startsWith("o3") ||
+      candidate.startsWith("o4") ||
+      candidate.startsWith("claude") ||
+      candidate.startsWith("gemini") ||
+      candidate.startsWith("pixtral") ||
+      candidate.startsWith("llava") ||
+      candidate.includes("vision") ||
+      /(?:^|[-_.])vl(?:$|[-_.])/.test(candidate),
+  );
+}
+
+function unsupportedMultimodalReason(
+  request: AnthropicMessagesRequest,
+  options: AnthropicGatewayOptions,
+): { model: string; imageBlockCount: number; message: string } | null {
+  const imageBlockCount = requestImageBlockCount(request);
+  if (imageBlockCount === 0) {
+    return null;
+  }
+  const model = resolveBackendModel(
+    asString(request.model) ?? "sonnet",
+    options.modelOverride,
+  );
+  if (modelSupportsImageInput(model)) {
+    return null;
+  }
+  return {
+    model,
+    imageBlockCount,
+    message:
+      "The current chat model does not support image input for this run. " +
+      "GeeAgent stopped the multimodal request instead of dropping the image or falling back to OCR/text-only context.",
+  };
 }
 
 function buildModelInfo(id: string): Record<string, unknown> {
@@ -782,10 +947,35 @@ function buildAnthropicMessageFromXenodia(
   };
 }
 
+function anthropicUsageFromXenodia(
+  usageValue: unknown,
+  request: AnthropicMessagesRequest,
+): AnthropicMessageResponse["usage"] {
+  const usage = asRecord(usageValue) ?? {};
+  const inputTokens =
+    asNumber(usage.prompt_tokens) ??
+    asNumber(usage.input_tokens) ??
+    approximateRequestTokens(request);
+  const totalTokens = asNumber(usage.total_tokens);
+  const outputTokens =
+    asNumber(usage.completion_tokens) ??
+    asNumber(usage.output_tokens) ??
+    (totalTokens !== null ? Math.max(0, totalTokens - inputTokens) : null) ??
+    0;
+  return {
+    input_tokens: inputTokens,
+    cache_creation_input_tokens: null,
+    cache_read_input_tokens: null,
+    output_tokens: outputTokens,
+    server_tool_use: null,
+  };
+}
+
 function toOpenAIChatCompletionRequest(
   request: AnthropicMessagesRequest,
   options: AnthropicGatewayOptions,
   modelOverride = options.modelOverride,
+  stream = false,
 ): OpenAIChatCompletionRequest {
   const anthropicModel = asString(request.model) ?? "sonnet";
   const messages = anthropicMessagesToOpenAI(request.messages);
@@ -800,7 +990,7 @@ function toOpenAIChatCompletionRequest(
   const body: OpenAIChatCompletionRequest = {
     model: resolveBackendModel(anthropicModel, modelOverride),
     messages,
-    stream: false,
+    stream,
     max_completion_tokens: resolveMaxCompletionTokens(request, options),
   };
 
@@ -944,6 +1134,389 @@ async function callXenodiaModel(
   return asRecord(parsed) as XenodiaChatCompletionResponse;
 }
 
+type StreamToolBlockState = {
+  upstreamIndex: number;
+  anthropicIndex: number | null;
+  id: string | null;
+  name: string | null;
+  pendingArguments: string;
+  started: boolean;
+};
+
+async function streamXenodiaAsAnthropic(
+  request: AnthropicMessagesRequest,
+  response: ServerResponse,
+  options: AnthropicGatewayOptions,
+): Promise<void> {
+  const timeoutMs = resolveRequestTimeoutMs(options);
+  const controller = new AbortController();
+  let timeout: NodeJS.Timeout | null = null;
+  const resetTimeout = () => {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+    timeout = setTimeout(() => controller.abort(), timeoutMs);
+  };
+  resetTimeout();
+
+  const model = resolveBackendModel(asString(request.model) ?? "sonnet", options.modelOverride);
+  traceGatewayEvent("upstream.start", {
+    label: "primary",
+    model,
+    timeout_ms: timeoutMs,
+    stream: true,
+  });
+
+  let upstream: Response;
+  try {
+    upstream = await fetch(options.backendUrl ?? DEFAULT_XENODIA_CHAT_COMPLETIONS_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${options.xenodiaApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(toOpenAIChatCompletionRequest(request, options, options.modelOverride, true)),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+    traceGatewayEvent("upstream.error", {
+      label: "primary",
+      aborted: controller.signal.aborted,
+      message: errorMessage(error).slice(0, 180),
+      stream: true,
+    });
+    if (controller.signal.aborted) {
+      throw new XenodiaGatewayError(
+        `xenodia primary stream timed out after ${Math.ceil(timeoutMs / 1000)} seconds`,
+        { retryable: true },
+      );
+    }
+    throw new XenodiaGatewayError(errorMessage(error), { retryable: true });
+  }
+
+  if (!upstream.ok) {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+    const raw = await upstream.text();
+    let parsed: unknown = raw;
+    try {
+      parsed = raw.trim().length > 0 ? JSON.parse(raw) : {};
+    } catch {
+      parsed = raw;
+    }
+    const envelope = asRecord(parsed);
+    const upstreamMessage =
+      asString(envelope?.error) ??
+      asString(asRecord(envelope?.error)?.message) ??
+      (typeof parsed === "string" ? parsed : null) ??
+      `xenodia stream failed with status ${upstream.status}`;
+    traceGatewayEvent("upstream.status_error", {
+      label: "primary",
+      status: upstream.status,
+      stream: true,
+    });
+    throw new XenodiaGatewayError(upstreamMessage, {
+      retryable: upstream.status !== 401 && upstream.status !== 403,
+      statusCode: upstream.status,
+    });
+  }
+
+  traceGatewayEvent("upstream.ok", {
+    label: "primary",
+    status: upstream.status,
+    stream: true,
+  });
+
+  response.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+  });
+
+  const inputTokens = approximateRequestTokens(request);
+  let outputTokens = 0;
+  let usage: AnthropicMessageResponse["usage"] = {
+    input_tokens: inputTokens,
+    cache_creation_input_tokens: null,
+    cache_read_input_tokens: null,
+    output_tokens: 0,
+    server_tool_use: null,
+  };
+  const messageId = `msg_${randomUUID()}`;
+  writeSse(response, "message_start", {
+    type: "message_start",
+    message: {
+      id: messageId,
+      type: "message",
+      role: "assistant",
+      model: asString(request.model) ?? "sonnet",
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
+      container: null,
+      usage: {
+        ...usage,
+        output_tokens: 0,
+      },
+    },
+  });
+
+  let nextContentIndex = 0;
+  let textBlockIndex: number | null = null;
+  let sawText = false;
+  let finishReason: string | null = null;
+  const toolBlocks = new Map<number, StreamToolBlockState>();
+
+  const ensureTextBlock = () => {
+    if (textBlockIndex !== null) {
+      return textBlockIndex;
+    }
+    textBlockIndex = nextContentIndex;
+    nextContentIndex += 1;
+    writeSse(response, "content_block_start", {
+      type: "content_block_start",
+      index: textBlockIndex,
+      content_block: {
+        type: "text",
+        text: "",
+        citations: null,
+      },
+    });
+    return textBlockIndex;
+  };
+
+  const stopTextBlock = () => {
+    if (textBlockIndex === null) {
+      return;
+    }
+    writeSse(response, "content_block_stop", {
+      type: "content_block_stop",
+      index: textBlockIndex,
+    });
+    textBlockIndex = null;
+  };
+
+  const toolStateFor = (upstreamIndex: number): StreamToolBlockState => {
+    const existing = toolBlocks.get(upstreamIndex);
+    if (existing) {
+      return existing;
+    }
+    const created: StreamToolBlockState = {
+      upstreamIndex,
+      anthropicIndex: null,
+      id: null,
+      name: null,
+      pendingArguments: "",
+      started: false,
+    };
+    toolBlocks.set(upstreamIndex, created);
+    return created;
+  };
+
+  const startToolBlockIfReady = (state: StreamToolBlockState, force = false) => {
+    if (state.started) {
+      return;
+    }
+    if (!force && (!state.id || !state.name)) {
+      return;
+    }
+    stopTextBlock();
+    state.id = state.id ?? `call_${randomUUID()}`;
+    state.name = state.name ?? "tool";
+    state.anthropicIndex = nextContentIndex;
+    nextContentIndex += 1;
+    state.started = true;
+    writeSse(response, "content_block_start", {
+      type: "content_block_start",
+      index: state.anthropicIndex,
+      content_block: {
+        type: "tool_use",
+        id: state.id,
+        name: state.name,
+        input: {},
+        caller: "direct",
+      },
+    });
+    if (state.pendingArguments) {
+      writeSse(response, "content_block_delta", {
+        type: "content_block_delta",
+        index: state.anthropicIndex,
+        delta: {
+          type: "input_json_delta",
+          partial_json: state.pendingArguments,
+        },
+      });
+      state.pendingArguments = "";
+    }
+  };
+
+  try {
+    for await (const chunk of readOpenAIStreamChunks(upstream.body, resetTimeout)) {
+      if (chunk.usage) {
+        usage = anthropicUsageFromXenodia(chunk.usage, request);
+      }
+      for (const choice of asArray<XenodiaStreamChoice>(chunk.choices)) {
+        finishReason = asString(choice.finish_reason) ?? finishReason;
+        const delta = asRecord(choice.delta);
+        if (!delta) {
+          continue;
+        }
+        const content = asString(delta.content);
+        if (content) {
+          const index = ensureTextBlock();
+          sawText = true;
+          outputTokens += approximateTokens(content);
+          writeSse(response, "content_block_delta", {
+            type: "content_block_delta",
+            index,
+            delta: {
+              type: "text_delta",
+              text: content,
+            },
+          });
+        }
+        for (const rawToolCall of asArray<XenodiaStreamToolCall>(delta.tool_calls)) {
+          const upstreamIndex = Math.max(0, Math.trunc(asNumber(rawToolCall.index) ?? 0));
+          const state = toolStateFor(upstreamIndex);
+          const id = asString(rawToolCall.id);
+          const name = asString(rawToolCall.function?.name);
+          const argumentDelta = asString(rawToolCall.function?.arguments) ?? "";
+          if (id) {
+            state.id = id;
+          }
+          if (name) {
+            state.name = name;
+          }
+          if (argumentDelta) {
+            if (state.started && state.anthropicIndex !== null) {
+              writeSse(response, "content_block_delta", {
+                type: "content_block_delta",
+                index: state.anthropicIndex,
+                delta: {
+                  type: "input_json_delta",
+                  partial_json: argumentDelta,
+                },
+              });
+            } else {
+              state.pendingArguments += argumentDelta;
+            }
+          }
+          startToolBlockIfReady(state);
+        }
+      }
+    }
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+
+  stopTextBlock();
+  const sortedToolBlocks = [...toolBlocks.values()].sort((a, b) => a.upstreamIndex - b.upstreamIndex);
+  for (const state of sortedToolBlocks) {
+    startToolBlockIfReady(state, true);
+    if (state.started && state.anthropicIndex !== null) {
+      writeSse(response, "content_block_stop", {
+        type: "content_block_stop",
+        index: state.anthropicIndex,
+      });
+    }
+  }
+
+  if (usage.output_tokens === 0 && outputTokens > 0) {
+    usage = {
+      ...usage,
+      output_tokens: Math.max(1, outputTokens),
+    };
+  }
+  const stopReason =
+    toolBlocks.size > 0 || finishReason === "tool_calls" ? "tool_use" : "end_turn";
+  writeSse(response, "message_delta", {
+    type: "message_delta",
+    delta: {
+      stop_reason: stopReason,
+      stop_sequence: null,
+      container: null,
+    },
+    usage,
+  });
+  writeSse(response, "message_stop", {
+    type: "message_stop",
+  });
+  response.end();
+
+  traceGatewayEvent("stream.completed", {
+    text: sawText,
+    tool_blocks: toolBlocks.size,
+    stop_reason: stopReason,
+  });
+}
+
+async function* readOpenAIStreamChunks(
+  body: ReadableStream<Uint8Array> | null,
+  onChunk: () => void,
+): AsyncGenerator<XenodiaChatCompletionStreamChunk> {
+  if (!body) {
+    throw new XenodiaGatewayError("xenodia stream response did not include a readable body", {
+      retryable: true,
+    });
+  }
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      onChunk();
+      buffer += decoder.decode(value, { stream: true });
+      const frames = buffer.split(/\r?\n\r?\n/);
+      buffer = frames.pop() ?? "";
+      for (const frame of frames) {
+        const parsed = parseOpenAIStreamFrame(frame);
+        if (parsed === "done") {
+          return;
+        }
+        if (parsed) {
+          yield parsed;
+        }
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) {
+      const parsed = parseOpenAIStreamFrame(buffer);
+      if (parsed && parsed !== "done") {
+        yield parsed;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function parseOpenAIStreamFrame(frame: string): XenodiaChatCompletionStreamChunk | "done" | null {
+  const data = frame
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice("data:".length).trimStart())
+    .join("\n")
+    .trim();
+  if (!data) {
+    return null;
+  }
+  if (data === "[DONE]") {
+    return "done";
+  }
+  const parsed = safeJsonParseRecord(data);
+  return parsed as XenodiaChatCompletionStreamChunk;
+}
+
 function writeSse(
   response: ServerResponse,
   event: AnthropicStreamEvent["type"],
@@ -1054,18 +1627,34 @@ async function handleMessagesRequest(
     stream: payload.stream === true,
     model: asString(payload.model) ?? "sonnet",
     approximate_tokens: approximateRequestTokens(payload),
+    image_blocks: requestImageBlockCount(payload),
     tool_count: requestToolNames(payload).length,
     tool_names: requestToolNames(payload).slice(0, 40),
     tool_choice: payload.tool_choice ?? null,
   });
-  const upstream = await callXenodia(payload, options);
-  const anthropicMessage = buildAnthropicMessageFromXenodia(payload, upstream);
-
+  const unsupportedMultimodal = unsupportedMultimodalReason(payload, options);
+  if (unsupportedMultimodal) {
+    traceGatewayEvent("messages.degraded", {
+      code: "model_unsupported_multimodal",
+      model: unsupportedMultimodal.model,
+      image_blocks: unsupportedMultimodal.imageBlockCount,
+    });
+    writeAnthropicError(response, 400, unsupportedMultimodal.message, {
+      code: "model_unsupported_multimodal",
+      status: "degraded",
+      model: unsupportedMultimodal.model,
+      image_blocks: unsupportedMultimodal.imageBlockCount,
+      fallback_attempted: false,
+    });
+    return;
+  }
   if (payload.stream === true) {
-    writeAnthropicStreamResponse(response, anthropicMessage);
+    await streamXenodiaAsAnthropic(payload, response, options);
     return;
   }
 
+  const upstream = await callXenodia(payload, options);
+  const anthropicMessage = buildAnthropicMessageFromXenodia(payload, upstream);
   writeJson(response, 200, anthropicMessage);
 }
 
@@ -1179,8 +1768,10 @@ export const __gatewayTestHooks = {
   anthropicToolsToOpenAI,
   approximateRequestTokens,
   buildAnthropicMessageFromXenodia,
+  modelSupportsImageInput,
   resolveMaxCompletionTokens,
   resolveRequestTimeoutMs,
   resolveBackendModel,
+  requestImageBlockCount,
   toOpenAIChatCompletionRequest,
 };

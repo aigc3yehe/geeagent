@@ -1,8 +1,13 @@
 export const GEE_HOST_SDK_TOOLS = [
   "mcp__gee__app_open_surface",
+  "mcp__gee__files_directory_snapshot",
   "mcp__gee__gear_list_capabilities",
   "mcp__gee__gear_invoke",
 ];
+
+export const CHAT_ONLY_SDK_AVAILABLE_TOOLS: string[] = [];
+
+export const CHAT_ONLY_SDK_AUTO_APPROVE_TOOLS: string[] = [];
 
 export const DEFAULT_SDK_AVAILABLE_TOOLS = [
   "Bash",

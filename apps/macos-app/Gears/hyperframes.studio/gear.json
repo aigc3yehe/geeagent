@@ -8,6 +8,8 @@
   "category": "Video",
   "kind": "atmosphere",
   "display_mode": "full_canvas",
+  "cover": "assets/cover.png",
+  "icon": "assets/icon.png",
   "entry": {
     "type": "native",
     "native_id": "hyperframes.studio"
@@ -22,7 +24,9 @@
         "required": true,
         "detect": {
           "command": "node",
-          "args": ["--version"],
+          "args": [
+            "--version"
+          ],
           "min_version": "22.0.0"
         },
         "installer": {
@@ -37,7 +41,9 @@
         "required": true,
         "detect": {
           "command": "npm",
-          "args": ["--version"]
+          "args": [
+            "--version"
+          ]
         },
         "installer": {
           "type": "recipe",
@@ -51,7 +57,9 @@
         "required": true,
         "detect": {
           "command": "hyperframes",
-          "args": ["--version"],
+          "args": [
+            "--version"
+          ],
           "min_version": "0.4.20"
         },
         "installer": {
@@ -68,7 +76,9 @@
         "required": true,
         "detect": {
           "command": "ffmpeg",
-          "args": ["-version"]
+          "args": [
+            "-version"
+          ]
         },
         "installer": {
           "type": "recipe",
@@ -82,7 +92,9 @@
         "required": true,
         "detect": {
           "command": "ffprobe",
-          "args": ["-version"]
+          "args": [
+            "-version"
+          ]
         },
         "installer": {
           "type": "recipe",

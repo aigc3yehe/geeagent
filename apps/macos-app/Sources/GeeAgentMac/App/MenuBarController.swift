@@ -97,11 +97,7 @@ final class MenuBarController {
     }
 
     @objc private func openMainWindow() {
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
-        if let window = NSApp.windows.first(where: { $0.contentViewController != nil && !($0 is FloatingPanelWindow) }) {
-            window.makeKeyAndOrderFront(nil)
-        }
+        AppDelegate.presentMainWindow()
     }
 
     // MARK: panel toggles

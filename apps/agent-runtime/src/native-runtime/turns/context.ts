@@ -11,7 +11,13 @@ import {
   syncConversationStatuses,
 } from "../store/conversations.js";
 import { currentTimestamp } from "../store/defaults.js";
-import type { AgentProfile, RuntimeConversation, RuntimeStore } from "../store/types.js";
+import type {
+  AgentProfile,
+  RuntimeConversation,
+  RuntimeConversationMessage,
+  RuntimeInputAttachment,
+  RuntimeStore,
+} from "../store/types.js";
 import type { TurnRoute } from "../sdk-turn-runner.js";
 import type { RuntimePlanningMode } from "./planning.js";
 import { isRecord, summarizePrompt } from "./state.js";
@@ -24,6 +30,7 @@ export function prepareTurnContext(
   route: TurnRoute,
   text: string,
   planningMode: RuntimePlanningMode = "structured",
+  inputAttachments: RuntimeInputAttachment[] = [],
 ): PreparedTurnContext {
   const workspaceMessages =
     route.mode === "workspace_message" ? workspaceMessagesFromStore(store) : [];
@@ -32,14 +39,14 @@ export function prepareTurnContext(
       ? stageCapsuleMessagesFromStore(store)
       : [];
   const baseProjection = buildContextProjection(workspaceMessages, {
-    latestUserRequest: text,
+    latestUserRequest: modelTextWithAttachmentManifest(text, inputAttachments),
   });
   const modelFacingMessages =
     baseProjection.mode === "compacted"
       ? [...workspaceMessages, ...stageCapsuleMessages]
       : workspaceMessages;
   const contextProjection = buildContextProjection(modelFacingMessages, {
-    latestUserRequest: text,
+    latestUserRequest: modelTextWithAttachmentManifest(text, inputAttachments),
   });
   store.context_budget = contextBudgetRecordFromProjection(contextProjection);
 
@@ -50,6 +57,7 @@ export function prepareTurnContext(
     contextProjection,
     shouldReuseActiveConversation:
       route.mode === "quick_prompt" ? false : shouldReuseActiveConversation(store, text),
+    inputAttachments,
   };
 }
 
@@ -62,7 +70,7 @@ export function composeClaudeSdkTurnPrompt(
   prepared: PreparedTurnContext,
   text: string,
 ): string {
-  const trimmed = text.trim();
+  const trimmed = modelTextWithAttachmentManifest(text, prepared.inputAttachments).trim();
   if (route.mode === "quick_prompt" || prepared.workspaceMessages.length === 0) {
     return trimmed;
   }
@@ -176,7 +184,7 @@ function normalizedKeywords(text: string): Set<string> {
 
 function cjkTopicKeywords(text: string): string[] {
   const tokens = new Set<string>();
-  const runs = text.match(/[\u3400-\u4dbf\u4e00-\u9fff]+/g) ?? [];
+  const runs = text.match(/\p{Script=Han}+/gu) ?? [];
   for (const run of runs) {
     if (run.length < 2) {
       continue;
@@ -252,8 +260,65 @@ function workspaceMessagesFromStore(
 ): Array<{ role: string; content: string }> {
   return activeConversation(store).messages.map((message) => ({
     role: message.role,
-    content: message.content,
+    content: conversationMessageModelContent(message),
   }));
+}
+
+function conversationMessageModelContent(message: RuntimeConversationMessage): string {
+  return modelTextWithAttachmentManifest(message.content, message.attachments ?? []);
+}
+
+function modelTextWithAttachmentManifest(
+  text: string,
+  attachments: RuntimeInputAttachment[],
+): string {
+  const trimmed = text.trim();
+  if (attachments.length === 0) {
+    return trimmed;
+  }
+  const rows = attachments.map((attachment, index) => {
+    const parts = [
+      `${index + 1}. kind=${attachment.kind}`,
+      `display_name=${manifestValue(attachment.display_name)}`,
+      `id=${manifestValue(attachment.attachment_id)}`,
+      `status=${attachment.status}`,
+    ];
+    if (attachment.original_path) {
+      parts.push(`original_path=${manifestValue(attachment.original_path)}`);
+    }
+    if (attachment.resolved_path) {
+      parts.push(`resolved_path=${manifestValue(attachment.resolved_path)}`);
+    }
+    if (attachment.mime_type) {
+      parts.push(`mime=${manifestValue(attachment.mime_type)}`);
+    }
+    if (attachment.size_bytes !== undefined) {
+      parts.push(`size_bytes=${attachment.size_bytes}`);
+    }
+    if (attachment.access.root) {
+      parts.push(`root=${manifestValue(attachment.access.root)}`);
+    }
+    if (attachment.error) {
+      parts.push(
+        `error=${manifestValue(`${attachment.error.code}: ${attachment.error.message}`)}`,
+      );
+    }
+    parts.push("fallback_attempted=false");
+    return parts.join("; ");
+  });
+  return [
+    trimmed,
+    "",
+    "[GEEAGENT INPUT ATTACHMENTS]",
+    ...rows,
+    "[/GEEAGENT INPUT ATTACHMENTS]",
+  ].join("\n");
+}
+
+function manifestValue(value: string): string {
+  return JSON.stringify(value)
+    .replaceAll("[", "\\u005b")
+    .replaceAll("]", "\\u005d");
 }
 
 function stageCapsuleMessagesFromStore(

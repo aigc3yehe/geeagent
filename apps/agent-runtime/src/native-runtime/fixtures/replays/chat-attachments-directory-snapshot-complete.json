@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "run_id": "run_golden_chat_attachments_directory_snapshot",
+  "exported_at": "2026-05-08T00:00:00.000Z",
+  "event_count": 4,
+  "conversation_ids": ["conv_golden_chat_attachments"],
+  "execution_session_ids": ["session_golden_chat_attachments"],
+  "sdk_session_ids": ["sdk_golden_chat_attachments"],
+  "parent_run_ids": [],
+  "host_action_runs": [],
+  "approval_requests": [],
+  "artifact_ids": [],
+  "artifact_refs": [],
+  "diagnostics": {
+    "duplicate_event_ids": [],
+    "missing_parent_event_ids": [],
+    "missing_sequence_numbers": [],
+    "out_of_order_event_ids": []
+  },
+  "events": [
+    {
+      "event_id": "evt_chat_attach_001_user",
+      "session_id": "session_golden_chat_attachments",
+      "parent_event_id": null,
+      "run_id": "run_golden_chat_attachments_directory_snapshot",
+      "sequence": 1,
+      "payload": {
+        "kind": "user_message",
+        "message_id": "msg_chat_attach_user",
+        "content": "Compare the directory tree shown in the screenshot with the referenced folder.",
+        "attachments": [
+          {
+            "attachment_id": "att_screenshot_tree",
+            "kind": "image",
+            "source": "workspace_chat",
+            "display_name": "tree.png",
+            "original_path": "/tmp/geeagent/tree.png",
+            "resolved_path": "/tmp/geeagent/tree.png",
+            "mime_type": "image/png",
+            "created_at": "2026-05-08T00:00:00.000Z",
+            "status": "ready",
+            "access": {
+              "scope": "run",
+              "mode": "read",
+              "root": "/tmp/geeagent"
+            },
+            "image": {
+              "width": 1440,
+              "height": 900
+            },
+            "fallback_attempted": false
+          },
+          {
+            "attachment_id": "att_actual_dir",
+            "kind": "directory",
+            "source": "workspace_chat",
+            "display_name": "actual",
+            "original_path": "/tmp/geeagent/actual",
+            "resolved_path": "/tmp/geeagent/actual",
+            "created_at": "2026-05-08T00:00:00.000Z",
+            "status": "ready",
+            "access": {
+              "scope": "run",
+              "mode": "read",
+              "root": "/tmp/geeagent/actual"
+            },
+            "limits": {
+              "max_depth": 2,
+              "max_entries": 20
+            },
+            "fallback_attempted": false
+          }
+        ],
+        "run_id": "run_golden_chat_attachments_directory_snapshot"
+      }
+    },
+    {
+      "event_id": "evt_chat_attach_002_tool",
+      "session_id": "session_golden_chat_attachments",
+      "parent_event_id": "evt_chat_attach_001_user",
+      "run_id": "run_golden_chat_attachments_directory_snapshot",
+      "sequence": 2,
+      "payload": {
+        "kind": "tool_invocation",
+        "invocation": {
+          "invocation_id": "toolu_directory_snapshot_actual",
+          "tool_name": "mcp__gee__files_directory_snapshot",
+          "status": "running",
+          "input_summary": "{\"attachment_id\":\"att_actual_dir\"}"
+        },
+        "run_id": "run_golden_chat_attachments_directory_snapshot"
+      }
+    },
+    {
+      "event_id": "evt_chat_attach_003_result",
+      "session_id": "session_golden_chat_attachments",
+      "parent_event_id": "evt_chat_attach_002_tool",
+      "run_id": "run_golden_chat_attachments_directory_snapshot",
+      "sequence": 3,
+      "payload": {
+        "kind": "tool_result",
+        "invocation_id": "toolu_directory_snapshot_actual",
+        "status": "succeeded",
+        "summary": "Directory snapshot for att_actual_dir returned README.md and Sources/App.swift with fallback_attempted=false.",
+        "run_id": "run_golden_chat_attachments_directory_snapshot"
+      }
+    },
+    {
+      "event_id": "evt_chat_attach_004_assistant",
+      "session_id": "session_golden_chat_attachments",
+      "parent_event_id": "evt_chat_attach_003_result",
+      "run_id": "run_golden_chat_attachments_directory_snapshot",
+      "sequence": 4,
+      "payload": {
+        "kind": "assistant_message",
+        "message_id": "msg_chat_attach_assistant",
+        "content": "The screenshot and referenced folder both include README.md, but only the folder snapshot includes Sources/App.swift.",
+        "run_id": "run_golden_chat_attachments_directory_snapshot"
+      }
+    }
+  ]
+}

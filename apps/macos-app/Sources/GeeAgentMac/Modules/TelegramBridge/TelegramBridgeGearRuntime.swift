@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import SwiftUI
 
 private enum TelegramBridgeGearRuntimeConstants {
@@ -164,6 +165,281 @@ struct TelegramBridgeConversationLog: Codable, Sendable {
     var threads: [TelegramBridgeConversationThread] = []
 }
 
+struct TelegramBridgeGatewayEnvelope: Hashable, Sendable {
+    var accountID: String
+    var accountRole: String
+    var updateID: Int
+    var idempotencyKey: String
+    var chatID: String
+    var chatType: String?
+    var fromUserID: String?
+    var messageID: String?
+    var runtimeMessageID: String
+    var text: String
+    var inboundLogText: String
+    var channelIdentity: String
+    var attachments: [TelegramChannelMessageAttachmentRef]
+}
+
+struct TelegramBridgeGatewaySecurityDecision: Hashable, Sendable {
+    var decision: String
+    var policyID: String
+
+    var isAllowed: Bool {
+        decision == "allowed"
+    }
+}
+
+enum TelegramBridgeGatewayNormalization: Hashable, Sendable {
+    case accepted(TelegramBridgeGatewayEnvelope)
+    case dropped(updateID: Int, code: String)
+}
+
+struct TelegramBridgeGatewayOutboundProjection: Hashable, Sendable {
+    var chatID: String
+    var text: String
+    var parseMode: String?
+    var disableWebPreview: Bool?
+    var successStatus: String
+    var successUpdateID: Int?
+    var failureUpdateID: Int?
+}
+
+struct TelegramBridgeGatewayOutboundEvidence: Hashable, Sendable {
+    var chatID: String
+    var text: String
+    var messageID: String?
+    var updateID: Int?
+    var status: String
+}
+
+enum TelegramBridgeGateway {
+    static func normalize(
+        account: TelegramBridgeAccountConfig,
+        update: TelegramBridgeSender.Update
+    ) -> TelegramBridgeGatewayNormalization {
+        let updateID = update.updateId
+        guard let message = update.messagePayload else {
+            return .dropped(updateID: updateID, code: "telegram.message_missing")
+        }
+        let callbackCommandText = update.callbackCommandText
+        let attachments = callbackCommandText == nil
+            ? telegramMediaAttachmentRefs(account: account, updateID: updateID, message: message)
+            : []
+        if callbackCommandText == nil,
+           message.unsupportedAttachmentKey != nil ||
+            (attachments.isEmpty &&
+                message.text?.trimmedForGateway.nilIfEmpty == nil &&
+                message.caption?.trimmedForGateway.nilIfEmpty != nil) {
+            return .dropped(updateID: updateID, code: "telegram.message_attachment_unsupported")
+        }
+        let rawText = callbackCommandText ?? message.text ?? message.caption ?? (attachments.isEmpty ? nil : "Telegram media attachment received.")
+        guard let text = rawText?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty
+        else {
+            return .dropped(updateID: updateID, code: "telegram.message_text_missing")
+        }
+
+        let chatID = message.chat.id.value
+        let messageID = message.messageId?.value
+        let runtimeMessageID = messageID ?? "update-\(updateID)"
+        return .accepted(
+            TelegramBridgeGatewayEnvelope(
+                accountID: account.id,
+                accountRole: account.role,
+                updateID: updateID,
+                idempotencyKey: "telegram:update:\(updateID)",
+                chatID: chatID,
+                chatType: message.chat.type,
+                fromUserID: update.actorUserID,
+                messageID: messageID,
+                runtimeMessageID: runtimeMessageID,
+                text: text,
+                inboundLogText: update.callbackQuery == nil ? text : "[button] \(text)",
+                channelIdentity: "telegram:\(account.id):chat:\(chatID)",
+                attachments: attachments
+            )
+        )
+    }
+
+    private static func telegramMediaAttachmentRefs(
+        account: TelegramBridgeAccountConfig,
+        updateID: Int,
+        message: TelegramBridgeSender.Update.MessageLike
+    ) -> [TelegramChannelMessageAttachmentRef] {
+        var refs: [TelegramChannelMessageAttachmentRef] = []
+        if let photo = message.photo?.last(where: { !$0.fileID.trimmedForGateway.isEmpty }) {
+            refs.append(
+                telegramMediaAttachmentRef(
+                    account: account,
+                    updateID: updateID,
+                    message: message,
+                    mediaKind: "photo",
+                    media: photo,
+                    type: "image",
+                    title: "Telegram photo",
+                    mimeType: "image/*"
+                )
+            )
+        }
+        let singleMedia: [(String, TelegramBridgeSender.Update.MessageLike.MediaFile?, String, String, String?)] = [
+            ("document", message.document, "document", "Telegram document", nil),
+            ("video", message.video, "video", "Telegram video", "video/*"),
+            ("animation", message.animation, "video", "Telegram animation", "image/gif"),
+            ("audio", message.audio, "audio", "Telegram audio", "audio/*"),
+            ("voice", message.voice, "audio", "Telegram voice message", "audio/*"),
+            ("video_note", message.videoNote, "video", "Telegram video note", "video/*"),
+            ("sticker", message.sticker, "image", "Telegram sticker", "image/*")
+        ]
+        for (mediaKind, media, type, title, mimeType) in singleMedia {
+            guard let media, !media.fileID.trimmedForGateway.isEmpty else {
+                continue
+            }
+            refs.append(
+                telegramMediaAttachmentRef(
+                    account: account,
+                    updateID: updateID,
+                    message: message,
+                    mediaKind: mediaKind,
+                    media: media,
+                    type: type,
+                    title: title,
+                    mimeType: mimeType
+                )
+            )
+        }
+        return refs
+    }
+
+    private static func telegramMediaAttachmentRef(
+        account: TelegramBridgeAccountConfig,
+        updateID: Int,
+        message: TelegramBridgeSender.Update.MessageLike,
+        mediaKind: String,
+        media: TelegramBridgeSender.Update.MessageLike.MediaFile,
+        type: String,
+        title: String,
+        mimeType: String?
+    ) -> TelegramChannelMessageAttachmentRef {
+        let fileID = media.fileID.trimmedForGateway
+        let fileUniqueID = media.fileUniqueID?.trimmedForGateway.nilIfEmpty
+        let artifactIdentity = fileUniqueID ?? fileID
+        return TelegramChannelMessageAttachmentRef(
+            artifactId: "telegram:\(account.id):\(updateID):\(mediaKind):\(artifactIdentity)",
+            kind: "telegram_file",
+            type: type,
+            title: title,
+            uri: "telegram://file/\(fileID)",
+            summary: "\(title) attachment from chat \(message.chat.id.value) message \(message.messageId?.value ?? "update-\(updateID)").",
+            mimeType: mimeType,
+            telegramFileId: fileID,
+            telegramFileUniqueId: fileUniqueID,
+            telegramMediaKind: mediaKind,
+            width: media.width,
+            height: media.height
+        )
+    }
+
+    static func authorize(
+        account: TelegramBridgeAccountConfig,
+        envelope: TelegramBridgeGatewayEnvelope
+    ) -> TelegramBridgeGatewaySecurityDecision {
+        let allowUserIDs = Set(account.security?.allowUserIds ?? [])
+        let allowChatIDs = Set(account.security?.allowChatIds ?? [])
+        if account.security?.requirePairing == true {
+            return .init(decision: "denied", policyID: "telegram.pairing_required_unavailable")
+        }
+        if !allowUserIDs.isEmpty {
+            guard let fromUserID = envelope.fromUserID,
+                  allowUserIDs.contains(fromUserID)
+            else {
+                return .init(decision: "denied", policyID: "telegram.user_not_allowed")
+            }
+        }
+        if !allowChatIDs.isEmpty, !allowChatIDs.contains(envelope.chatID) {
+            return .init(decision: "denied", policyID: "telegram.chat_not_allowed")
+        }
+        let isGroupLike = envelope.chatID.hasPrefix("-") || ["group", "supergroup", "channel"].contains(envelope.chatType ?? "")
+        if isGroupLike {
+            switch account.security?.groupPolicy ?? "deny" {
+            case "allow":
+                break
+            case "mention_required":
+                let botUsername = account.botUsername?.trimmingCharacters(in: CharacterSet(charactersIn: "@").union(.whitespacesAndNewlines)) ?? ""
+                guard !botUsername.isEmpty else {
+                    return .init(decision: "denied", policyID: "telegram.bot_username_required")
+                }
+                guard envelope.text.localizedCaseInsensitiveContains("@\(botUsername)") else {
+                    return .init(decision: "denied", policyID: "telegram.group_mention_required")
+                }
+            default:
+                return .init(decision: "denied", policyID: "telegram.group_denied")
+            }
+        }
+        return .init(decision: "allowed", policyID: "telegram.allowlist")
+    }
+
+    static func runtimePayload(
+        envelope: TelegramBridgeGatewayEnvelope,
+        security: TelegramBridgeGatewaySecurityDecision
+    ) -> TelegramChannelMessagePayload {
+        TelegramChannelMessagePayload(
+            channelIdentity: envelope.channelIdentity,
+            message: .init(
+                idempotencyKey: envelope.idempotencyKey,
+                telegramUpdateId: envelope.updateID,
+                chatId: envelope.chatID,
+                messageId: envelope.runtimeMessageID,
+                fromUserId: envelope.fromUserID,
+                text: envelope.text,
+                attachments: envelope.attachments
+            ),
+            security: .init(decision: security.decision, policyId: security.policyID),
+            projection: .init(
+                surface: "telegram",
+                replyTarget: .init(chatId: envelope.chatID, messageId: envelope.runtimeMessageID)
+            )
+        )
+    }
+
+    static func outboundEvidence(
+        projection: TelegramBridgeGatewayOutboundProjection,
+        result: TelegramBridgeSender.Result
+    ) -> TelegramBridgeGatewayOutboundEvidence {
+        switch result {
+        case .success(let telegramMessageID, _):
+            return .init(
+                chatID: projection.chatID,
+                text: projection.text,
+                messageID: telegramMessageID,
+                updateID: projection.successUpdateID,
+                status: projection.successStatus
+            )
+        case .failure(_, let code, let failureMessage, _):
+            return .init(
+                chatID: projection.chatID,
+                text: failureMessage,
+                messageID: nil,
+                updateID: projection.failureUpdateID,
+                status: code
+            )
+        }
+    }
+
+    static func outboundExceptionEvidence(
+        projection: TelegramBridgeGatewayOutboundProjection,
+        errorMessage: String
+    ) -> TelegramBridgeGatewayOutboundEvidence {
+        .init(
+            chatID: projection.chatID,
+            text: errorMessage,
+            messageID: nil,
+            updateID: projection.failureUpdateID,
+            status: "telegram_send_failed"
+        )
+    }
+}
+
 struct TelegramBridgeTokenFile: Codable, Sendable {
     static let currentVersion = 1
 
@@ -215,6 +491,8 @@ protocol TelegramBridgeSending {
 @MainActor
 final class TelegramBridgeGearStore: ObservableObject {
     static let shared = TelegramBridgeGearStore()
+    private static let inboundPollIntervalNanoseconds: UInt64 = 2_000_000_000
+    private static let inboundPollIntervalMilliseconds = 2_000
 
     @Published private(set) var config: TelegramBridgeConfigFile = TelegramBridgeConfigFile()
     @Published private(set) var lastStatusMessage: String = "Ready"
@@ -224,6 +502,7 @@ final class TelegramBridgeGearStore: ObservableObject {
     private let tokenStore: TelegramBridgeTokenStore
     private let sender: any TelegramBridgeSending
     private let codexRemote: TelegramCodexRemoteBridge
+    private let telegramSendTimeoutSeconds: TimeInterval
     private var inboundTask: Task<Void, Never>?
     private var configuredCommandMenuAccountIDs: Set<String> = []
 
@@ -231,12 +510,14 @@ final class TelegramBridgeGearStore: ObservableObject {
         database: TelegramBridgeFileDatabase = TelegramBridgeFileDatabase(),
         tokenStore: TelegramBridgeTokenStore = TelegramBridgeTokenStore(),
         sender: any TelegramBridgeSending = TelegramBridgeSender(),
-        codexRemote: TelegramCodexRemoteBridge = TelegramCodexRemoteBridge()
+        codexRemote: TelegramCodexRemoteBridge = TelegramCodexRemoteBridge(),
+        telegramSendTimeoutSeconds: TimeInterval = 20
     ) {
         self.database = database
         self.tokenStore = tokenStore
         self.sender = sender
         self.codexRemote = codexRemote
+        self.telegramSendTimeoutSeconds = telegramSendTimeoutSeconds
         loadConfig()
     }
 
@@ -262,7 +543,7 @@ final class TelegramBridgeGearStore: ObservableObject {
         inboundTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.pollInboundOnce(runtimeHandler: runtimeHandler)
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                try? await Task.sleep(nanoseconds: Self.inboundPollIntervalNanoseconds)
             }
         }
         lastStatusMessage = "Telegram inbound service started."
@@ -362,48 +643,42 @@ final class TelegramBridgeGearStore: ObservableObject {
                 }
                 for update in updates.sorted(by: { $0.updateId < $1.updateId }) {
                     let nextOffset = update.updateId + 1
-                    guard let message = update.messagePayload,
-                          let text = (
-                            update.callbackCommandText ??
-                                (message.text ?? message.caption)
-                          )?.trimmingCharacters(in: .whitespacesAndNewlines),
-                          !text.isEmpty
-                    else {
+                    let envelope: TelegramBridgeGatewayEnvelope
+                    switch TelegramBridgeGateway.normalize(account: account, update: update) {
+                    case .accepted(let acceptedEnvelope):
+                        envelope = acceptedEnvelope
+                    case .dropped:
                         state.offsets[account.id] = nextOffset
                         try database.savePollingState(state)
                         continue
                     }
-                    let security = securityDecision(
-                        account: account,
-                        message: message,
-                        actorUserID: update.actorUserID
-                    )
+                    let security = TelegramBridgeGateway.authorize(account: account, envelope: envelope)
                     if let callbackQueryID = update.callbackQuery?.id {
                         try? await sender.answerCallbackQuery(
                             token: token,
                             callbackQueryID: callbackQueryID,
-                            text: security.decision == "allowed" ? nil : "Not authorized"
+                            text: security.isAllowed ? nil : "Not authorized"
                         )
                     }
-                    if security.decision == "allowed", isTelegramNewConversationCommand(text) {
+                    if security.isAllowed, isTelegramNewConversationCommand(envelope.text) {
                         try resetConversationThread(
                             accountID: account.id,
                             accountRole: account.role,
-                            chatID: message.chat.id.value
+                            chatID: envelope.chatID
                         )
                     }
                     recordConversationMessage(
                         accountID: account.id,
                         accountRole: account.role,
-                        chatID: message.chat.id.value,
-                        fromUserID: update.actorUserID,
+                        chatID: envelope.chatID,
+                        fromUserID: envelope.fromUserID,
                         direction: "inbound",
-                        text: update.callbackQuery == nil ? text : "[button] \(text)",
-                        messageID: message.messageId?.value,
-                        updateID: update.updateId,
+                        text: envelope.inboundLogText,
+                        messageID: envelope.messageID,
+                        updateID: envelope.updateID,
                         status: security.decision
                     )
-                    guard security.decision == "allowed" else {
+                    guard security.isAllowed else {
                         state.offsets[account.id] = nextOffset
                         try database.savePollingState(state)
                         continue
@@ -413,19 +688,19 @@ final class TelegramBridgeGearStore: ObservableObject {
                             try await handleCodexRemoteMessage(
                                 account: account,
                                 token: token,
-                                message: message,
-                                text: text,
-                                updateID: update.updateId
+                                chatID: envelope.chatID,
+                                text: envelope.text,
+                                updateID: envelope.updateID
                             )
                         } catch {
                             recordConversationMessage(
                                 accountID: account.id,
                                 accountRole: account.role,
-                                chatID: message.chat.id.value,
+                                chatID: envelope.chatID,
                                 direction: "outbound",
                                 text: error.localizedDescription,
                                 messageID: nil,
-                                updateID: update.updateId,
+                                updateID: envelope.updateID,
                                 status: "codex_remote_failed"
                             )
                             lastStatusMessage = error.localizedDescription
@@ -434,7 +709,7 @@ final class TelegramBridgeGearStore: ObservableObject {
                         try database.savePollingState(state)
                         continue
                     }
-                    let payload = channelPayload(account: account, update: update, message: message, text: text, security: security)
+                    let payload = TelegramBridgeGateway.runtimePayload(envelope: envelope, security: security)
                     let reply: String?
                     do {
                         reply = try await runtimeHandler(payload)
@@ -442,8 +717,8 @@ final class TelegramBridgeGearStore: ObservableObject {
                         await sendRuntimeFailureReply(
                             account: account,
                             token: token,
-                            chatID: message.chat.id.value,
-                            updateID: update.updateId,
+                            chatID: envelope.chatID,
+                            updateID: envelope.updateID,
                             error: runtimeError
                         )
                         state.offsets[account.id] = nextOffset
@@ -459,56 +734,47 @@ final class TelegramBridgeGearStore: ObservableObject {
                         continue
                     }
                     let replyText = normalizedTelegramReply(rawReplyText)
+                    let projection = TelegramBridgeGatewayOutboundProjection(
+                        chatID: envelope.chatID,
+                        text: replyText,
+                        parseMode: nil,
+                        disableWebPreview: nil,
+                        successStatus: "sent",
+                        successUpdateID: nil,
+                        failureUpdateID: nil
+                    )
                     let sendResult: TelegramBridgeSender.Result
                     do {
                         sendResult = try await sendTelegramMessageChunks(
                             token: token,
-                            target: .init(kind: "chat_id", value: message.chat.id.value),
-                            text: replyText,
-                            parseMode: nil,
-                            disableWebPreview: nil,
+                            target: .init(kind: "chat_id", value: projection.chatID),
+                            text: projection.text,
+                            parseMode: projection.parseMode,
+                            disableWebPreview: projection.disableWebPreview,
                             replyMarkup: nil
                         )
                     } catch {
-                        recordConversationMessage(
+                        recordOutboundEvidence(
                             accountID: account.id,
                             accountRole: account.role,
-                            chatID: message.chat.id.value,
-                            direction: "outbound",
-                            text: error.localizedDescription,
-                            messageID: nil,
-                            updateID: nil,
-                            status: "telegram_send_failed"
+                            evidence: TelegramBridgeGateway.outboundExceptionEvidence(
+                                projection: projection,
+                                errorMessage: error.localizedDescription
+                            )
                         )
                         state.offsets[account.id] = nextOffset
                         try database.savePollingState(state)
                         lastStatusMessage = error.localizedDescription
                         continue
                     }
-                    switch sendResult {
-                    case .success(let telegramMessageID, _):
-                        recordConversationMessage(
-                            accountID: account.id,
-                            accountRole: account.role,
-                            chatID: message.chat.id.value,
-                            direction: "outbound",
-                            text: replyText,
-                            messageID: telegramMessageID,
-                            updateID: nil,
-                            status: "sent"
+                    recordOutboundEvidence(
+                        accountID: account.id,
+                        accountRole: account.role,
+                        evidence: TelegramBridgeGateway.outboundEvidence(
+                            projection: projection,
+                            result: sendResult
                         )
-                    case .failure(_, let code, let failureMessage, _):
-                        recordConversationMessage(
-                            accountID: account.id,
-                            accountRole: account.role,
-                            chatID: message.chat.id.value,
-                            direction: "outbound",
-                            text: failureMessage,
-                            messageID: nil,
-                            updateID: nil,
-                            status: code
-                        )
-                    }
+                    )
                     state.offsets[account.id] = nextOffset
                     try database.savePollingState(state)
                 }
@@ -526,49 +792,40 @@ final class TelegramBridgeGearStore: ObservableObject {
         error: Error
     ) async {
         let replyText = runtimeFailureTelegramReplyText(for: error, token: token)
+        let projection = TelegramBridgeGatewayOutboundProjection(
+            chatID: chatID,
+            text: replyText,
+            parseMode: nil,
+            disableWebPreview: nil,
+            successStatus: "runtime_failed",
+            successUpdateID: updateID,
+            failureUpdateID: updateID
+        )
         do {
             let sendResult = try await sendTelegramMessageChunks(
                 token: token,
-                target: .init(kind: "chat_id", value: chatID),
-                text: replyText,
-                parseMode: nil,
-                disableWebPreview: nil,
+                target: .init(kind: "chat_id", value: projection.chatID),
+                text: projection.text,
+                parseMode: projection.parseMode,
+                disableWebPreview: projection.disableWebPreview,
                 replyMarkup: nil
             )
-            switch sendResult {
-            case .success(let telegramMessageID, _):
-                recordConversationMessage(
-                    accountID: account.id,
-                    accountRole: account.role,
-                    chatID: chatID,
-                    direction: "outbound",
-                    text: replyText,
-                    messageID: telegramMessageID,
-                    updateID: updateID,
-                    status: "runtime_failed"
-                )
-            case .failure(_, let code, let failureMessage, _):
-                recordConversationMessage(
-                    accountID: account.id,
-                    accountRole: account.role,
-                    chatID: chatID,
-                    direction: "outbound",
-                    text: failureMessage,
-                    messageID: nil,
-                    updateID: updateID,
-                    status: code
-                )
-            }
-        } catch {
-            recordConversationMessage(
+            recordOutboundEvidence(
                 accountID: account.id,
                 accountRole: account.role,
-                chatID: chatID,
-                direction: "outbound",
-                text: error.localizedDescription,
-                messageID: nil,
-                updateID: updateID,
-                status: "telegram_send_failed"
+                evidence: TelegramBridgeGateway.outboundEvidence(
+                    projection: projection,
+                    result: sendResult
+                )
+            )
+        } catch {
+            recordOutboundEvidence(
+                accountID: account.id,
+                accountRole: account.role,
+                evidence: TelegramBridgeGateway.outboundExceptionEvidence(
+                    projection: projection,
+                    errorMessage: error.localizedDescription
+                )
             )
             lastStatusMessage = error.localizedDescription
         }
@@ -623,14 +880,16 @@ final class TelegramBridgeGearStore: ObservableObject {
         var messageIDs: [String] = []
         var sentAt = ISO8601DateFormatter().string(from: Date())
         for (index, chunk) in chunks.enumerated() {
-            let result = try await sender.sendMessage(
-                token: token,
-                target: target,
-                text: chunk,
-                parseMode: parseMode,
-                disableWebPreview: disableWebPreview,
-                replyMarkup: index == 0 ? replyMarkup : nil
-            )
+            let result = try await withTelegramSendTimeout {
+                try await self.sender.sendMessage(
+                    token: token,
+                    target: target,
+                    text: chunk,
+                    parseMode: parseMode,
+                    disableWebPreview: disableWebPreview,
+                    replyMarkup: index == 0 ? replyMarkup : nil
+                )
+            }
             switch result {
             case .success(let telegramMessageID, let chunkSentAt):
                 messageIDs.append(telegramMessageID)
@@ -642,119 +901,86 @@ final class TelegramBridgeGearStore: ObservableObject {
         return .success(telegramMessageID: messageIDs.joined(separator: ","), sentAt: sentAt)
     }
 
+    private func withTelegramSendTimeout(
+        operation: @escaping @MainActor () async throws -> TelegramBridgeSender.Result
+    ) async throws -> TelegramBridgeSender.Result {
+        guard telegramSendTimeoutSeconds > 0 else {
+            return try await operation()
+        }
+        let timeoutNanoseconds = UInt64(telegramSendTimeoutSeconds * 1_000_000_000)
+        let timeoutDescription = formatSeconds(telegramSendTimeoutSeconds)
+        return try await withThrowingTaskGroup(of: TelegramBridgeSender.Result.self) { group in
+            group.addTask {
+                try await operation()
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                throw TelegramBridgeGearError.tokenUnavailable(
+                    "Telegram send timed out after \(timeoutDescription) seconds."
+                )
+            }
+            guard let result = try await group.next() else {
+                throw TelegramBridgeGearError.tokenUnavailable("Telegram send timed out.")
+            }
+            group.cancelAll()
+            return result
+        }
+    }
+
     private func handleCodexRemoteMessage(
         account: TelegramBridgeAccountConfig,
         token: String,
-        message: TelegramBridgeSender.Update.MessageLike,
+        chatID: String,
         text: String,
         updateID: Int
     ) async throws {
         let reply = await codexRemote.reply(
             for: account,
             text: text,
-            chatID: message.chat.id.value
+            chatID: chatID
         )
         let replyText = normalizedTelegramReply(reply.text)
-        let sendResult = try await sendTelegramMessageChunks(
-            token: token,
-            target: .init(kind: "chat_id", value: message.chat.id.value),
+        let projection = TelegramBridgeGatewayOutboundProjection(
+            chatID: chatID,
             text: replyText,
             parseMode: nil,
             disableWebPreview: true,
+            successStatus: reply.status,
+            successUpdateID: nil,
+            failureUpdateID: updateID
+        )
+        let sendResult = try await sendTelegramMessageChunks(
+            token: token,
+            target: .init(kind: "chat_id", value: projection.chatID),
+            text: projection.text,
+            parseMode: projection.parseMode,
+            disableWebPreview: projection.disableWebPreview,
             replyMarkup: reply.replyMarkup
         )
-        switch sendResult {
-        case .success(let telegramMessageID, _):
-            recordConversationMessage(
-                accountID: account.id,
-                accountRole: account.role,
-                chatID: message.chat.id.value,
-                direction: "outbound",
-                text: replyText,
-                messageID: telegramMessageID,
-                updateID: nil,
-                status: reply.status
+        recordOutboundEvidence(
+            accountID: account.id,
+            accountRole: account.role,
+            evidence: TelegramBridgeGateway.outboundEvidence(
+                projection: projection,
+                result: sendResult
             )
-        case .failure(_, let code, let failureMessage, _):
-            recordConversationMessage(
-                accountID: account.id,
-                accountRole: account.role,
-                chatID: message.chat.id.value,
-                direction: "outbound",
-                text: failureMessage,
-                messageID: nil,
-                updateID: updateID,
-                status: code
-            )
-        }
+        )
     }
 
-    private func securityDecision(
-        account: TelegramBridgeAccountConfig,
-        message: TelegramBridgeSender.Update.MessageLike,
-        actorUserID: String? = nil
-    ) -> (decision: String, policyID: String) {
-        let allowUserIDs = Set(account.security?.allowUserIds ?? [])
-        let allowChatIDs = Set(account.security?.allowChatIds ?? [])
-        let fromUserID = actorUserID ?? message.from?.id.value
-        let chatID = message.chat.id.value
-        if account.security?.requirePairing == true {
-            return ("denied", "telegram.pairing_required_unavailable")
-        }
-        if !allowUserIDs.isEmpty {
-            guard let fromUserID, allowUserIDs.contains(fromUserID) else {
-                return ("denied", "telegram.user_not_allowed")
-            }
-        }
-        if !allowChatIDs.isEmpty, !allowChatIDs.contains(chatID) {
-            return ("denied", "telegram.chat_not_allowed")
-        }
-        let isGroupLike = chatID.hasPrefix("-") || ["group", "supergroup", "channel"].contains(message.chat.type ?? "")
-        if isGroupLike {
-            switch account.security?.groupPolicy ?? "deny" {
-            case "allow":
-                break
-            case "mention_required":
-                let botUsername = account.botUsername?.trimmingCharacters(in: CharacterSet(charactersIn: "@").union(.whitespacesAndNewlines)) ?? ""
-                guard !botUsername.isEmpty else {
-                    return ("denied", "telegram.bot_username_required")
-                }
-                let messageText = message.text ?? message.caption ?? ""
-                guard messageText.localizedCaseInsensitiveContains("@\(botUsername)") else {
-                    return ("denied", "telegram.group_mention_required")
-                }
-            default:
-                return ("denied", "telegram.group_denied")
-            }
-        }
-        return ("allowed", "telegram.allowlist")
-    }
-
-    private func channelPayload(
-        account: TelegramBridgeAccountConfig,
-        update: TelegramBridgeSender.Update,
-        message: TelegramBridgeSender.Update.MessageLike,
-        text: String,
-        security: (decision: String, policyID: String)
-    ) -> TelegramChannelMessagePayload {
-        let chatID = message.chat.id.value
-        let messageID = message.messageId?.value ?? "update-\(update.updateId)"
-        return TelegramChannelMessagePayload(
-            channelIdentity: "telegram:\(account.id):chat:\(chatID)",
-            message: .init(
-                idempotencyKey: "telegram:update:\(update.updateId)",
-                telegramUpdateId: update.updateId,
-                chatId: chatID,
-                messageId: messageID,
-                fromUserId: message.from?.id.value,
-                text: text,
-                attachments: []
-            ),
-            security: .init(decision: security.decision, policyId: security.policyID),
-            projection: .init(
-                surface: "telegram",
-                replyTarget: .init(chatId: chatID, messageId: messageID)
-            )
+    private func recordOutboundEvidence(
+        accountID: String,
+        accountRole: String?,
+        evidence: TelegramBridgeGatewayOutboundEvidence
+    ) {
+        recordConversationMessage(
+            accountID: accountID,
+            accountRole: accountRole,
+            chatID: evidence.chatID,
+            direction: "outbound",
+            text: evidence.text,
+            messageID: evidence.messageID,
+            updateID: evidence.updateID,
+            status: evidence.status
         )
     }
 
@@ -1065,6 +1291,8 @@ final class TelegramBridgeGearStore: ObservableObject {
 
     private func statusPayload() throws -> [String: Any] {
         let config = try database.loadConfig()
+        let pollingState = (try? database.loadPollingState()) ?? TelegramBridgePollingState()
+        let gatewayHealth = gatewayHealthPayload(config: config, pollingState: pollingState)
         self.config = config
         return [
             "gear_id": TelegramBridgeGearRuntimeConstants.gearID,
@@ -1072,8 +1300,11 @@ final class TelegramBridgeGearStore: ObservableObject {
             "status": "success",
             "fallback_attempted": false,
             "config_path": database.configURL.path,
+            "state_path": database.pollingStateURL.path,
             "account_count": config.accounts.count,
             "push_channel_count": config.pushChannels.count,
+            "polling_offsets": pollingState.offsets,
+            "gateway_health": gatewayHealth,
             "accounts": config.accounts.map { account in
                 let tokenStatus = tokenStore.status(accountID: account.id)
                 var payload: [String: Any] = [
@@ -1093,6 +1324,98 @@ final class TelegramBridgeGearStore: ObservableObject {
             },
             "channels": channelSummaries(config.pushChannels)
         ]
+    }
+
+    private func gatewayHealthPayload(
+        config: TelegramBridgeConfigFile,
+        pollingState: TelegramBridgePollingState
+    ) -> [String: Any] {
+        var issues: [[String: Any]] = []
+        var missingTokenAccountIDs: [String] = []
+        var webhookAccountIDs: [String] = []
+        let accounts = config.accounts.map { account -> [String: Any] in
+            let tokenStatus = tokenStore.status(accountID: account.id)
+            if !tokenStatus.configured {
+                missingTokenAccountIDs.append(account.id)
+                issues.append([
+                    "code": tokenStatus.status == "error" ? "token_status_unavailable" : "token_missing",
+                    "severity": "failed",
+                    "account_id": account.id,
+                    "message": tokenStatus.error ?? "Telegram bot token is missing for account `\(account.id)`."
+                ])
+            }
+            if account.transport.mode == "webhook", account.role != "push_only" {
+                webhookAccountIDs.append(account.id)
+                issues.append([
+                    "code": "webhook_transport_not_ready",
+                    "severity": "blocked",
+                    "account_id": account.id,
+                    "message": "Telegram webhook transport is configured for account `\(account.id)`, but webhook ingress is not enabled in this release."
+                ])
+            }
+            var payload: [String: Any] = [
+                "id": account.id,
+                "role": account.role,
+                "transport": account.transport.mode,
+                "token_configured": tokenStatus.configured,
+                "token_status": tokenStatus.status
+            ]
+            if let error = tokenStatus.error {
+                payload["token_error"] = error
+            }
+            if let offset = pollingState.offsets[account.id] {
+                payload["polling_offset"] = offset
+            }
+            return payload
+        }
+
+        return [
+            "status": gatewayHealthStatus(issues: issues),
+            "fallback_attempted": false,
+            "lifecycle": gatewayLifecyclePayload(),
+            "polling_account_count": config.accounts.filter { $0.transport.mode == "polling" }.count,
+            "webhook_account_count": config.accounts.filter { $0.transport.mode == "webhook" }.count,
+            "push_only_account_count": config.accounts.filter { $0.role == "push_only" }.count,
+            "enabled_push_channel_count": config.pushChannels.filter(\.enabled).count,
+            "disabled_push_channel_count": config.pushChannels.filter { !$0.enabled }.count,
+            "missing_token_account_ids": missingTokenAccountIDs,
+            "webhook_account_ids": webhookAccountIDs,
+            "accounts": accounts,
+            "issues": issues
+        ]
+    }
+
+    private func gatewayLifecyclePayload() -> [String: Any] {
+        [
+            "mode": "native_app",
+            "polling_loop": inboundTask == nil ? "stopped" : "running",
+            "poll_interval_ms": Self.inboundPollIntervalMilliseconds,
+            "webhook_ready": false,
+            "webhook_status": "not_implemented",
+            "fallback_attempted": false
+        ]
+    }
+
+    private func gatewayHealthStatus(issues: [[String: Any]]) -> String {
+        issues.reduce("success") { current, issue in
+            guard let severity = issue["severity"] as? String else {
+                return current
+            }
+            return gatewayHealthStatusRank(severity) > gatewayHealthStatusRank(current) ? severity : current
+        }
+    }
+
+    private func gatewayHealthStatusRank(_ status: String) -> Int {
+        switch status {
+        case "blocked":
+            return 1
+        case "degraded":
+            return 2
+        case "failed":
+            return 3
+        default:
+            return 0
+        }
     }
 
     private func listChannelsPayload(enabledOnly: Bool) throws -> [String: Any] {
@@ -1729,7 +2052,7 @@ struct TelegramBridgeTokenStore {
 }
 
 struct TelegramBridgeSender {
-    enum Result {
+    enum Result: Sendable {
         case success(telegramMessageID: String, sentAt: String)
         case failure(status: String, code: String, message: String, retryAfterMs: Int?)
     }
@@ -1787,6 +2110,32 @@ struct TelegramBridgeSender {
 
     struct Update: Decodable {
         struct MessageLike: Decodable {
+            struct AttachmentPresence: Decodable {
+                init(from decoder: Decoder) throws {}
+            }
+
+            struct MediaFile: Decodable {
+                var fileID: String
+                var fileUniqueID: String?
+                var width: Int?
+                var height: Int?
+
+                enum CodingKeys: String, CodingKey {
+                    case fileID = "file_id"
+                    case fileUniqueID = "file_unique_id"
+                    case width
+                    case height
+                }
+
+                init(from decoder: Decoder) throws {
+                    let container = try decoder.container(keyedBy: CodingKeys.self)
+                    fileID = try container.decodeIfPresent(String.self, forKey: .fileID) ?? ""
+                    fileUniqueID = try container.decodeIfPresent(String.self, forKey: .fileUniqueID)
+                    width = try container.decodeIfPresent(Int.self, forKey: .width)
+                    height = try container.decodeIfPresent(Int.self, forKey: .height)
+                }
+            }
+
             struct Chat: Decodable {
                 var id: FlexibleID
                 var type: String?
@@ -1804,6 +2153,21 @@ struct TelegramBridgeSender {
             var chat: Chat
             var text: String?
             var caption: String?
+            var photo: [MediaFile]?
+            var document: MediaFile?
+            var video: MediaFile?
+            var animation: MediaFile?
+            var audio: MediaFile?
+            var voice: MediaFile?
+            var videoNote: MediaFile?
+            var sticker: MediaFile?
+            var paidMedia: AttachmentPresence?
+            var contact: AttachmentPresence?
+            var location: AttachmentPresence?
+            var venue: AttachmentPresence?
+            var poll: AttachmentPresence?
+            var dice: AttachmentPresence?
+            var game: AttachmentPresence?
 
             enum CodingKeys: String, CodingKey {
                 case messageId = "message_id"
@@ -1811,6 +2175,37 @@ struct TelegramBridgeSender {
                 case chat
                 case text
                 case caption
+                case photo
+                case document
+                case video
+                case animation
+                case audio
+                case voice
+                case videoNote = "video_note"
+                case sticker
+                case paidMedia = "paid_media"
+                case contact
+                case location
+                case venue
+                case poll
+                case dice
+                case game
+            }
+
+            var unsupportedAttachmentKey: String? {
+                let unsupportedKeys: [(String, AttachmentPresence?)] = [
+                    ("paid_media", paidMedia),
+                    ("contact", contact),
+                    ("location", location),
+                    ("venue", venue),
+                    ("poll", poll),
+                    ("dice", dice),
+                    ("game", game)
+                ]
+                for (key, value) in unsupportedKeys where value != nil {
+                    return key
+                }
+                return nil
             }
         }
 
@@ -2233,6 +2628,218 @@ struct TelegramCodexRemoteReply: Hashable, Sendable {
     var replyMarkup: TelegramBridgeReplyMarkup? = nil
 }
 
+struct TelegramCodexRemotePendingPrompt: Hashable, Sendable {
+    var sessionID: String
+    var prompt: String
+}
+
+enum TelegramCodexRemoteProjectListMode: String, Hashable, Sendable {
+    case all
+    case tracked
+}
+
+struct TelegramCodexRemoteSessionState: Hashable, Sendable {
+    var selectedThreadID: String?
+    var pendingPrompt: TelegramCodexRemotePendingPrompt?
+    var projectListMode: TelegramCodexRemoteProjectListMode = .all
+    var lastThreadIDs: [String] = []
+
+    mutating func clearActiveSelection() {
+        selectedThreadID = nil
+        pendingPrompt = nil
+        lastThreadIDs = []
+    }
+
+    mutating func prepareProjectList(mode: TelegramCodexRemoteProjectListMode) {
+        clearActiveSelection()
+        projectListMode = mode
+    }
+
+    mutating func rememberThreadList(_ threadIDs: [String]) {
+        lastThreadIDs = threadIDs
+    }
+
+    mutating func selectThread(_ threadID: String) {
+        selectedThreadID = threadID
+    }
+
+    mutating func stagePrompt(sessionID: String, prompt: String) {
+        pendingPrompt = TelegramCodexRemotePendingPrompt(sessionID: sessionID, prompt: prompt)
+    }
+
+    mutating func clearPendingPrompt() {
+        pendingPrompt = nil
+    }
+
+    mutating func popPendingPrompt(matching selector: String?) -> TelegramCodexRemotePendingPrompt? {
+        guard let pendingPrompt,
+              selector == nil || selector == pendingPrompt.sessionID
+        else {
+            return nil
+        }
+        self.pendingPrompt = nil
+        return pendingPrompt
+    }
+}
+
+enum TelegramCodexRemoteRoute: Hashable, Sendable {
+    case usage
+    case plainText(prompt: String)
+    case help
+    case list
+    case tracked
+    case projectPage(page: Int)
+    case project(selector: String?)
+    case threadPage(selector: String?, page: Int)
+    case track(selector: String?)
+    case untrack(selector: String?)
+    case open(selector: String?)
+    case latest(selector: String?)
+    case desktop(selector: String?)
+    case send(arguments: String?)
+    case confirm(selector: String?)
+    case cancel
+    case unsupported
+}
+
+enum TelegramCodexRemoteSendDecision: Hashable, Sendable {
+    case blocked
+    case stageSelected(sessionID: String, prompt: String)
+    case sendExplicit(sessionID: String, prompt: String)
+}
+
+enum TelegramCodexRemoteSendPlanner {
+    static func decision(
+        arguments: String?,
+        selectedSessionID: String?,
+        explicitSessionExists: (String) -> Bool
+    ) -> TelegramCodexRemoteSendDecision {
+        guard let arguments = arguments?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !arguments.isEmpty
+        else {
+            return .blocked
+        }
+
+        let pieces = arguments.split(maxSplits: 1, whereSeparator: \.isWhitespace).map(String.init)
+        if let sessionID = pieces.first,
+           pieces.count >= 2,
+           explicitSessionExists(sessionID)
+        {
+            return .sendExplicit(sessionID: sessionID, prompt: pieces[1])
+        }
+
+        if let selectedSessionID {
+            return .stageSelected(sessionID: selectedSessionID, prompt: arguments)
+        }
+
+        guard let sessionID = pieces.first,
+              pieces.count >= 2
+        else {
+            return .blocked
+        }
+        return .sendExplicit(sessionID: sessionID, prompt: pieces[1])
+    }
+}
+
+enum TelegramCodexRemoteRouter {
+    static func commandText(forCallbackData data: String?) -> String? {
+        guard let data = data?.trimmingCharacters(in: .whitespacesAndNewlines), !data.isEmpty else {
+            return nil
+        }
+        let pieces = data.split(separator: ":").map(String.init)
+        guard let action = pieces.first else {
+            return nil
+        }
+        let value = pieces.dropFirst().first ?? ""
+        switch action {
+        case "project":
+            return "/project \(value)"
+        case "projectPage":
+            return "/projectPage \(value)"
+        case "threadPage":
+            guard pieces.count >= 3 else { return nil }
+            return "/threadPage \(pieces[1]) \(pieces[2])"
+        case "track":
+            return "/track \(value)"
+        case "untrack":
+            return "/untrack \(value)"
+        case "open":
+            return "/open \(value)"
+        case "latest":
+            return "/latest \(value)"
+        case "desktop":
+            return "/desktop \(value)"
+        case "confirm":
+            return "/confirm \(value)"
+        case "cancel":
+            return "/cancel"
+        default:
+            return nil
+        }
+    }
+
+    static func route(forCallbackData data: String?) -> TelegramCodexRemoteRoute? {
+        commandText(forCallbackData: data).map { route($0) }
+    }
+
+    static func route(_ text: String) -> TelegramCodexRemoteRoute {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = trimmed.split(maxSplits: 2, whereSeparator: \.isWhitespace).map(String.init)
+        guard let rawCommand = parts.first else {
+            return .usage
+        }
+        let command = normalizedCommand(rawCommand)
+        guard command.hasPrefix("/") else {
+            return .plainText(prompt: trimmed)
+        }
+        switch command {
+        case "/start", "/help":
+            return .help
+        case "/list", "/recent":
+            return .list
+        case "/tracked":
+            return .tracked
+        case "/projectpage":
+            return .projectPage(page: Int(parts.dropFirst().first ?? "") ?? 1)
+        case "/project":
+            return .project(selector: argument(parts.dropFirst()))
+        case "/threadpage":
+            let selector = parts.dropFirst().first?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            let page = Int(parts.dropFirst(2).first ?? "") ?? 1
+            return .threadPage(selector: selector, page: page)
+        case "/track":
+            return .track(selector: argument(parts.dropFirst()))
+        case "/untrack":
+            return .untrack(selector: argument(parts.dropFirst()))
+        case "/open":
+            return .open(selector: argument(parts.dropFirst()))
+        case "/latest":
+            return .latest(selector: argument(parts.dropFirst()))
+        case "/desktop":
+            return .desktop(selector: argument(parts.dropFirst()))
+        case "/send":
+            return .send(arguments: argument(parts.dropFirst()))
+        case "/confirm":
+            return .confirm(selector: argument(parts.dropFirst()))
+        case "/cancel":
+            return .cancel
+        default:
+            return .unsupported
+        }
+    }
+
+    private static func normalizedCommand(_ value: String) -> String {
+        guard let command = value.split(separator: "@", maxSplits: 1).first else {
+            return ""
+        }
+        return String(command).lowercased()
+    }
+
+    private static func argument<S: Sequence>(_ parts: S) -> String? where S.Element == String {
+        parts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+    }
+}
+
 @MainActor
 final class TelegramCodexRemoteBridge {
     struct Project: Hashable, Sendable {
@@ -2251,11 +2858,6 @@ final class TelegramCodexRemoteBridge {
         var page: Int
         var pageCount: Int
         var start: Int
-    }
-
-    struct PendingPrompt: Hashable, Sendable {
-        var sessionID: String
-        var prompt: String
     }
 
     struct TrackedProject: Codable, Hashable, Sendable {
@@ -2292,15 +2894,17 @@ final class TelegramCodexRemoteBridge {
         }
     }
 
-    private enum ProjectListMode: String, Sendable {
-        case all
-        case tracked
-    }
-
     private static let globalProject = Project(key: "global", name: "Global", cwd: "")
     private static let projectMarkerNames = [".git", "package.json", "pyproject.toml", "Cargo.toml", "go.mod", "AGENTS.md"]
     private static let projectPageSize = 6
     private static let threadPageSize = 6
+    private static let fileScanRecentDirectoryLimit = 14
+    private static let fileScanMaximumFilesPerDirectory = 60
+    private static let fileScanMaximumDirectoryEntryReads = 240
+    private static let fileScanMaximumCandidateCount = 300
+    private static let fileScanThreadReadLineLimit = 400
+    private static let fileScanLatestReplyTailBytes = 512 * 1024
+    private static let fileScanLatestReplyLineLimit = 600
 
     private let fileManager: FileManager
     private let codexHomeURL: URL
@@ -2308,10 +2912,7 @@ final class TelegramCodexRemoteBridge {
     private let trackingStateURL: URL
     private let runner: any GearCommandRunning
     private let timeoutSeconds: TimeInterval
-    private var selectedThreadIDsByChat: [String: String] = [:]
-    private var pendingPromptsByChat: [String: PendingPrompt] = [:]
-    private var projectListModesByChat: [String: ProjectListMode] = [:]
-    private var lastThreadIDsByChat: [String: [String]] = [:]
+    private var sessionStatesByChat: [String: TelegramCodexRemoteSessionState] = [:]
 
     init(
         fileManager: FileManager = .default,
@@ -2334,39 +2935,7 @@ final class TelegramCodexRemoteBridge {
     }
 
     nonisolated static func commandText(forCallbackData data: String?) -> String? {
-        guard let data = data?.trimmingCharacters(in: .whitespacesAndNewlines), !data.isEmpty else {
-            return nil
-        }
-        let pieces = data.split(separator: ":").map(String.init)
-        guard let action = pieces.first else {
-            return nil
-        }
-        let value = pieces.dropFirst().first ?? ""
-        switch action {
-        case "project":
-            return "/project \(value)"
-        case "projectPage":
-            return "/projectPage \(value)"
-        case "threadPage":
-            guard pieces.count >= 3 else { return nil }
-            return "/threadPage \(pieces[1]) \(pieces[2])"
-        case "track":
-            return "/track \(value)"
-        case "untrack":
-            return "/untrack \(value)"
-        case "open":
-            return "/open \(value)"
-        case "latest":
-            return "/latest \(value)"
-        case "desktop":
-            return "/desktop \(value)"
-        case "confirm":
-            return "/confirm \(value)"
-        case "cancel":
-            return "/cancel"
-        default:
-            return nil
-        }
+        TelegramCodexRemoteRouter.commandText(forCallbackData: data)
     }
 
     func reply(
@@ -2374,122 +2943,112 @@ final class TelegramCodexRemoteBridge {
         text: String,
         chatID: String? = nil
     ) async -> TelegramCodexRemoteReply {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let parts = trimmed.split(maxSplits: 2, whereSeparator: \.isWhitespace).map(String.init)
-        guard let rawCommand = parts.first else {
-            return .init(status: "codex_blocked", text: codexUsageText())
-        }
-        let command = normalizedCommand(rawCommand)
         let stateKey = chatStateKey(account: account, chatID: chatID)
-        if !command.hasPrefix("/") {
-            guard let sessionID = selectedThreadIDsByChat[stateKey] else {
+        let source = account.codex?.threadSource ?? "file_scan"
+        let mode = account.codex?.sendMode ?? "cli_resume"
+        func clearActiveSelection() {
+            updateSessionState(stateKey) { state in
+                state.clearActiveSelection()
+            }
+        }
+        switch TelegramCodexRemoteRouter.route(text) {
+        case .usage:
+            return .init(status: "codex_blocked", text: codexUsageText())
+        case .plainText(let prompt):
+            guard let sessionID = sessionState(for: stateKey).selectedThreadID else {
                 return .init(status: "codex_blocked", text: "No session selected. Use `/list`, choose a project, then Open a thread.")
             }
             return stagePromptReply(
                 sessionID: sessionID,
-                prompt: trimmed,
-                source: account.codex?.threadSource ?? "file_scan",
+                prompt: prompt,
+                source: source,
                 stateKey: stateKey
             )
-        }
-        let source = account.codex?.threadSource ?? "file_scan"
-        let mode = account.codex?.sendMode ?? "cli_resume"
-        func clearActiveSelection() {
-            selectedThreadIDsByChat.removeValue(forKey: stateKey)
-            pendingPromptsByChat.removeValue(forKey: stateKey)
-            lastThreadIDsByChat.removeValue(forKey: stateKey)
-        }
-        switch command {
-        case "/start", "/help":
+        case .help:
             return .init(status: "codex_success", text: codexHelpText())
-        case "/list", "/recent":
-            clearActiveSelection()
-            projectListModesByChat[stateKey] = .all
+        case .list:
+            updateSessionState(stateKey) { state in
+                state.prepareProjectList(mode: .all)
+            }
             return projectListReply(source: source, stateKey: stateKey, mode: .all, page: 1)
-        case "/tracked":
-            clearActiveSelection()
-            projectListModesByChat[stateKey] = .tracked
+        case .tracked:
+            updateSessionState(stateKey) { state in
+                state.prepareProjectList(mode: .tracked)
+            }
             return projectListReply(source: source, stateKey: stateKey, mode: .tracked, page: 1)
-        case "/projectpage":
-            let page = Int(parts.dropFirst().first ?? "") ?? 1
-            let listMode = projectListModesByChat[stateKey] ?? .all
+        case .projectPage(let page):
+            let listMode = sessionState(for: stateKey).projectListMode
             return projectListReply(source: source, stateKey: stateKey, mode: listMode, page: page)
-        case "/project":
+        case .project(let selector):
             clearActiveSelection()
-            let selector = parts.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
             return projectThreadsReply(
-                selector: selector.nilIfEmpty,
+                selector: selector,
                 page: 1,
                 source: source,
                 stateKey: stateKey
             )
-        case "/threadpage":
+        case .threadPage(let selector, let page):
             clearActiveSelection()
-            let selector = parts.dropFirst().first?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let page = Int(parts.dropFirst(2).first ?? "") ?? 1
             return projectThreadsReply(
-                selector: selector?.nilIfEmpty,
+                selector: selector,
                 page: page,
                 source: source,
                 stateKey: stateKey
             )
-        case "/track":
-            let selector = parts.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-            return trackProjectReply(selector: selector.nilIfEmpty, source: source, stateKey: stateKey)
-        case "/untrack":
-            let selector = parts.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-            return untrackProjectReply(selector: selector.nilIfEmpty, source: source, stateKey: stateKey)
-        case "/open":
-            let selector = parts.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        case .track(let selector):
+            return trackProjectReply(selector: selector, source: source, stateKey: stateKey)
+        case .untrack(let selector):
+            return untrackProjectReply(selector: selector, source: source, stateKey: stateKey)
+        case .open(let selector):
             return latestThreadReply(
-                selector: selector.nilIfEmpty,
+                selector: selector,
                 source: source,
                 opened: true,
                 stateKey: stateKey
             )
-        case "/latest":
-            let selector = parts.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        case .latest(let selector):
             return latestThreadReply(
-                selector: selector.nilIfEmpty,
+                selector: selector,
                 source: source,
                 opened: false,
                 stateKey: stateKey
             )
-        case "/desktop":
-            let selector = parts.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        case .desktop(let selector):
             return await openDesktopThreadReply(
-                selector: selector.nilIfEmpty,
+                selector: selector,
                 source: source,
                 stateKey: stateKey
             )
-        case "/send":
-            if parts.count >= 3 {
-                return await sendPromptReply(
-                    mode: mode,
-                    sessionID: parts[1],
-                    prompt: parts[2]
-                )
-            }
-            guard parts.count >= 2,
-                  let sessionID = selectedThreadIDsByChat[stateKey]
-            else {
-                return .init(status: "codex_blocked", text: "Select a thread first or use `/send <session_id> <text>`.\n\n\(codexUsageText())")
-            }
-            return stagePromptReply(
-                sessionID: sessionID,
-                prompt: parts[1],
+        case .send(let arguments):
+            return await sendPromptRouteReply(
+                arguments: arguments,
                 source: source,
+                mode: mode,
                 stateKey: stateKey
             )
-        case "/confirm":
-            let selector = parts.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-            return await confirmPromptReply(selector: selector.nilIfEmpty, mode: mode, stateKey: stateKey)
-        case "/cancel":
-            pendingPromptsByChat.removeValue(forKey: stateKey)
+        case .confirm(let selector):
+            return await confirmPromptReply(selector: selector, mode: mode, stateKey: stateKey)
+        case .cancel:
+            updateSessionState(stateKey) { state in
+                state.clearPendingPrompt()
+            }
             return .init(status: "codex_success", text: "Cancelled pending Codex Remote prompt.")
-        default:
+        case .unsupported:
             return .init(status: "codex_blocked", text: codexUsageText())
         }
+    }
+
+    private func sessionState(for stateKey: String) -> TelegramCodexRemoteSessionState {
+        sessionStatesByChat[stateKey] ?? TelegramCodexRemoteSessionState()
+    }
+
+    private func updateSessionState(
+        _ stateKey: String,
+        _ update: (inout TelegramCodexRemoteSessionState) -> Void
+    ) {
+        var state = sessionState(for: stateKey)
+        update(&state)
+        sessionStatesByChat[stateKey] = state
     }
 
     private func openDesktopThreadReply(selector: String?, source: String, stateKey: String) async -> TelegramCodexRemoteReply {
@@ -2499,14 +3058,16 @@ final class TelegramCodexRemoteBridge {
                 text: "Codex desktop open failed: Codex app-server thread reading is not configured for Telegram Bridge."
             )
         }
-        guard let selector = selector?.nilIfEmpty ?? selectedThreadIDsByChat[stateKey] else {
+        guard let selector = selector?.nilIfEmpty ?? sessionState(for: stateKey).selectedThreadID else {
             return .init(status: "codex_blocked", text: "Pick a thread from `/list` or pass a session id to `/desktop`.")
         }
         do {
             guard let thread = try resolveFileScanThread(selector: selector, stateKey: stateKey) else {
                 return .init(status: "codex_failed", text: "Session not found: \(selector)")
             }
-            selectedThreadIDsByChat[stateKey] = thread.id
+            updateSessionState(stateKey) { state in
+                state.selectThread(thread.id)
+            }
             let encodedID = thread.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? thread.id
             let url = "codex://threads/\(encodedID)"
             let openResult = await runner.run("/usr/bin/open", arguments: ["-a", "Codex", url], timeoutSeconds: 5)
@@ -2526,7 +3087,7 @@ final class TelegramCodexRemoteBridge {
     private func projectListReply(
         source: String,
         stateKey: String,
-        mode: ProjectListMode,
+        mode: TelegramCodexRemoteProjectListMode,
         page: Int
     ) -> TelegramCodexRemoteReply {
         guard source == "file_scan" else {
@@ -2554,9 +3115,11 @@ final class TelegramCodexRemoteBridge {
             let lines = pageData.items.enumerated().flatMap { offset, group -> [String] in
                 let index = pageData.start + offset + 1
                 return [
-                    "\(index). \(group.project.name)",
+                    "\(index). \(truncateOneLine(group.project.name, limit: 48))",
                     "   \(group.items.count) thread(s)",
-                    group.project.cwd.isEmpty ? "   no project root" : "   \(group.project.cwd)"
+                    group.project.cwd.isEmpty
+                        ? "   no project root"
+                        : "   \(truncateMiddlePath(group.project.cwd, limit: 96))"
                 ]
             }
             let projectRows = pageData.items.enumerated().map { offset, group in
@@ -2604,7 +3167,7 @@ final class TelegramCodexRemoteBridge {
             let groups = try projectGroups(
                 source: source,
                 stateKey: stateKey,
-                mode: projectListModesByChat[stateKey] ?? .all
+                mode: sessionState(for: stateKey).projectListMode
             )
             guard selectedIndex <= groups.count else {
                 return .init(status: "codex_failed", text: "Project not found. Use `/list` to refresh projects.")
@@ -2614,7 +3177,9 @@ final class TelegramCodexRemoteBridge {
                 return .init(status: "codex_success", text: "No recent Codex threads found for \(group.project.name).")
             }
             let pageData = paginate(group.items, requestedPage: page, pageSize: Self.threadPageSize)
-            lastThreadIDsByChat[stateKey] = group.items.map(\.id)
+            updateSessionState(stateKey) { state in
+                state.rememberThreadList(group.items.map(\.id))
+            }
             let lines = pageData.items.enumerated().map { offset, thread in
                 formatThreadLine(thread, index: pageData.start + offset + 1)
             }
@@ -2641,7 +3206,7 @@ final class TelegramCodexRemoteBridge {
             return .init(status: "codex_blocked", text: "Choose Track from `/list` or pass `/track <number>`.")
         }
         do {
-            let mode = projectListModesByChat[stateKey] ?? .all
+            let mode = sessionState(for: stateKey).projectListMode
             let groups = try projectGroups(source: source, stateKey: stateKey, mode: mode)
             guard selectedIndex <= groups.count else {
                 return .init(status: "codex_failed", text: "Project not found. Use `/list` to refresh projects.")
@@ -2668,7 +3233,7 @@ final class TelegramCodexRemoteBridge {
             return .init(status: "codex_blocked", text: "Choose Untrack from `/list` or pass `/untrack <number>`.")
         }
         do {
-            let mode = projectListModesByChat[stateKey] ?? .all
+            let mode = sessionState(for: stateKey).projectListMode
             let groups = try projectGroups(source: source, stateKey: stateKey, mode: mode)
             guard selectedIndex <= groups.count else {
                 return .init(status: "codex_failed", text: "Project not found. Use `/list` to refresh projects.")
@@ -2697,14 +3262,16 @@ final class TelegramCodexRemoteBridge {
                 text: "Codex latest failed: Codex app-server thread reading is not configured for Telegram Bridge."
             )
         }
-        guard let selector = selector?.nilIfEmpty ?? selectedThreadIDsByChat[stateKey] else {
+        guard let selector = selector?.nilIfEmpty ?? sessionState(for: stateKey).selectedThreadID else {
             return .init(status: "codex_blocked", text: "No session selected. Use `/list`, choose a project, then Open a thread.")
         }
         do {
             guard let thread = try resolveFileScanThread(selector: selector, stateKey: stateKey) else {
                 return .init(status: "codex_failed", text: "Session not found: \(selector)")
             }
-            selectedThreadIDsByChat[stateKey] = thread.id
+            updateSessionState(stateKey) { state in
+                state.selectThread(thread.id)
+            }
             let latest = readLatestCodexReply(fileURL: URL(fileURLWithPath: thread.filePath))
             let header = opened ? "Opened: \(thread.title)" : "Latest: \(thread.title)"
             let meta = [
@@ -2747,7 +3314,9 @@ final class TelegramCodexRemoteBridge {
             let thread = try resolveFileScanThread(selector: sessionID, stateKey: stateKey)
             let title = thread?.title ?? "session \(truncateOneLine(sessionID, limit: 12))"
             let meta = thread.map(shortThreadMeta) ?? "Session: \(sessionID)"
-            pendingPromptsByChat[stateKey] = PendingPrompt(sessionID: sessionID, prompt: trimmedPrompt)
+            updateSessionState(stateKey) { state in
+                state.stagePrompt(sessionID: sessionID, prompt: trimmedPrompt)
+            }
             return .init(
                 status: "codex_confirmation_required",
                 text: "Confirm sending to \(title):\n\(meta)\n\n\(trimmedPrompt)",
@@ -2765,13 +3334,56 @@ final class TelegramCodexRemoteBridge {
         }
     }
 
-    private func confirmPromptReply(selector: String?, mode: String, stateKey: String) async -> TelegramCodexRemoteReply {
-        guard let pending = pendingPromptsByChat[stateKey],
-              selector == nil || selector == pending.sessionID
+    private func sendPromptRouteReply(
+        arguments: String?,
+        source: String,
+        mode: String,
+        stateKey: String
+    ) async -> TelegramCodexRemoteReply {
+        guard let arguments = arguments?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !arguments.isEmpty
         else {
+            return .init(status: "codex_blocked", text: "Select a thread first or use `/send <session_id> <text>`.\n\n\(codexUsageText())")
+        }
+
+        let decision = TelegramCodexRemoteSendPlanner.decision(
+            arguments: arguments,
+            selectedSessionID: sessionState(for: stateKey).selectedThreadID
+        ) { candidate in
+            shouldTreatSendArgumentAsSessionID(candidate, source: source, stateKey: stateKey)
+        }
+        switch decision {
+        case .sendExplicit(let sessionID, let prompt):
+            return await sendPromptReply(mode: mode, sessionID: sessionID, prompt: prompt)
+        case .stageSelected(let sessionID, let prompt):
+            return stagePromptReply(
+                sessionID: sessionID,
+                prompt: prompt,
+                source: source,
+                stateKey: stateKey
+            )
+        case .blocked:
+            return .init(status: "codex_blocked", text: "Select a thread first or use `/send <session_id> <text>`.\n\n\(codexUsageText())")
+        }
+    }
+
+    private func shouldTreatSendArgumentAsSessionID(
+        _ value: String,
+        source: String,
+        stateKey: String
+    ) -> Bool {
+        guard source == "file_scan" else {
+            return false
+        }
+        return (try? resolveFileScanThread(selector: value, stateKey: stateKey)) != nil
+    }
+
+    private func confirmPromptReply(selector: String?, mode: String, stateKey: String) async -> TelegramCodexRemoteReply {
+        var state = sessionState(for: stateKey)
+        guard let pending = state.popPendingPrompt(matching: selector) else {
             return .init(status: "codex_blocked", text: "No matching pending prompt.")
         }
-        pendingPromptsByChat.removeValue(forKey: stateKey)
+        sessionStatesByChat[stateKey] = state
         return await sendPromptReply(mode: mode, sessionID: pending.sessionID, prompt: pending.prompt)
     }
 
@@ -2779,8 +3391,14 @@ final class TelegramCodexRemoteBridge {
         let threads = try listFileScanThreads(limit: 1000)
         let trimmed = selector.trimmingCharacters(in: .whitespacesAndNewlines)
         if let index = Int(trimmed), index > 0 {
-            if let stateKey,
-               let threadIDs = lastThreadIDsByChat[stateKey] {
+            if let stateKey {
+                let threadIDs = sessionState(for: stateKey).lastThreadIDs
+                guard !threadIDs.isEmpty else {
+                    if index <= threads.count {
+                        return threads[index - 1]
+                    }
+                    return nil
+                }
                 guard index <= threadIDs.count else {
                     return nil
                 }
@@ -2798,7 +3416,11 @@ final class TelegramCodexRemoteBridge {
 
     private func readLatestCodexReply(fileURL: URL) -> String? {
         var latest: String?
-        readJSONLLines(fileURL: fileURL) { line in
+        readJSONLTailLines(
+            fileURL: fileURL,
+            maxBytes: Self.fileScanLatestReplyTailBytes,
+            maxLines: Self.fileScanLatestReplyLineLimit
+        ) { line in
             guard let event = parseJSONLObject(line),
                   let payload = event["payload"] as? [String: Any]
             else {
@@ -2876,24 +3498,21 @@ final class TelegramCodexRemoteBridge {
     }
 
     private func listFileScanThreads(limit: Int) throws -> [Thread] {
-        let fileManager = FileManager.default
         let sessionsURL = codexHomeURL.appendingPathComponent("sessions", isDirectory: true)
-        guard let enumerator = fileManager.enumerator(
-            at: sessionsURL,
-            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return []
-        }
+        let candidateLimit = min(max(limit * 3, 80), Self.fileScanMaximumCandidateCount)
         var files: [(url: URL, modifiedAt: Date)] = []
-        for case let fileURL as URL in enumerator where fileURL.pathExtension == "jsonl" {
-            let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey])
-            guard values?.isRegularFile == true else {
-                continue
+        for directoryURL in recentSessionDirectories(sessionsURL: sessionsURL) {
+            files.append(
+                contentsOf: directSessionJSONLFiles(
+                    in: directoryURL,
+                    limit: min(Self.fileScanMaximumFilesPerDirectory, max(candidateLimit - files.count, 0))
+                )
+            )
+            trimRecentFileCandidates(&files, keeping: candidateLimit)
+            if files.count >= candidateLimit {
+                break
             }
-            files.append((fileURL, values?.contentModificationDate ?? .distantPast))
         }
-        files.sort { $0.modifiedAt > $1.modifiedAt }
 
         var threads: [Thread] = []
         for file in files {
@@ -2908,6 +3527,135 @@ final class TelegramCodexRemoteBridge {
         return threads
     }
 
+    private func recentSessionDirectories(sessionsURL: URL) -> [URL] {
+        guard directoryExists(sessionsURL) else {
+            return []
+        }
+
+        var candidates: [URL] = []
+        if !directSessionJSONLFiles(in: sessionsURL, limit: 1).isEmpty {
+            candidates.append(sessionsURL)
+        }
+
+        for yearURL in childDirectories(in: sessionsURL, limit: 6) {
+            if !directSessionJSONLFiles(in: yearURL, limit: 1).isEmpty {
+                candidates.append(yearURL)
+            }
+            for monthURL in childDirectories(in: yearURL, limit: 12) {
+                if !directSessionJSONLFiles(in: monthURL, limit: 1).isEmpty {
+                    candidates.append(monthURL)
+                }
+                candidates.append(contentsOf: childDirectories(in: monthURL, limit: 31))
+            }
+        }
+
+        return Array(
+            candidates
+                .sorted { sessionDirectorySortKey($0, root: sessionsURL) > sessionDirectorySortKey($1, root: sessionsURL) }
+                .prefix(Self.fileScanRecentDirectoryLimit)
+        )
+    }
+
+    private func childDirectories(in directoryURL: URL, limit: Int) -> [URL] {
+        guard limit > 0, let directory = opendir(directoryURL.path) else {
+            return []
+        }
+        defer { closedir(directory) }
+
+        var directories: [URL] = []
+        var readCount = 0
+        let entryReadLimit = max(Self.fileScanMaximumDirectoryEntryReads, limit)
+        while directories.count < limit, readCount < entryReadLimit {
+            guard let entry = readdir(directory) else {
+                break
+            }
+            readCount += 1
+            let name = directoryEntryName(entry)
+            guard !name.hasPrefix(".") else {
+                continue
+            }
+            let childURL = directoryURL.appendingPathComponent(name, isDirectory: true)
+            var statBuffer = stat()
+            let isDirectory = childURL.withUnsafeFileSystemRepresentation { path in
+                guard let path else {
+                    return false
+                }
+                return lstat(path, &statBuffer) == 0 &&
+                    (statBuffer.st_mode & S_IFMT) == S_IFDIR
+            }
+            guard isDirectory else {
+                continue
+            }
+            directories.append(childURL)
+        }
+        return Array(
+            directories
+                .sorted { $0.lastPathComponent > $1.lastPathComponent }
+                .prefix(limit)
+        )
+    }
+
+    private func directSessionJSONLFiles(in directoryURL: URL, limit: Int) -> [(url: URL, modifiedAt: Date)] {
+        guard limit > 0, let directory = opendir(directoryURL.path) else {
+            return []
+        }
+        defer { closedir(directory) }
+
+        var files: [(url: URL, modifiedAt: Date)] = []
+        var readCount = 0
+        let entryReadLimit = max(Self.fileScanMaximumDirectoryEntryReads, limit)
+        while files.count < limit, readCount < entryReadLimit {
+            guard let entry = readdir(directory) else {
+                break
+            }
+            readCount += 1
+            let name = directoryEntryName(entry)
+            guard !name.hasPrefix("."), name.hasSuffix(".jsonl") else {
+                continue
+            }
+            let fileURL = directoryURL.appendingPathComponent(name, isDirectory: false)
+            var statBuffer = stat()
+            let isRegularFile = fileURL.withUnsafeFileSystemRepresentation { path in
+                guard let path else {
+                    return false
+                }
+                return lstat(path, &statBuffer) == 0 &&
+                    (statBuffer.st_mode & S_IFMT) == S_IFREG
+            }
+            guard isRegularFile else {
+                continue
+            }
+            let modifiedAt = Date(
+                timeIntervalSince1970: TimeInterval(statBuffer.st_mtimespec.tv_sec) +
+                    TimeInterval(statBuffer.st_mtimespec.tv_nsec) / 1_000_000_000
+            )
+            files.append((fileURL, modifiedAt))
+        }
+        trimRecentFileCandidates(&files, keeping: limit)
+        return files
+    }
+
+    private func directoryExists(_ directoryURL: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        return fileManager.fileExists(atPath: directoryURL.path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+
+    private func sessionDirectorySortKey(_ directoryURL: URL, root: URL) -> String {
+        let relativePath = directoryURL.path
+            .replacingOccurrences(of: root.path, with: "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return relativePath.nilIfEmpty ?? ""
+    }
+
+    private func trimRecentFileCandidates(
+        _ files: inout [(url: URL, modifiedAt: Date)],
+        keeping limit: Int
+    ) {
+        files.sort { $0.modifiedAt > $1.modifiedAt }
+        guard files.count > limit else { return }
+        files.removeLast(files.count - limit)
+    }
+
     private func readThread(fileURL: URL, modifiedAt: Date) -> Thread? {
         var id = ""
         var title = ""
@@ -2919,7 +3667,7 @@ final class TelegramCodexRemoteBridge {
         var agentNickname = ""
         var sourceSubagent = false
         var scannedLines = 0
-        readJSONLLines(fileURL: fileURL, maxLines: 400) { line in
+        readJSONLLines(fileURL: fileURL, maxLines: Self.fileScanThreadReadLineLimit) { line in
             scannedLines += 1
             guard let event = parseJSONLObject(line) else {
                 return true
@@ -2987,7 +3735,7 @@ final class TelegramCodexRemoteBridge {
     private func projectGroups(
         source: String,
         stateKey: String,
-        mode: ProjectListMode
+        mode: TelegramCodexRemoteProjectListMode
     ) throws -> [ProjectGroup] {
         guard source == "file_scan" else {
             throw TelegramBridgeGearError.configInvalid("Codex app-server thread listing is not configured for Telegram Bridge.")
@@ -3144,13 +3892,6 @@ final class TelegramCodexRemoteBridge {
         ].compactMap(\.self).joined(separator: " | ")
     }
 
-    private func normalizedCommand(_ value: String) -> String {
-        guard let command = value.split(separator: "@", maxSplits: 1).first else {
-            return ""
-        }
-        return String(command).lowercased()
-    }
-
     private func codexUsageText() -> String {
         "Use `/list` to show projects, pick a project, then use Open/Latest/Desktop buttons. You can also use `/latest <session_id>` or `/send <session_id> <prompt>`."
     }
@@ -3238,6 +3979,10 @@ private func normalizedTelegramReply(_ text: String) -> String {
     return trimmed.isEmpty ? "No reply content was produced." : trimmed
 }
 
+private func formatSeconds(_ seconds: TimeInterval) -> String {
+    seconds.rounded() == seconds ? "\(Int(seconds))" : String(format: "%.2f", seconds)
+}
+
 func splitTelegramMessage(_ text: String, maxLength: Int = 3900) -> [String] {
     let trimmed = normalizedTelegramReply(text)
     guard maxLength > 0, trimmed.count > maxLength else {
@@ -3294,6 +4039,25 @@ private func truncateOneLine(_ value: String, limit: Int) -> String {
     return "\(singleLine.prefix(max(limit - 1, 1)))..."
 }
 
+private func truncateMiddlePath(_ value: String, limit: Int) -> String {
+    let singleLine = value
+        .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard singleLine.count > limit, limit > 8 else {
+        return singleLine
+    }
+    let edgeCount = max((limit - 3) / 2, 1)
+    return "\(singleLine.prefix(edgeCount))...\(singleLine.suffix(edgeCount))"
+}
+
+private func directoryEntryName(_ entry: UnsafeMutablePointer<dirent>) -> String {
+    withUnsafePointer(to: &entry.pointee.d_name.0) { namePointer in
+        namePointer.withMemoryRebound(to: CChar.self, capacity: Int(entry.pointee.d_namlen) + 1) {
+            String(cString: $0)
+        }
+    }
+}
+
 private func readJSONLLines(fileURL: URL, maxLines: Int? = nil, _ body: (String) -> Bool) {
     guard let handle = try? FileHandle(forReadingFrom: fileURL) else {
         return
@@ -3318,6 +4082,58 @@ private func readJSONLLines(fileURL: URL, maxLines: Int? = nil, _ body: (String)
         }
         if buffer.count > 1_000_000 {
             buffer.removeAll(keepingCapacity: true)
+        }
+    }
+}
+
+private func readJSONLTailLines(
+    fileURL: URL,
+    maxBytes: Int,
+    maxLines: Int,
+    _ body: (String) -> Bool
+) {
+    guard maxBytes > 0, maxLines > 0,
+          let handle = try? FileHandle(forReadingFrom: fileURL)
+    else {
+        return
+    }
+    defer { try? handle.close() }
+
+    let fileSize = (try? handle.seekToEnd()) ?? 0
+    guard fileSize > 0 else {
+        return
+    }
+    let readSize = min(UInt64(maxBytes), fileSize)
+    let startOffset = fileSize - readSize
+    try? handle.seek(toOffset: startOffset)
+    let tailData: Data?
+    do {
+        tailData = try handle.readToEnd()
+    } catch {
+        return
+    }
+    guard var data = tailData, !data.isEmpty else {
+        return
+    }
+    if startOffset > 0 {
+        guard let newlineIndex = data.firstIndex(of: 0x0a) else {
+            return
+        }
+        data.removeSubrange(data.startIndex...newlineIndex)
+    }
+    guard let text = String(data: data, encoding: .utf8) else {
+        return
+    }
+    let lines = text
+        .split(separator: "\n", omittingEmptySubsequences: true)
+        .suffix(maxLines)
+    for rawLine in lines {
+        let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !line.isEmpty else {
+            continue
+        }
+        guard body(line) else {
+            return
         }
     }
 }
@@ -3367,6 +4183,10 @@ private func extractTelegramCodexText(fromContent content: Any?) -> String {
 }
 
 private extension String {
+    var trimmedForGateway: String {
+        trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     var nilIfEmpty: String? {
         isEmpty ? nil : self
     }

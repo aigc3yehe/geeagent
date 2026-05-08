@@ -31,16 +31,16 @@ export function runtimeRunState(
 export function claudeSdkChatRuntimeRecord(): JsonRecord {
   return {
     status: "live",
-    active_provider: "sdk/xenodia",
-    detail: "The SDK is driving the agent loop through the local Xenodia model gateway.",
+    active_provider: "model_gateway",
+    detail: "GeeAgent is ready for workspace chat and tool-assisted tasks.",
   };
 }
 
 export function claudeSdkDegradedChatRuntimeRecord(reason: string): JsonRecord {
   return {
     status: "degraded",
-    active_provider: "sdk/xenodia",
-    detail: `The SDK through the Xenodia gateway degraded during this turn. ${summarizePrompt(reason, 220)}`,
+    active_provider: "model_gateway",
+    detail: `GeeAgent could not complete the latest run. ${userFacingFailureReason(reason)}`,
   };
 }
 
@@ -54,7 +54,7 @@ export function claudeSdkCompletedRunState(
     "claude_sdk_completed",
     assistantReply.trim()
       ? summarizePrompt(assistantReply, 220)
-      : "The SDK runtime completed the turn.",
+      : "The agent runtime completed the turn.",
     false,
     null,
     null,
@@ -81,11 +81,100 @@ export function claudeSdkQuickReply(assistantReply: string, stepCount: number): 
 }
 
 export function claudeSdkFailedQuickReply(reason: string): string {
-  return `The SDK + Xenodia could not complete this run. ${summarizePrompt(reason, 180)}`;
+  return `GeeAgent couldn’t complete that request. ${userFacingFailureReason(reason)}`;
 }
 
 export function claudeSdkFailureAssistantReply(reason: string): string {
-  return `The SDK + Xenodia did not complete this run successfully: ${summarizePrompt(reason, 220)}. I did not present it as completed.`;
+  return `I couldn’t complete that request. ${userFacingFailureReason(reason)} I stopped without marking it complete.`;
+}
+
+export function userFacingFailureReason(reason: string): string {
+  const extracted = extractProviderErrorMessage(reason);
+  const source = extracted || reason;
+  const lowered = source.toLowerCase();
+
+  if (
+    lowered.includes("model_unsupported_multimodal") ||
+    lowered.includes("does not support image input")
+  ) {
+    return "The current chat model cannot read images. Switch to a vision-capable model in Settings, or resend the request without image attachments.";
+  }
+
+  if (
+    lowered.includes("api key") ||
+    lowered.includes("provider configuration") ||
+    lowered.includes("not configured") ||
+    lowered.includes("missing provider")
+  ) {
+    return "Chat is waiting for model provider configuration. Open Settings and add or select a working provider before retrying.";
+  }
+
+  if (
+    lowered.includes("no new event") ||
+    lowered.includes("timed out") ||
+    lowered.includes("timeout")
+  ) {
+    return "The run stalled before producing a final reply. You can retry from this conversation; the incomplete run was preserved as a failure.";
+  }
+
+  if (
+    lowered.includes("session is no longer alive") ||
+    lowered.includes("session-lost") ||
+    lowered.includes("interrupted")
+  ) {
+    return "The run lost its live session before it could continue. Retry from this conversation so GeeAgent can start a fresh run.";
+  }
+
+  const sanitized = sanitizeUserFacingFailureDetail(source);
+  return sanitized
+    ? `The run stopped before producing a final reply. ${summarizePrompt(sanitized, 180)}`
+    : "The run stopped before producing a final reply.";
+}
+
+function extractProviderErrorMessage(reason: string): string | null {
+  const jsonStart = reason.indexOf("{");
+  if (jsonStart >= 0) {
+    try {
+      const parsed = JSON.parse(reason.slice(jsonStart)) as unknown;
+      const message = nestedString(parsed, ["error", "message"]) ?? nestedString(parsed, ["message"]);
+      if (message) {
+        return message;
+      }
+    } catch {
+      // Keep the original reason below; provider errors are not guaranteed JSON.
+    }
+  }
+
+  const messageMatch = reason.match(/"message"\s*:\s*"((?:\\"|[^"])*)"/);
+  if (messageMatch?.[1]) {
+    return messageMatch[1].replace(/\\"/g, "\"");
+  }
+
+  return null;
+}
+
+function nestedString(value: unknown, path: string[]): string | null {
+  let cursor = value;
+  for (const key of path) {
+    if (!isRecord(cursor)) {
+      return null;
+    }
+    cursor = cursor[key];
+  }
+  return typeof cursor === "string" && cursor.trim() ? cursor.trim() : null;
+}
+
+function sanitizeUserFacingFailureDetail(reason: string): string {
+  return reason
+    .replace(/The SDK \+ Xenodia/gi, "GeeAgent")
+    .replace(/\bSDK runtime\b/gi, "agent runtime")
+    .replace(/\bSDK\b/g, "runtime")
+    .replace(/\bXenodia gateway\b/gi, "model gateway")
+    .replace(/\bXenodia\b/g, "model provider")
+    .replace(/configured backend model\s+\S+/gi, "current chat model")
+    .replace(/API Error:\s*\d+\s*/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export function toolStepCount(turn: SdkTurnResult): number {

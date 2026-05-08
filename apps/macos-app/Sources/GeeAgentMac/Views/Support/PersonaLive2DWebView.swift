@@ -221,9 +221,21 @@ struct PersonaLive2DWebView: NSViewRepresentable {
             guard request.requestID != lastAppliedPlaybackRequestID else { return }
             guard request.bundlePath == URL(fileURLWithPath: currentBundlePath).standardizedFileURL.path else { return }
 
+            if request.isStopRequest {
+                lastAppliedPlaybackRequestID = request.requestID
+                let js = """
+                (async function() {
+                  return await window.geeLive2D?.setPose?.(null);
+                })();
+                """
+                webView.evaluateJavaScript(js, completionHandler: nil)
+                return
+            }
+
+            guard let motion = request.motion else { return }
             let payload: [String: Any] = [
-                "path": request.motion.relativePath,
-                "title": request.motion.title,
+                "path": motion.relativePath,
+                "title": motion.title,
             ]
             guard
                 let data = try? JSONSerialization.data(withJSONObject: payload, options: []),

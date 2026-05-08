@@ -76,6 +76,8 @@ export type RuntimeRunProjectionRow = {
   projection_scope: "main_timeline" | "worked" | "inspector";
   expandable: boolean;
   artifact_ids: string[];
+  attachment_ids: string[];
+  attachment_statuses: string[];
 };
 
 export type RuntimeRunWaitKind =
@@ -198,8 +200,9 @@ export function projectRuntimeRunReplay(input: unknown): RuntimeRunReplayProject
     }
     return (numberField(left, "source_index") ?? 0) - (numberField(right, "source_index") ?? 0);
   });
+  const invocationToolNames = toolNameByInvocationId(sortedEvents);
   const rows = sortedEvents.map((event, index) =>
-    projectReplayEvent(replay.run_id, event, index + 1),
+    projectReplayEvent(replay.run_id, event, index + 1, invocationToolNames),
   );
   return {
     schema_version: 1,
@@ -407,6 +410,7 @@ function projectReplayEvent(
   runId: string,
   event: Record<string, unknown>,
   fallbackSequence: number,
+  invocationToolNames: Map<string, string>,
 ): RuntimeRunProjectionRow {
   const payload = isRecord(event.payload) ? event.payload : {};
   const eventKind = stringField(payload, "kind") ?? "unknown";
@@ -432,17 +436,24 @@ function projectReplayEvent(
     projection_scope: "worked" as const,
     expandable: false,
     artifact_ids: eventArtifactIds,
+    attachment_ids: [],
+    attachment_statuses: [],
   };
 
   switch (eventKind) {
-    case "user_message":
+    case "user_message": {
+      const attachmentIds = attachmentIdsFromPayload(payload);
+      const attachmentStatuses = attachmentStatusesFromPayload(payload);
       return {
         ...base,
         projection_kind: "user_message",
         label: "User",
-        summary: summarizeProjectionText(stringField(payload, "content") ?? ""),
+        summary: userMessageSummary(payload, attachmentIds.length),
         projection_scope: "main_timeline",
+        attachment_ids: attachmentIds,
+        attachment_statuses: attachmentStatuses,
       };
+    }
     case "assistant_message_delta":
       return {
         ...base,
@@ -512,16 +523,19 @@ function projectReplayEvent(
         expandable: true,
       };
     }
-    case "tool_result":
+    case "tool_result": {
+      const invocationId = stringField(payload, "invocation_id");
       return {
         ...base,
         projection_kind: "tool_result",
         label: "Tool result",
         status: stringField(payload, "status"),
         summary: projectionSummary(payload, "Tool result"),
+        tool_name: invocationId ? invocationToolNames.get(invocationId) ?? null : null,
         projection_scope: "worked",
         expandable: true,
       };
+    }
     case "session_state_changed":
       if (typeof payload.stage_capsule === "string" && payload.stage_capsule.trim()) {
         return {
@@ -734,6 +748,38 @@ function projectionSummary(payload: Record<string, unknown>, fallback: string): 
       stringField(payload, "title") ??
       fallback,
   );
+}
+
+function userMessageSummary(payload: Record<string, unknown>, attachmentCount: number): string {
+  const content = stringField(payload, "content") ?? "";
+  if (attachmentCount <= 0) {
+    return summarizeProjectionText(content);
+  }
+  const suffix = attachmentCount === 1 ? "1 attachment" : `${attachmentCount} attachments`;
+  return summarizeProjectionText([content, `(${suffix})`].filter(Boolean).join(" "));
+}
+
+function attachmentIdsFromPayload(payload: Record<string, unknown>): string[] {
+  return attachmentStringsFromPayload(payload, "attachment_id");
+}
+
+function attachmentStatusesFromPayload(payload: Record<string, unknown>): string[] {
+  return attachmentStringsFromPayload(payload, "status");
+}
+
+function attachmentStringsFromPayload(payload: Record<string, unknown>, key: string): string[] {
+  const attachments = Array.isArray(payload.attachments) ? payload.attachments : [];
+  const found: string[] = [];
+  for (const attachment of attachments) {
+    if (!isRecord(attachment)) {
+      continue;
+    }
+    const value = stringField(attachment, key);
+    if (value) {
+      found.push(value);
+    }
+  }
+  return found;
 }
 
 function summarizeProjectionText(value: string): string {

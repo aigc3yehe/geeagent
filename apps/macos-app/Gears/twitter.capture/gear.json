@@ -8,6 +8,8 @@
   "category": "Research",
   "kind": "atmosphere",
   "display_mode": "full_canvas",
+  "cover": "assets/cover.png",
+  "icon": "assets/icon.png",
   "entry": {
     "type": "native",
     "native_id": "twitter.capture"
@@ -28,7 +30,9 @@
         "required": true,
         "detect": {
           "command": "python3",
-          "args": ["--version"],
+          "args": [
+            "--version"
+          ],
           "min_version": "3.11.0"
         },
         "installer": {
@@ -43,7 +47,10 @@
         "required": true,
         "detect": {
           "command": "python3",
-          "args": ["-c", "import twikit, httpx"]
+          "args": [
+            "-c",
+            "import twikit, httpx"
+          ]
         },
         "installer": {
           "type": "recipe",

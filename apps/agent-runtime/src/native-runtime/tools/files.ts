@@ -1,4 +1,5 @@
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { lstat, mkdir, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize, relative } from "node:path";
 
 import { argError, errorMessage, getBoolArg, getNumberArg, getStringArg } from "./args.js";
@@ -6,6 +7,10 @@ import type { ToolOutcome, ToolRequest } from "./types.js";
 
 const TEXT_DECODER = new TextDecoder("utf-8", { fatal: true });
 const FILES_READ_MAX_DEFAULT_BYTES = 1024 * 1024;
+const DIRECTORY_SNAPSHOT_DEFAULT_MAX_DEPTH = 3;
+const DIRECTORY_SNAPSHOT_HARD_MAX_DEPTH = 8;
+const DIRECTORY_SNAPSHOT_DEFAULT_MAX_ENTRIES = 500;
+const DIRECTORY_SNAPSHOT_HARD_MAX_ENTRIES = 5_000;
 
 export async function filesReadText(request: ToolRequest): Promise<ToolOutcome> {
   const path = getStringArg(request, "path");
@@ -254,6 +259,341 @@ export async function coreLs(request: ToolRequest): Promise<ToolOutcome> {
       message: errorMessage(error),
     };
   }
+}
+
+type DirectorySnapshotEntry = {
+  relative_path: string;
+  kind: "directory" | "file" | "symlink" | "other" | "unknown";
+  size_bytes?: number | null;
+  child_count?: number | null;
+  target_kind?: string;
+};
+
+type DirectorySnapshotError = {
+  path: string;
+  code: string;
+  message: string;
+};
+
+type DirectorySnapshotAccumulator = {
+  entries: DirectorySnapshotEntry[];
+  errors: DirectorySnapshotError[];
+  omittedCount: number;
+  maxDepthReached: boolean;
+  entryLimitReached: boolean;
+};
+
+export async function filesDirectorySnapshot(request: ToolRequest): Promise<ToolOutcome> {
+  const path = getStringArg(request, "path");
+  if (path === undefined) {
+    return argError(request.tool_id, "path", "required string `path` is missing");
+  }
+  const resolved = resolveScopedPath(path, request.files_root);
+  if (typeof resolved !== "string") {
+    return resolved;
+  }
+
+  const maxDepth = boundedIntegerArg(
+    getNumberArg(request, "max_depth"),
+    DIRECTORY_SNAPSHOT_DEFAULT_MAX_DEPTH,
+    DIRECTORY_SNAPSHOT_HARD_MAX_DEPTH,
+  );
+  const maxEntries = boundedIntegerArg(
+    getNumberArg(request, "max_entries"),
+    DIRECTORY_SNAPSHOT_DEFAULT_MAX_ENTRIES,
+    DIRECTORY_SNAPSHOT_HARD_MAX_ENTRIES,
+  );
+  const includeHidden = getBoolArg(request, "include_hidden") ?? false;
+  const includeSizes = getBoolArg(request, "include_sizes") ?? true;
+  const followSymlinks = getBoolArg(request, "follow_symlinks") ?? false;
+  const realRoot = await realpathWithinScopedRoot(resolved, request.files_root, request.tool_id);
+  if (typeof realRoot !== "string") {
+    return realRoot;
+  }
+
+  try {
+    const metadata = await stat(resolved);
+    if (!metadata.isDirectory()) {
+      return {
+        kind: "error",
+        tool_id: request.tool_id,
+        code: "files.not_directory",
+        message: `path is not a directory: ${resolved}`,
+      };
+    }
+  } catch (error) {
+    return {
+      kind: "error",
+      tool_id: request.tool_id,
+      code: "files.snapshot_root_failed",
+      message: errorMessage(error),
+    };
+  }
+
+  const accumulator: DirectorySnapshotAccumulator = {
+    entries: [],
+    errors: [],
+    omittedCount: 0,
+    maxDepthReached: false,
+    entryLimitReached: false,
+  };
+  await collectDirectorySnapshotEntries({
+    root: resolved,
+    realRoot,
+    currentPath: resolved,
+    depth: 0,
+    maxDepth,
+    maxEntries,
+    includeHidden,
+    includeSizes,
+    followSymlinks,
+    accumulator,
+  });
+
+  const truncated =
+    accumulator.entryLimitReached ||
+    accumulator.maxDepthReached ||
+    accumulator.omittedCount > 0;
+  const payload = {
+    root: resolved,
+    entries: accumulator.entries,
+    truncated,
+    omitted_count: accumulator.omittedCount,
+    max_depth_reached: accumulator.maxDepthReached,
+    errors: accumulator.errors,
+    snapshot_hash: snapshotHash({
+      root: resolved,
+      entries: accumulator.entries,
+      truncated,
+      omitted_count: accumulator.omittedCount,
+      max_depth_reached: accumulator.maxDepthReached,
+      errors: accumulator.errors,
+    }),
+    fallback_attempted: false,
+  };
+  return {
+    kind: "completed",
+    tool_id: request.tool_id,
+    payload,
+  };
+}
+
+async function collectDirectorySnapshotEntries(input: {
+  root: string;
+  realRoot: string;
+  currentPath: string;
+  depth: number;
+  maxDepth: number;
+  maxEntries: number;
+  includeHidden: boolean;
+  includeSizes: boolean;
+  followSymlinks: boolean;
+  accumulator: DirectorySnapshotAccumulator;
+}): Promise<void> {
+  if (input.accumulator.entryLimitReached) {
+    return;
+  }
+  let children;
+  try {
+    children = await readdir(input.currentPath, { withFileTypes: true });
+  } catch (error) {
+    input.accumulator.errors.push({
+      path: input.currentPath,
+      code: "files.snapshot_read_failed",
+      message: errorMessage(error),
+    });
+    return;
+  }
+
+  const visibleChildren = children
+    .filter((entry) => {
+      if (input.includeHidden || !entry.name.startsWith(".")) {
+        return true;
+      }
+      input.accumulator.omittedCount += 1;
+      return false;
+    })
+    .sort((left, right) => left.name.localeCompare(right.name, "en"));
+
+  for (const child of visibleChildren) {
+    if (input.accumulator.entries.length >= input.maxEntries) {
+      input.accumulator.entryLimitReached = true;
+      input.accumulator.omittedCount += 1;
+      continue;
+    }
+
+    const childPath = join(input.currentPath, child.name);
+    const entry = await directorySnapshotEntry({
+      root: input.root,
+      realRoot: input.realRoot,
+      path: childPath,
+      includeSizes: input.includeSizes,
+      followSymlinks: input.followSymlinks,
+    });
+    input.accumulator.entries.push(entry);
+
+    if (entry.kind !== "directory") {
+      continue;
+    }
+    if (input.depth + 1 >= input.maxDepth) {
+      input.accumulator.maxDepthReached = true;
+      input.accumulator.omittedCount += await countDirectoryChildren(childPath, input.includeHidden);
+      continue;
+    }
+    await collectDirectorySnapshotEntries({
+      ...input,
+      currentPath: childPath,
+      depth: input.depth + 1,
+    });
+  }
+}
+
+async function directorySnapshotEntry(input: {
+  root: string;
+  realRoot: string;
+  path: string;
+  includeSizes: boolean;
+  followSymlinks: boolean;
+}): Promise<DirectorySnapshotEntry> {
+  let metadata;
+  try {
+    metadata = await lstat(input.path);
+  } catch {
+    return {
+      relative_path: relative(input.root, input.path),
+      kind: "unknown",
+    };
+  }
+
+  if (metadata.isSymbolicLink()) {
+    if (!input.followSymlinks) {
+      return {
+        relative_path: relative(input.root, input.path),
+        kind: "symlink",
+      };
+    }
+    const target = await symlinkTargetKind(input.realRoot, input.path);
+    return {
+      relative_path: relative(input.root, input.path),
+      kind: target === "directory" ? "directory" : "symlink",
+      target_kind: target,
+    };
+  }
+
+  if (metadata.isDirectory()) {
+    return {
+      relative_path: relative(input.root, input.path),
+      kind: "directory",
+      child_count: await countDirectoryChildren(input.path, true),
+    };
+  }
+
+  if (metadata.isFile()) {
+    return {
+      relative_path: relative(input.root, input.path),
+      kind: "file",
+      ...(input.includeSizes ? { size_bytes: metadata.size } : {}),
+    };
+  }
+
+  return {
+    relative_path: relative(input.root, input.path),
+    kind: "other",
+  };
+}
+
+async function symlinkTargetKind(realRoot: string, path: string): Promise<string> {
+  try {
+    const resolvedTarget = await realpath(path);
+    const relativeToRoot = relative(normalize(realRoot), normalize(resolvedTarget));
+    if (
+      relativeToRoot === ".." ||
+      relativeToRoot.startsWith(`..${"/"}`) ||
+      isAbsolute(relativeToRoot)
+    ) {
+      return "escaped";
+    }
+    const metadata = await stat(resolvedTarget);
+    if (metadata.isDirectory()) {
+      return "directory";
+    }
+    if (metadata.isFile()) {
+      return "file";
+    }
+    return "other";
+  } catch {
+    return "unknown";
+  }
+}
+
+async function realpathWithinScopedRoot(
+  path: string,
+  root: string | undefined,
+  toolId: string,
+): Promise<string | ToolOutcome> {
+  let resolvedPath: string;
+  try {
+    resolvedPath = await realpath(path);
+  } catch (error) {
+    return {
+      kind: "error",
+      tool_id: toolId,
+      code: "files.snapshot_root_failed",
+      message: errorMessage(error),
+    };
+  }
+
+  if (root === undefined) {
+    return resolvedPath;
+  }
+
+  let resolvedRoot: string;
+  try {
+    resolvedRoot = await realpath(root);
+  } catch (error) {
+    return {
+      kind: "error",
+      tool_id: toolId,
+      code: "files.snapshot_scope_failed",
+      message: errorMessage(error),
+    };
+  }
+
+  const relativeToRoot = relative(normalize(resolvedRoot), normalize(resolvedPath));
+  if (
+    relativeToRoot === ".." ||
+    relativeToRoot.startsWith(`..${"/"}`) ||
+    isAbsolute(relativeToRoot)
+  ) {
+    return {
+      kind: "error",
+      tool_id: toolId,
+      code: "files.path_escapes_root",
+      message: `resolved path \`${resolvedPath}\` escapes scoped root \`${resolvedRoot}\``,
+    };
+  }
+
+  return resolvedPath;
+}
+
+async function countDirectoryChildren(path: string, includeHidden: boolean): Promise<number> {
+  try {
+    const entries = await readdir(path, { withFileTypes: true });
+    return includeHidden ? entries.length : entries.filter((entry) => !entry.name.startsWith(".")).length;
+  } catch {
+    return 0;
+  }
+}
+
+function boundedIntegerArg(value: number | undefined, defaultValue: number, hardMax: number): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return defaultValue;
+  }
+  return Math.max(0, Math.min(hardMax, Math.floor(value)));
+}
+
+function snapshotHash(payload: Record<string, unknown>): string {
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
 
 export async function coreFind(request: ToolRequest): Promise<ToolOutcome> {

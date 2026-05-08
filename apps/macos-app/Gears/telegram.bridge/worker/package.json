@@ -8,7 +8,7 @@
   },
   "scripts": {
     "cli": "../../../../agent-runtime/node_modules/.bin/tsx src/cli.ts",
-    "test": "cd ../../../../agent-runtime && node --test --import tsx ../macos-app/Gears/telegram.bridge/worker/src/*.test.ts",
+    "test": "cd ../../../../agent-runtime && node --test --import tsx ../macos-app/Gears/telegram.bridge/worker/src/*.test.ts ../macos-app/Gears/telegram.bridge/worker/src/*.check.ts",
     "typecheck": "../../../../agent-runtime/node_modules/.bin/tsc --noEmit -p tsconfig.json"
   }
 }

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
@@ -11,6 +14,8 @@ import { runtimeProjectPath } from "./native-runtime/paths.js";
 import { buildRuntimeRunPlan } from "./native-runtime/turns/planning.js";
 import type { RuntimeEvent } from "./protocol.js";
 import {
+  CHAT_ONLY_SDK_AUTO_APPROVE_TOOLS,
+  CHAT_ONLY_SDK_AVAILABLE_TOOLS,
   DEFAULT_SDK_AVAILABLE_TOOLS,
   DEFAULT_SDK_AUTO_APPROVE_TOOLS,
   DEFAULT_SDK_DISALLOWED_TOOLS,
@@ -21,17 +26,20 @@ function createFakeSdkSession(
   options: { failFirstSend?: boolean; failFirstStream?: boolean } = {},
 ): {
   capturedOptions: unknown[];
+  sentPayloads: unknown[];
   sentMessages: string[];
   sdkSessionFactory: typeof unstable_v2_createSession;
 } {
   const capturedOptions: unknown[] = [];
+  const sentPayloads: unknown[] = [];
   const sentMessages: string[] = [];
   let sendCount = 0;
   let streamCount = 0;
   const sdkSession = {
-    async send(message: string) {
+    async send(message: unknown) {
       sendCount += 1;
-      sentMessages.push(message);
+      sentPayloads.push(message);
+      sentMessages.push(typeof message === "string" ? message : JSON.stringify(message));
       if (options.failFirstSend && sendCount === 1) {
         throw new Error("synthetic SDK send failure");
       }
@@ -54,6 +62,7 @@ function createFakeSdkSession(
 
   return {
     capturedOptions,
+    sentPayloads,
     sentMessages,
     sdkSessionFactory: ((sessionOptions: unknown) => {
       capturedOptions.push(sessionOptions);
@@ -210,6 +219,42 @@ describe("session prompt and tool-result helpers", () => {
     session.close();
   });
 
+  it("keeps attachments with the queued SDK user payload", async () => {
+    const { sdkSessionFactory, sentPayloads } = createFakeSdkSession();
+    const { events, session } = createRuntimeSession(sdkSessionFactory);
+
+    session.send({
+      text: "Compare the screenshot with this folder.",
+      attachments: [
+        {
+          attachment_id: "att_dir_1",
+          kind: "directory",
+          source: "workspace_chat",
+          display_name: "fixture",
+          original_path: "/tmp/fixture",
+          resolved_path: "/tmp/fixture",
+          created_at: "2026-05-07T00:00:00.000Z",
+          status: "ready",
+          access: {
+            scope: "run",
+            mode: "read",
+            root: "/tmp/fixture",
+          },
+          fallback_attempted: false,
+        },
+      ],
+    });
+    await waitForRuntimeEvent(events, "session.result");
+
+    const payload = sentPayloads[0] as {
+      text?: string;
+      attachments?: Array<{ attachment_id?: string }>;
+    };
+    assert.match(payload.text ?? "", /\[GeeAgent Turn\]\nCompare the screenshot/);
+    assert.equal(payload.attachments?.[0]?.attachment_id, "att_dir_1");
+    session.close();
+  });
+
   it("re-promotes queued messages for bootstrap if the first SDK send fails", async () => {
     const { sdkSessionFactory, sentMessages } = createFakeSdkSession({
       failFirstSend: true,
@@ -262,7 +307,224 @@ describe("session prompt and tool-result helpers", () => {
     assert.match(prompt, /Known Gee Gear required args/);
     assert.match(prompt, /media\.library\/media\.import_files: args\.paths/);
     assert.match(prompt, /Never call `gee\.gear\.invoke` with guessed or empty required arguments/);
+    assert.match(prompt, /directory input attachments/);
+    assert.match(prompt, /mcp__gee__files_directory_snapshot/);
+    assert.match(prompt, /Do not look for a dedicated screenshot-directory comparison tool/);
     assert.doesNotMatch(prompt, /<gee-host-actions>/);
+  });
+
+  it("builds SDK image content blocks for ready image attachments", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "geeagent-session-image-"));
+    const imagePath = join(dir, "shot.png");
+    const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]);
+    await writeFile(imagePath, imageBytes);
+
+    const message = await __sessionTestHooks.sdkUserMessage({
+      text: "Describe the screenshot.",
+      attachments: [
+        {
+          attachment_id: "att_img_1",
+          kind: "image",
+          source: "workspace_chat",
+          display_name: "shot.png",
+          original_path: imagePath,
+          resolved_path: imagePath,
+          mime_type: "image/png",
+          size_bytes: imageBytes.byteLength,
+          created_at: "2026-05-07T00:00:00.000Z",
+          status: "ready",
+          access: {
+            scope: "run",
+            mode: "read",
+            root: dir,
+          },
+          fallback_attempted: false,
+        },
+      ],
+    });
+
+    const content = message.message.content as Array<{
+      type: string;
+      text?: string;
+      source?: { type?: string; media_type?: string; data?: string };
+    }>;
+    assert.equal(content[0]?.type, "text");
+    assert.equal(content[0]?.text, "Describe the screenshot.");
+    assert.equal(content[1]?.type, "image");
+    assert.equal(content[1]?.source?.type, "base64");
+    assert.equal(content[1]?.source?.media_type, "image/png");
+    assert.equal(content[1]?.source?.data, imageBytes.toString("base64"));
+  });
+
+  it("rejects ready image attachments that escape their scoped root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "geeagent-session-image-root-"));
+    const outside = await mkdtemp(join(tmpdir(), "geeagent-session-image-outside-"));
+    const imagePath = join(outside, "shot.png");
+    await writeFile(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    await assert.rejects(
+      () =>
+        __sessionTestHooks.sdkUserMessage({
+          text: "Describe the screenshot.",
+          attachments: [
+            {
+              attachment_id: "att_img_escape",
+              kind: "image",
+              source: "workspace_chat",
+              display_name: "shot.png",
+              original_path: imagePath,
+              resolved_path: imagePath,
+              mime_type: "image/png",
+              created_at: "2026-05-07T00:00:00.000Z",
+              status: "ready",
+              access: {
+                scope: "run",
+                mode: "read",
+                root,
+              },
+              fallback_attempted: false,
+            },
+          ],
+        }),
+      /escapes scoped attachment root/,
+    );
+  });
+
+  it("runs directory snapshots only against workspace or current directory attachments", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "geeagent-session-workspace-"));
+    const attachedDir = join(workspace, "attached");
+    await mkdir(attachedDir);
+    await writeFile(join(attachedDir, "alpha.txt"), "alpha");
+
+    const result = await __sessionTestHooks.filesDirectorySnapshotToolResult(
+      { attachment_id: "att_dir_1" },
+      {
+        cwd: workspace,
+        attachments: [
+          {
+            attachment_id: "att_dir_1",
+            kind: "directory",
+            source: "workspace_chat",
+            display_name: "attached",
+            original_path: attachedDir,
+            resolved_path: attachedDir,
+            created_at: "2026-05-07T00:00:00.000Z",
+            status: "ready",
+            access: {
+              scope: "run",
+              mode: "read",
+              root: attachedDir,
+            },
+            limits: {
+              max_depth: 2,
+              max_entries: 20,
+            },
+            fallback_attempted: false,
+          },
+        ],
+      },
+    );
+    const payload = JSON.parse(result.content[0]?.text ?? "{}") as {
+      status?: string;
+      entries?: Array<{ relative_path?: string }>;
+      fallback_attempted?: boolean;
+    };
+    assert.equal(result.isError, false);
+    assert.equal(payload.status, "succeeded");
+    assert.equal(payload.entries?.some((entry) => entry.relative_path === "alpha.txt"), true);
+    assert.equal(payload.fallback_attempted, false);
+
+    const outside = await mkdtemp(join(tmpdir(), "geeagent-session-outside-dir-"));
+    const denied = await __sessionTestHooks.filesDirectorySnapshotToolResult(
+      { path: outside },
+      { cwd: workspace, attachments: [] },
+    );
+    const deniedPayload = JSON.parse(denied.content[0]?.text ?? "{}") as {
+      status?: string;
+      code?: string;
+      fallback_attempted?: boolean;
+    };
+    assert.equal(denied.isError, true);
+    assert.equal(deniedPayload.status, "failed");
+    assert.equal(deniedPayload.code, "files.directory_snapshot_scope_missing");
+    assert.equal(deniedPayload.fallback_attempted, false);
+  });
+
+  it("supports screenshot plus folder comparison without a dedicated compare tool", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "geeagent-session-compare-"));
+    const imagePath = join(workspace, "tree.png");
+    const folderPath = join(workspace, "actual");
+    const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]);
+    await mkdir(folderPath);
+    await writeFile(imagePath, imageBytes);
+    await writeFile(join(folderPath, "README.md"), "# Actual\n");
+
+    const attachments = [
+      {
+        attachment_id: "att_screenshot_tree",
+        kind: "image" as const,
+        source: "workspace_chat" as const,
+        display_name: "tree.png",
+        original_path: imagePath,
+        resolved_path: imagePath,
+        mime_type: "image/png",
+        created_at: "2026-05-07T00:00:00.000Z",
+        status: "ready" as const,
+        access: {
+          scope: "run" as const,
+          mode: "read" as const,
+          root: workspace,
+        },
+        fallback_attempted: false as const,
+      },
+      {
+        attachment_id: "att_actual_dir",
+        kind: "directory" as const,
+        source: "workspace_chat" as const,
+        display_name: "actual",
+        original_path: folderPath,
+        resolved_path: folderPath,
+        created_at: "2026-05-07T00:00:00.000Z",
+        status: "ready" as const,
+        access: {
+          scope: "run" as const,
+          mode: "read" as const,
+          root: folderPath,
+        },
+        limits: {
+          max_depth: 2,
+          max_entries: 20,
+        },
+        fallback_attempted: false as const,
+      },
+    ];
+
+    const message = await __sessionTestHooks.sdkUserMessage({
+      text: "Compare the directory tree shown in the screenshot with the referenced folder.",
+      attachments,
+    });
+    const content = message.message.content as Array<{
+      type: string;
+      source?: { media_type?: string };
+    }>;
+    assert.equal(content.filter((block) => block.type === "image").length, 1);
+    assert.equal(content.find((block) => block.type === "image")?.source?.media_type, "image/png");
+    assert.equal(
+      DEFAULT_SDK_AVAILABLE_TOOLS.some((toolName) =>
+        toolName.toLowerCase().includes("compare"),
+      ),
+      false,
+    );
+
+    const result = await __sessionTestHooks.filesDirectorySnapshotToolResult(
+      { attachment_id: "att_actual_dir" },
+      { cwd: workspace, attachments },
+    );
+    const payload = JSON.parse(result.content[0]?.text ?? "{}") as {
+      entries?: Array<{ relative_path?: string }>;
+    };
+    assert.equal(result.isError, false);
+    assert.equal(payload.entries?.some((entry) => entry.relative_path === "README.md"), true);
   });
 
   it("normalizes non-object tool input into an empty object", () => {
@@ -357,6 +619,30 @@ describe("session prompt and tool-result helpers", () => {
     );
   });
 
+  it("injects a host-action idempotency key for Todo creates", () => {
+    assert.deepEqual(
+      __sessionTestHooks.withHostActionIdempotency(
+        "host_action_todo_create_abc123",
+        "gee.gear.invoke",
+        {
+          gear_id: "todo.manager",
+          capability_id: "todo.create",
+          args: {
+            title: "Review Todo reminders",
+          },
+        },
+      ),
+      {
+        gear_id: "todo.manager",
+        capability_id: "todo.create",
+        args: {
+          title: "Review Todo reminders",
+          idempotency_key: "host_action_todo_create_abc123",
+        },
+      },
+    );
+  });
+
   it("returns a PreToolUse updatedInput before SDK native tools execute", () => {
     assert.deepEqual(
       __sessionTestHooks.preToolUseBoundaryOutput({
@@ -420,8 +706,14 @@ describe("session prompt and tool-result helpers", () => {
     assert.equal(DEFAULT_SDK_DISALLOWED_TOOLS.includes("Bash"), false);
     assert.ok(DEFAULT_SDK_AVAILABLE_TOOLS.includes("Bash"));
     assert.ok(DEFAULT_SDK_AVAILABLE_TOOLS.includes("Read"));
+    assert.ok(DEFAULT_SDK_AVAILABLE_TOOLS.includes("mcp__gee__files_directory_snapshot"));
     assert.ok(DEFAULT_SDK_AVAILABLE_TOOLS.includes("mcp__gee__gear_invoke"));
     assert.equal(DEFAULT_SDK_AVAILABLE_TOOLS.includes("RemoteTrigger"), false);
+  });
+
+  it("keeps the chat-only SDK tool profile empty", () => {
+    assert.deepEqual(CHAT_ONLY_SDK_AVAILABLE_TOOLS, []);
+    assert.deepEqual(CHAT_ONLY_SDK_AUTO_APPROVE_TOOLS, []);
   });
 
   it("isolates SDK auth state from any local Claude account configuration", () => {
@@ -472,7 +764,7 @@ describe("session prompt and tool-result helpers", () => {
     };
 
     const blocked = await options.canUseTool("Read", {
-      file_path: "/Users/davidzhang/Documents/geeskills/info-capture/SKILL.md",
+      file_path: "/tmp/geeagent-skills/info-capture/SKILL.md",
     });
     assert.equal(blocked.behavior, "deny");
     assert.match(blocked.message ?? "", /Gee MCP Gear bridge/);

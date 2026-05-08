@@ -15,6 +15,69 @@ enum TodoManagerNotificationCenterFactory {
     }
 }
 
+enum TodoManagerNotificationState: String, Equatable {
+    case unavailable
+    case notDetermined
+    case authorized
+    case denied
+    case provisional
+    case ephemeral
+
+    init(status: UNAuthorizationStatus) {
+        switch status {
+        case .notDetermined:
+            self = .notDetermined
+        case .denied:
+            self = .denied
+        case .authorized:
+            self = .authorized
+        case .provisional:
+            self = .provisional
+        case .ephemeral:
+            self = .ephemeral
+        @unknown default:
+            self = .unavailable
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .unavailable: "Notification center unavailable"
+        case .notDetermined: "Notifications not requested"
+        case .authorized: "Notifications authorized"
+        case .denied: "Notifications denied"
+        case .provisional: "Notifications provisional"
+        case .ephemeral: "Notifications temporary"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .unavailable:
+            return "Reminders are stored, but this runtime cannot schedule macOS notifications."
+        case .notDetermined:
+            return "The first scheduled reminder will ask macOS for permission."
+        case .authorized, .provisional, .ephemeral:
+            return "Future reminders can be scheduled through macOS notifications."
+        case .denied:
+            return "Reminders are stored, but macOS notification permission is denied."
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .authorized, .provisional, .ephemeral: "bell.badge"
+        case .denied: "bell.slash"
+        case .notDetermined: "bell.badge.questionmark"
+        case .unavailable: "bell"
+        }
+    }
+
+    var showsSettingsAction: Bool {
+        self == .denied || self == .unavailable
+    }
+}
+
 struct TodoManagerListRecord: Codable, Identifiable, Hashable {
     var id: String
     var name: String
@@ -106,8 +169,17 @@ struct TodoManagerChecklistItemRecord: Codable, Identifiable, Hashable {
     }
 }
 
+struct TodoManagerTaskScheduleSummary: Equatable {
+    var dateSource: String
+    var dateState: String
+    var timeState: String
+    var relevantAt: Date?
+    var isOverdue: Bool
+}
+
 struct TodoManagerTaskRecord: Codable, Identifiable, Hashable {
     var id: String
+    var idempotencyKey: String?
     var listID: String
     var title: String
     var content: String
@@ -129,6 +201,7 @@ struct TodoManagerTaskRecord: Codable, Identifiable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case id
+        case idempotencyKey = "idempotency_key"
         case listID = "list_id"
         case title
         case content
@@ -174,6 +247,9 @@ struct TodoManagerTaskRecord: Codable, Identifiable, Hashable {
             "created_at": TodoManagerDateCodec.string(from: createdAt),
             "updated_at": TodoManagerDateCodec.string(from: updatedAt)
         ]
+        if let idempotencyKey {
+            payload["idempotency_key"] = idempotencyKey
+        }
         if let startAt {
             payload["start_at"] = TodoManagerDateCodec.string(from: startAt)
         }
@@ -410,6 +486,7 @@ final class TodoManagerGearStore: ObservableObject {
     @Published var searchText = ""
     @Published var isBusy = false
     @Published var statusMessage = "Ready"
+    @Published private(set) var notificationState: TodoManagerNotificationState = .unavailable
 
     private var database: TodoManagerFileDatabase
     private let notificationCenter: UNUserNotificationCenter?
@@ -421,6 +498,9 @@ final class TodoManagerGearStore: ObservableObject {
         self.database = database
         self.notificationCenter = notificationCenter
         loadTodos()
+        Task {
+            await refreshNotificationStateNow()
+        }
     }
 
     var selectedTask: TodoManagerTaskRecord? {
@@ -477,6 +557,121 @@ final class TodoManagerGearStore: ObservableObject {
         }
     }
 
+    func refreshNotificationState() {
+        Task {
+            await refreshNotificationStateNow()
+        }
+    }
+
+    func refreshNotificationStateNow() async {
+        notificationState = await currentNotificationState()
+    }
+
+    func openNotificationSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") else {
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
+    @discardableResult
+    func addReminder(_ task: TodoManagerTaskRecord, at date: Date) async -> [String: Any] {
+        var reminders = reminderPayloads(task.reminders)
+        reminders.append([
+            "id": Self.newReminderID(),
+            "trigger_at": TodoManagerDateCodec.string(from: date)
+        ])
+        return await applyReminderPayloads(reminders, to: task)
+    }
+
+    @discardableResult
+    func addRelativeReminder(_ task: TodoManagerTaskRecord, minutesBeforeDue: Int) async -> [String: Any] {
+        var reminders = reminderPayloads(task.reminders)
+        reminders.append([
+            "id": Self.newReminderID(),
+            "minutes_before_due": minutesBeforeDue
+        ])
+        return await applyReminderPayloads(reminders, to: task)
+    }
+
+    @discardableResult
+    func updateReminder(_ reminderID: String, in task: TodoManagerTaskRecord, at date: Date) async -> [String: Any] {
+        let payload = [
+            "id": reminderID,
+            "trigger_at": TodoManagerDateCodec.string(from: date)
+        ]
+        return await replaceReminder(reminderID, in: task, with: payload)
+    }
+
+    @discardableResult
+    func updateRelativeReminder(
+        _ reminderID: String,
+        in task: TodoManagerTaskRecord,
+        minutesBeforeDue: Int
+    ) async -> [String: Any] {
+        let payload: [String: Any] = [
+            "id": reminderID,
+            "minutes_before_due": minutesBeforeDue
+        ]
+        return await replaceReminder(reminderID, in: task, with: payload)
+    }
+
+    @discardableResult
+    func removeReminder(_ reminderID: String, from task: TodoManagerTaskRecord) async -> [String: Any] {
+        guard task.reminders.contains(where: { $0.id == reminderID }) else {
+            let payload = failurePayload(
+                capabilityID: "todo.update",
+                code: "todo.reminder_not_found",
+                message: "No reminder matches `\(reminderID)`."
+            )
+            statusMessage = Self.statusMessage(from: payload)
+            return payload
+        }
+        let reminders = reminderPayloads(task.reminders.filter { $0.id != reminderID })
+        return await applyReminderPayloads(reminders, to: task)
+    }
+
+    @discardableResult
+    func clearReminders(_ task: TodoManagerTaskRecord) async -> [String: Any] {
+        await applyReminderPayloads([], to: task)
+    }
+
+    private func replaceReminder(
+        _ reminderID: String,
+        in task: TodoManagerTaskRecord,
+        with payload: [String: Any]
+    ) async -> [String: Any] {
+        guard task.reminders.contains(where: { $0.id == reminderID }) else {
+            let payload = failurePayload(
+                capabilityID: "todo.update",
+                code: "todo.reminder_not_found",
+                message: "No reminder matches `\(reminderID)`."
+            )
+            statusMessage = Self.statusMessage(from: payload)
+            return payload
+        }
+        let reminders = task.reminders.map { reminder in
+            reminder.id == reminderID ? payload : reminder.agentDictionary
+        }
+        return await applyReminderPayloads(reminders, to: task)
+    }
+
+    private func applyReminderPayloads(
+        _ reminders: [[String: Any]],
+        to task: TodoManagerTaskRecord
+    ) async -> [String: Any] {
+        let payload = await updateAgentTodo(args: [
+            "task_id": task.id,
+            "reminders": reminders
+        ])
+        statusMessage = Self.statusMessage(from: payload)
+        return payload
+    }
+
+    private func reminderPayloads(_ reminders: [TodoManagerReminderRecord]) -> [[String: Any]] {
+        reminders.map(\.agentDictionary)
+    }
+
     func revealSelectedTask() {
         guard let selectedTaskID,
               let url = try? database.taskFileURL(selectedTaskID)
@@ -513,21 +708,50 @@ final class TodoManagerGearStore: ObservableObject {
 
             let list = try resolveList(args: args)
             let now = Date()
-            var task = TodoManagerTaskRecord(
-                id: "todo_\(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased())",
+            let idempotencyKey = stringArg(args, "idempotency_key", "idempotencyKey")?.nilIfBlank
+            let temporalFields = try normalizedTemporalFields(args: args, title: cleanTitle, now: now)
+            let content = stringArg(args, "content") ?? ""
+            let priority = try priorityArg(args["priority"])
+            let tags = normalizedTags(args["tags"])
+            let repeatRRULE = stringArg(args, "repeat_rrule")?.nilIfBlank
+            let checklistItems = checklistRecords(args["checklist_items"])
+            if let existing = existingTaskForCreate(
+                idempotencyKey: idempotencyKey,
                 listID: list.id,
                 title: cleanTitle,
-                content: stringArg(args, "content") ?? "",
+                content: content,
+                priority: priority,
+                tags: tags,
+                startAt: temporalFields.startAt,
+                dueAt: temporalFields.dueAt,
+                isAllDay: temporalFields.isAllDay,
+                reminders: temporalFields.reminders,
+                repeatRRULE: repeatRRULE,
+                checklistItems: checklistItems
+            ) {
+                selectedTaskID = existing.id
+                return successPayload(
+                    capabilityID: "todo.create",
+                    status: "reused",
+                    task: existing
+                )
+            }
+            var task = TodoManagerTaskRecord(
+                id: "todo_\(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased())",
+                idempotencyKey: idempotencyKey,
+                listID: list.id,
+                title: cleanTitle,
+                content: content,
                 status: "open",
-                priority: try priorityArg(args["priority"]),
-                tags: normalizedTags(args["tags"]),
-                startAt: try dateArg(args, "start_at"),
-                dueAt: try dateArg(args, "due_at"),
-                timezone: stringArg(args, "timezone") ?? TimeZone.current.identifier,
-                isAllDay: boolArg(args, "is_all_day") ?? false,
-                reminders: reminderRecords(args["reminders"]),
-                repeatRRULE: stringArg(args, "repeat_rrule")?.nilIfBlank,
-                checklistItems: checklistRecords(args["checklist_items"]),
+                priority: priority,
+                tags: tags,
+                startAt: temporalFields.startAt,
+                dueAt: temporalFields.dueAt,
+                timezone: temporalFields.timezone,
+                isAllDay: temporalFields.isAllDay,
+                reminders: temporalFields.reminders,
+                repeatRRULE: repeatRRULE,
+                checklistItems: checklistItems,
                 sortOrder: -Int64((now.timeIntervalSince1970 * 1000).rounded()),
                 createdAt: now,
                 updatedAt: now,
@@ -647,7 +871,7 @@ final class TodoManagerGearStore: ObservableObject {
                 task.isAllDay = isAllDay
             }
             if args["reminders"] != nil {
-                task.reminders = reminderRecords(args["reminders"])
+                task.reminders = try reminderRecords(args["reminders"], dueAt: task.dueAt)
             }
             if args["repeat_rrule"] != nil {
                 task.repeatRRULE = stringArg(args, "repeat_rrule")?.nilIfBlank
@@ -718,6 +942,137 @@ final class TodoManagerGearStore: ObservableObject {
         }
     }
 
+    private struct TodoManagerTemporalFields {
+        var startAt: Date?
+        var dueAt: Date?
+        var timezone: String
+        var isAllDay: Bool
+        var reminders: [TodoManagerReminderRecord]
+    }
+
+    private struct TodoManagerNaturalTemporalIntent {
+        var dueAt: Date?
+        var isAllDay: Bool
+        var hasClock: Bool
+        var hasReminderIntent: Bool
+    }
+
+    private func normalizedTemporalFields(
+        args: [String: Any],
+        title: String,
+        now: Date
+    ) throws -> TodoManagerTemporalFields {
+        let timezone = stringArg(args, "timezone")?.nilIfBlank ?? TimeZone.current.identifier
+        var calendar = Calendar.current
+        if let parsedTimezone = TimeZone(identifier: timezone) {
+            calendar.timeZone = parsedTimezone
+        }
+
+        let startAt = try dateArg(args, "start_at")
+        var dueAt = try dateArg(args, "due_at")
+        var isAllDay = boolArg(args, "is_all_day") ?? false
+        let natural = Self.naturalTemporalIntent(in: title, now: now, calendar: calendar)
+
+        if startAt == nil && dueAt == nil, let naturalDueAt = natural.dueAt {
+            dueAt = naturalDueAt
+            isAllDay = natural.isAllDay
+        }
+
+        let reminders: [TodoManagerReminderRecord]
+        if args["reminders"] != nil {
+            reminders = try reminderRecords(args["reminders"], dueAt: dueAt)
+        } else if natural.hasReminderIntent {
+            guard let reminderAt = dueAt, natural.hasClock || args["due_at"] != nil else {
+                throw TodoManagerGearError(
+                    code: "todo.reminder.time_required",
+                    message: "Reminder requests require a concrete reminder time."
+                )
+            }
+            reminders = [
+                TodoManagerReminderRecord(
+                    id: "reminder_0",
+                    triggerAt: reminderAt,
+                    minutesBeforeDue: nil
+                )
+            ]
+            isAllDay = false
+        } else {
+            reminders = []
+        }
+
+        return TodoManagerTemporalFields(
+            startAt: startAt,
+            dueAt: dueAt,
+            timezone: timezone,
+            isAllDay: isAllDay,
+            reminders: reminders
+        )
+    }
+
+    private func existingTaskForCreate(
+        idempotencyKey: String?,
+        listID: String,
+        title: String,
+        content: String,
+        priority: Int,
+        tags: [String],
+        startAt: Date?,
+        dueAt: Date?,
+        isAllDay: Bool,
+        reminders: [TodoManagerReminderRecord],
+        repeatRRULE: String?,
+        checklistItems: [TodoManagerChecklistItemRecord]
+    ) -> TodoManagerTaskRecord? {
+        let records = database.loadTasks()
+        if let idempotencyKey {
+            return records.first {
+                !$0.isDeleted && $0.idempotencyKey == idempotencyKey
+            }
+        }
+
+        let recentCutoff = Date().addingTimeInterval(-300)
+        return records.first {
+            !$0.isDeleted &&
+                $0.createdAt >= recentCutoff &&
+                $0.listID == listID &&
+                $0.title == title &&
+                $0.content == content &&
+                $0.priority == priority &&
+                $0.tags == tags &&
+                Self.sameOptionalDate($0.startAt, startAt) &&
+                Self.sameOptionalDate($0.dueAt, dueAt) &&
+                $0.isAllDay == isAllDay &&
+                $0.reminders == reminders &&
+                $0.repeatRRULE == repeatRRULE &&
+                Self.sameChecklistSignature($0.checklistItems, checklistItems)
+        }
+    }
+
+    private static func sameOptionalDate(_ left: Date?, _ right: Date?) -> Bool {
+        switch (left, right) {
+        case (.none, .none):
+            return true
+        case let (.some(left), .some(right)):
+            return abs(left.timeIntervalSince(right)) < 1
+        default:
+            return false
+        }
+    }
+
+    private static func sameChecklistSignature(
+        _ left: [TodoManagerChecklistItemRecord],
+        _ right: [TodoManagerChecklistItemRecord]
+    ) -> Bool {
+        guard left.count == right.count else {
+            return false
+        }
+        return zip(left, right).allSatisfy { leftItem, rightItem in
+            leftItem.title == rightItem.title &&
+                leftItem.isCompleted == rightItem.isCompleted &&
+                leftItem.sortOrder == rightItem.sortOrder
+        }
+    }
+
     private func queryTasks(args: [String: Any]) throws -> [TodoManagerTaskRecord] {
         loadTodos()
         let status = try queryStatusArg(args)
@@ -750,10 +1105,69 @@ final class TodoManagerGearStore: ObservableObject {
     private func taskPayload(_ task: TodoManagerTaskRecord) -> [String: Any] {
         var payload = task.agentDictionary
         payload["list_name"] = listName(for: task.listID)
+        let schedule = scheduleSummary(for: task)
+        payload["date_source"] = schedule.dateSource
+        payload["date_state"] = schedule.dateState
+        payload["time_state"] = schedule.timeState
+        payload["is_overdue"] = schedule.isOverdue
+        if let relevantAt = schedule.relevantAt {
+            payload["relevant_at"] = TodoManagerDateCodec.string(from: relevantAt)
+        }
         if let path = try? database.taskFileURL(task.id).path {
             payload["task_path"] = path
         }
         return payload
+    }
+
+    func scheduleSummary(
+        for task: TodoManagerTaskRecord,
+        now: Date = Date(),
+        calendar: Calendar = Calendar.current
+    ) -> TodoManagerTaskScheduleSummary {
+        var calendar = calendar
+        if let timezone = TimeZone(identifier: task.timezone) {
+            calendar.timeZone = timezone
+        }
+
+        let candidate: (source: String, date: Date)?
+        if let dueAt = task.dueAt {
+            candidate = ("due_at", dueAt)
+        } else if let startAt = task.startAt {
+            candidate = ("start_at", startAt)
+        } else if let reminderAt = reminderDates(for: task).sorted().first {
+            candidate = ("reminder", reminderAt)
+        } else {
+            candidate = nil
+        }
+
+        guard let candidate else {
+            return TodoManagerTaskScheduleSummary(
+                dateSource: "none",
+                dateState: "unscheduled",
+                timeState: "unscheduled",
+                relevantAt: nil,
+                isOverdue: false
+            )
+        }
+
+        let isOverdue = !task.isCompleted && candidate.date < now
+        let dateState: String
+        if isOverdue {
+            dateState = "overdue"
+        } else if calendar.isDateInToday(candidate.date) {
+            dateState = "today"
+        } else {
+            dateState = "upcoming"
+        }
+        let timeState = candidate.source == "due_at" && task.isAllDay ? "all_day" : "timed"
+
+        return TodoManagerTaskScheduleSummary(
+            dateSource: candidate.source,
+            dateState: dateState,
+            timeState: timeState,
+            relevantAt: candidate.date,
+            isOverdue: isOverdue
+        )
     }
 
     private func successPayload(
@@ -813,17 +1227,23 @@ final class TodoManagerGearStore: ObservableObject {
 
     private func scheduleNotifications(for task: TodoManagerTaskRecord) async -> [String] {
         let dates = task.reminders.compactMap { $0.triggerDate(for: task) }.filter { $0 > Date() }
-        guard !dates.isEmpty, !task.isDeleted, !task.isCompleted else {
+        guard !task.reminders.isEmpty, !task.isDeleted, !task.isCompleted else {
             return []
         }
+        guard !dates.isEmpty else {
+            return ["todo.reminder.no_future_trigger"]
+        }
         guard let notificationCenter else {
+            notificationState = .unavailable
             return ["todo.reminder.notification_center_unavailable"]
         }
 
         let status = await notificationAuthorizationStatus()
+        notificationState = TodoManagerNotificationState(status: status)
         if status == .notDetermined {
             do {
                 let granted = try await notificationCenter.requestAuthorization(options: [.alert, .sound])
+                notificationState = granted ? .authorized : .denied
                 if !granted {
                     return ["todo.reminder.authorization_required"]
                 }
@@ -857,6 +1277,14 @@ final class TodoManagerGearStore: ObservableObject {
             }
         }
         return warnings
+    }
+
+    private func currentNotificationState() async -> TodoManagerNotificationState {
+        guard notificationCenter != nil else {
+            return .unavailable
+        }
+        let status = await notificationAuthorizationStatus()
+        return TodoManagerNotificationState(status: status)
     }
 
     private func cancelNotifications(taskID: String) async {
@@ -899,6 +1327,10 @@ final class TodoManagerGearStore: ObservableObject {
         "\(notificationIdentifierPrefix(taskID: taskID))\(index)"
     }
 
+    private static func newReminderID() -> String {
+        "reminder_\(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased())"
+    }
+
     private static func parseQuickAdd(_ text: String) -> [String: Any] {
         var titleParts: [String] = []
         var tags: [String] = []
@@ -924,6 +1356,16 @@ final class TodoManagerGearStore: ObservableObject {
         return payload
     }
 
+    private static func statusMessage(from payload: [String: Any]) -> String {
+        if let warnings = payload["warnings"] as? [String], !warnings.isEmpty {
+            return warnings.joined(separator: ", ")
+        }
+        if let error = payload["error"] as? String {
+            return error
+        }
+        return "Todo updated"
+    }
+
     private static func quickAddPriority(_ token: String) -> Int? {
         switch token.lowercased() {
         case "!1", "p1", "high": 5
@@ -934,12 +1376,290 @@ final class TodoManagerGearStore: ObservableObject {
         }
     }
 
+    private static func naturalTemporalIntent(
+        in text: String,
+        now: Date,
+        calendar: Calendar
+    ) -> TodoManagerNaturalTemporalIntent {
+        let lowercased = text.lowercased()
+        let clock = firstClock(in: text)
+        let hasReminderIntent = lowercased.contains("remind me") ||
+            lowercased.contains("set a reminder") ||
+            lowercased.contains("notify me")
+
+        let dayPart = Self.dayPartDefault(in: text, lowercased: lowercased)
+        let explicitDateOffset = Self.explicitDateOffset(in: text, now: now, calendar: calendar)
+        let weekendOffset = Self.weekendOffset(in: text, now: now, calendar: calendar)
+        let nextWeekdayOffset = Self.englishNextWeekdayOffset(in: text, now: now, calendar: calendar)
+        let dayOffset: Int?
+        if let explicitDateOffset {
+            dayOffset = explicitDateOffset
+        } else if let dayPartDayOffset = dayPart?.dayOffset {
+            dayOffset = dayPartDayOffset
+        } else if lowercased.contains("tomorrow") {
+            dayOffset = 1
+        } else if lowercased.contains("today") ||
+                    lowercased.contains("tonight") {
+            dayOffset = 0
+        } else if let nextWeekdayOffset {
+            dayOffset = nextWeekdayOffset
+        } else if let weekendOffset {
+            dayOffset = weekendOffset
+        } else {
+            dayOffset = nil
+        }
+
+        let inferredClock = hasReminderIntent ? nil : dayPart.map { ($0.hour, $0.minute) }
+        let effectiveClock = clock ?? inferredClock
+
+        guard dayOffset != nil || effectiveClock != nil else {
+            return TodoManagerNaturalTemporalIntent(
+                dueAt: nil,
+                isAllDay: false,
+                hasClock: false,
+                hasReminderIntent: hasReminderIntent
+            )
+        }
+
+        let resolvedOffset: Int
+        if let dayOffset {
+            resolvedOffset = dayOffset
+        } else if let effectiveClock {
+            let today = date(onDayOffset: 0, hour: effectiveClock.hour, minute: effectiveClock.minute, now: now, calendar: calendar)
+            resolvedOffset = today <= now ? 1 : 0
+        } else {
+            resolvedOffset = 0
+        }
+
+        let dueAt: Date?
+        let isAllDay: Bool
+        if let effectiveClock {
+            dueAt = date(onDayOffset: resolvedOffset, hour: effectiveClock.hour, minute: effectiveClock.minute, now: now, calendar: calendar)
+            isAllDay = false
+        } else {
+            dueAt = endOfDay(onDayOffset: resolvedOffset, now: now, calendar: calendar)
+            isAllDay = true
+        }
+
+        return TodoManagerNaturalTemporalIntent(
+            dueAt: dueAt,
+            isAllDay: isAllDay,
+            hasClock: clock != nil,
+            hasReminderIntent: hasReminderIntent
+        )
+    }
+
+    private static func dayPartDefault(
+        in text: String,
+        lowercased: String
+    ) -> (dayOffset: Int?, hour: Int, minute: Int)? {
+        let hasMorningMarker = lowercased.contains("morning")
+        let hasAfternoonMarker = lowercased.contains("afternoon")
+        let hasEveningMarker = lowercased.contains("evening") ||
+            lowercased.contains("night") ||
+            lowercased.contains("tonight")
+        if [hasMorningMarker, hasAfternoonMarker, hasEveningMarker].filter({ $0 }).count > 1 {
+            return nil
+        }
+
+        if lowercased.contains("tomorrow morning") {
+            return (1, 9, 0)
+        }
+        if lowercased.contains("tomorrow afternoon") {
+            return (1, 15, 0)
+        }
+        if lowercased.contains("tomorrow evening") ||
+            lowercased.contains("tomorrow night") {
+            return (1, 20, 0)
+        }
+        if lowercased.contains("today morning") ||
+            lowercased.contains("this morning") {
+            return (0, 9, 0)
+        }
+        if lowercased.contains("today afternoon") ||
+            lowercased.contains("this afternoon") {
+            return (0, 15, 0)
+        }
+        if lowercased.contains("tonight") ||
+            lowercased.contains("today evening") ||
+            lowercased.contains("this evening") {
+            return (0, 20, 0)
+        }
+        return nil
+    }
+
+    private static func explicitDateOffset(in text: String, now: Date, calendar: Calendar) -> Int? {
+        if let match = firstCaptureGroups(
+            pattern: "\\b(\\d{4})[-/.](\\d{1,2})[-/.](\\d{1,2})\\b",
+            in: text
+        ),
+            let year = intCapture(match, at: 1),
+            let month = intCapture(match, at: 2),
+            let day = intCapture(match, at: 3) {
+            return dayOffset(year: year, month: month, day: day, now: now, calendar: calendar)
+        }
+
+        return nil
+    }
+
+    private static func dayOffset(
+        year: Int,
+        month: Int,
+        day: Int,
+        now: Date,
+        calendar: Calendar
+    ) -> Int? {
+        var components = DateComponents()
+        components.calendar = calendar
+        components.timeZone = calendar.timeZone
+        components.year = year
+        components.month = month
+        components.day = day
+        guard let date = calendar.date(from: components) else {
+            return nil
+        }
+        let resolved = calendar.dateComponents([.year, .month, .day], from: date)
+        guard resolved.year == year, resolved.month == month, resolved.day == day else {
+            return nil
+        }
+        let startOfToday = calendar.startOfDay(for: now)
+        let startOfTarget = calendar.startOfDay(for: date)
+        return calendar.dateComponents([.day], from: startOfToday, to: startOfTarget).day
+    }
+
+    private static func weekendOffset(in text: String, now: Date, calendar: Calendar) -> Int? {
+        let lowercased = text.lowercased()
+        guard lowercased.contains("this weekend")
+        else {
+            return nil
+        }
+        let currentISOWeekday = isoWeekday(for: now, calendar: calendar)
+        return currentISOWeekday <= 6 ? 6 - currentISOWeekday : 0
+    }
+
+    private static func englishNextWeekdayOffset(in text: String, now: Date, calendar: Calendar) -> Int? {
+        guard let match = firstCaptureGroups(
+            pattern: "\\bnext\\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\\b",
+            in: text
+        ),
+            let weekdayText = capture(match, at: 1)?.lowercased(),
+            let targetISOWeekday = englishISOWeekday(weekdayText)
+        else {
+            return nil
+        }
+        let currentISOWeekday = isoWeekday(for: now, calendar: calendar)
+        let offset = (targetISOWeekday - currentISOWeekday + 7) % 7
+        return offset == 0 ? 7 : offset
+    }
+
+    private static func englishISOWeekday(_ text: String) -> Int? {
+        switch text {
+        case "monday": 1
+        case "tuesday": 2
+        case "wednesday": 3
+        case "thursday": 4
+        case "friday": 5
+        case "saturday": 6
+        case "sunday": 7
+        default: nil
+        }
+    }
+
+    private static func isoWeekday(for date: Date, calendar: Calendar) -> Int {
+        let weekday = calendar.component(.weekday, from: date)
+        return weekday == 1 ? 7 : weekday - 1
+    }
+
+    private static func firstClock(in text: String) -> (hour: Int, minute: Int)? {
+        if let match = firstCaptureGroups(
+            pattern: "\\b(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)\\b",
+            in: text
+        ) {
+            guard var hour = intCapture(match, at: 1) else {
+                return nil
+            }
+            let minute = intCapture(match, at: 2) ?? 0
+            let meridiem = capture(match, at: 3)?.lowercased()
+            if meridiem == "pm", hour < 12 {
+                hour += 12
+            } else if meridiem == "am", hour == 12 {
+                hour = 0
+            }
+            guard (0...23).contains(hour), (0...59).contains(minute) else {
+                return nil
+            }
+            return (hour, minute)
+        }
+
+        if let match = firstCaptureGroups(pattern: "\\b(\\d{1,2}):(\\d{2})\\b", in: text),
+           let hour = intCapture(match, at: 1),
+           let minute = intCapture(match, at: 2),
+           (0...23).contains(hour),
+           (0...59).contains(minute) {
+            return (hour, minute)
+        }
+
+        return nil
+    }
+
+    private static func capture(_ groups: [String?], at index: Int) -> String? {
+        guard groups.indices.contains(index) else {
+            return nil
+        }
+        return groups[index]
+    }
+
+    private static func intCapture(_ groups: [String?], at index: Int) -> Int? {
+        capture(groups, at: index).flatMap(Int.init)
+    }
+
+    private static func firstCaptureGroups(pattern: String, in text: String) -> [String?]? {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return nil
+        }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, options: [], range: range) else {
+            return nil
+        }
+        return (0..<match.numberOfRanges).map { index in
+            let matchRange = match.range(at: index)
+            guard matchRange.location != NSNotFound,
+                  let range = Range(matchRange, in: text)
+            else {
+                return nil
+            }
+            return String(text[range])
+        }
+    }
+
+    private static func date(
+        onDayOffset dayOffset: Int,
+        hour: Int,
+        minute: Int,
+        now: Date,
+        calendar: Calendar
+    ) -> Date {
+        let day = calendar.date(byAdding: .day, value: dayOffset, to: calendar.startOfDay(for: now)) ?? now
+        return calendar.date(bySettingHour: hour, minute: minute, second: 0, of: day) ?? day
+    }
+
+    private static func endOfDay(
+        onDayOffset dayOffset: Int,
+        now: Date,
+        calendar: Calendar
+    ) -> Date {
+        let day = calendar.date(byAdding: .day, value: dayOffset, to: calendar.startOfDay(for: now)) ?? now
+        return calendar.date(bySettingHour: 23, minute: 59, second: 0, of: day) ?? day
+    }
+
     private func filter(_ task: TodoManagerTaskRecord, by filter: TodoManagerFilter) -> Bool {
         switch filter {
         case .today:
-            return !task.isDeleted && !task.isCompleted && task.dueAt.map(Calendar.current.isDateInToday) == true
+            return !task.isDeleted &&
+                !task.isCompleted &&
+                hasRelevantDateInToday(task)
         case .upcoming:
-            return !task.isDeleted && !task.isCompleted && (task.dueAt ?? .distantPast) > Date()
+            return !task.isDeleted && !task.isCompleted && hasUpcomingRelevantDate(task)
         case .inbox:
             return !task.isDeleted && !task.isCompleted && task.listID == TodoManagerFileDatabase.defaultListID
         case .all:
@@ -958,8 +1678,10 @@ final class TodoManagerGearStore: ObservableObject {
         if left.priority != right.priority {
             return left.priority > right.priority
         }
-        if left.dueAt != right.dueAt {
-            return (left.dueAt ?? .distantFuture) < (right.dueAt ?? .distantFuture)
+        let leftDate = primaryRelevantDate(for: left)
+        let rightDate = primaryRelevantDate(for: right)
+        if leftDate != rightDate {
+            return (leftDate ?? .distantFuture) < (rightDate ?? .distantFuture)
         }
         return left.createdAt > right.createdAt
     }
@@ -985,11 +1707,14 @@ final class TodoManagerGearStore: ObservableObject {
         }
         switch dueBucket {
         case "today":
-            return task.dueAt.map(Calendar.current.isDateInToday) == true
+            return hasRelevantDateInToday(task)
         case "upcoming":
-            return (task.dueAt ?? .distantPast) > Date()
+            return hasUpcomingRelevantDate(task)
         case "overdue":
-            return !task.isCompleted && (task.dueAt ?? .distantFuture) < Date()
+            guard !task.isCompleted, let date = primaryRelevantDate(for: task) else {
+                return false
+            }
+            return date < Date()
         case "none":
             return task.dueAt == nil
         default:
@@ -1001,7 +1726,7 @@ final class TodoManagerGearStore: ObservableObject {
         guard startDate != nil || endDate != nil else {
             return true
         }
-        guard let candidate = task.dueAt ?? task.startAt else {
+        guard let candidate = primaryRelevantDate(for: task) else {
             return false
         }
         if let startDate, candidate < startDate {
@@ -1020,6 +1745,36 @@ final class TodoManagerGearStore: ObservableObject {
         return task.title.lowercased().contains(search) ||
             task.content.lowercased().contains(search) ||
             task.tags.contains { $0.lowercased().contains(search) }
+    }
+
+    private func hasRelevantDateInToday(_ task: TodoManagerTaskRecord) -> Bool {
+        let calendar = Calendar.current
+        return task.dueAt.map(calendar.isDateInToday) == true ||
+            task.startAt.map(calendar.isDateInToday) == true ||
+            reminderDates(for: task).contains(where: calendar.isDateInToday)
+    }
+
+    private func hasUpcomingRelevantDate(_ task: TodoManagerTaskRecord) -> Bool {
+        let now = Date()
+        return relevantDates(for: task).contains { $0 > now }
+    }
+
+    private func primaryRelevantDate(for task: TodoManagerTaskRecord) -> Date? {
+        if let dueAt = task.dueAt {
+            return dueAt
+        }
+        if let startAt = task.startAt {
+            return startAt
+        }
+        return reminderDates(for: task).sorted().first
+    }
+
+    private func relevantDates(for task: TodoManagerTaskRecord) -> [Date] {
+        [task.dueAt, task.startAt].compactMap { $0 } + reminderDates(for: task)
+    }
+
+    private func reminderDates(for task: TodoManagerTaskRecord) -> [Date] {
+        task.reminders.compactMap { $0.triggerDate(for: task) }
     }
 
     private func applyStatus(_ status: String, to task: inout TodoManagerTaskRecord, now: Date) {
@@ -1088,11 +1843,17 @@ final class TodoManagerGearStore: ObservableObject {
         })).sorted()
     }
 
-    private func reminderRecords(_ value: Any?) -> [TodoManagerReminderRecord] {
-        guard let values = value as? [Any] else {
+    private func reminderRecords(_ value: Any?, dueAt: Date?) throws -> [TodoManagerReminderRecord] {
+        guard value != nil else {
             return []
         }
-        return values.enumerated().compactMap { index, value in
+        guard let values = value as? [Any] else {
+            throw TodoManagerGearError(
+                code: "gear.args.reminders",
+                message: "`reminders` must be an array of reminder strings or objects."
+            )
+        }
+        return try values.enumerated().map { index, value in
             if let trigger = value as? String, let date = TodoManagerDateCodec.date(from: trigger) {
                 return TodoManagerReminderRecord(
                     id: "reminder_\(index)",
@@ -1101,13 +1862,38 @@ final class TodoManagerGearStore: ObservableObject {
                 )
             }
             guard let object = value as? [String: Any] else {
-                return nil
+                throw TodoManagerGearError(
+                    code: "gear.args.reminders",
+                    message: "Each reminder must be an ISO-8601 string or an object with `trigger_at` or `minutes_before_due`."
+                )
             }
-            let triggerAt = (object["trigger_at"] as? String).flatMap(TodoManagerDateCodec.date)
+            let triggerAtString = object["trigger_at"] as? String
+            let triggerAt = triggerAtString.flatMap(TodoManagerDateCodec.date)
+            if triggerAtString?.nilIfBlank != nil && triggerAt == nil {
+                throw TodoManagerGearError(
+                    code: "gear.args.reminders",
+                    message: "`reminders[].trigger_at` must be an ISO-8601 date string."
+                )
+            }
             let minutes = (object["minutes_before_due"] as? Int)
                 ?? (object["minutes_before_due"] as? NSNumber)?.intValue
+            if let minutes, minutes < 0 {
+                throw TodoManagerGearError(
+                    code: "gear.args.reminders",
+                    message: "`reminders[].minutes_before_due` must be zero or greater."
+                )
+            }
+            if minutes != nil && dueAt == nil {
+                throw TodoManagerGearError(
+                    code: "todo.reminder.due_time_required",
+                    message: "`minutes_before_due` reminders require a concrete `due_at` time."
+                )
+            }
             guard triggerAt != nil || minutes != nil else {
-                return nil
+                throw TodoManagerGearError(
+                    code: "gear.args.reminders",
+                    message: "Each reminder object must include `trigger_at` or `minutes_before_due`."
+                )
             }
             return TodoManagerReminderRecord(
                 id: (object["id"] as? String)?.nilIfBlank ?? "reminder_\(index)",

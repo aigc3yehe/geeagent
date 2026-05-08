@@ -61,7 +61,7 @@ struct WorkbenchInspectorView: View {
 
     @ViewBuilder
     private var chatInspector: some View {
-        if let conversation = store.selectedConversation {
+        if let conversation = store.selectedDisplayConversation {
             WorkbenchInspectorCard(title: conversation.title) {
                 LabeledContent("Preview", value: conversation.previewText)
                 LabeledContent("Last message", value: conversation.lastActivityLabel)
@@ -75,6 +75,17 @@ struct WorkbenchInspectorView: View {
                     LabeledContent("App", value: linkedAppName)
                 }
                 LabeledContent("Messages", value: "\(conversation.messages.count)")
+            }
+
+            let attachments = inputAttachments(in: conversation)
+            if !attachments.isEmpty {
+                WorkbenchInspectorCard(title: "Input Attachments") {
+                    LabeledContent("Count", value: "\(attachments.count)")
+                    ForEach(attachments) { attachment in
+                        Divider()
+                        inspectorAttachment(attachment)
+                    }
+                }
             }
 
             if let runtimeRunSummary = conversation.runtimeRunSummary {
@@ -190,11 +201,71 @@ struct WorkbenchInspectorView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+                if let toolName = row.toolName, !toolName.isEmpty, row.projectionKind == "tool_result" {
+                    Text(toolName)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                if !row.attachmentIDs.isEmpty {
+                    Text("\(row.attachmentIDs.count) attachment\(row.attachmentIDs.count == 1 ? "" : "s")")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 if !row.artifactIDs.isEmpty {
                     Text("\(row.artifactIDs.count) artifact\(row.artifactIDs.count == 1 ? "" : "s")")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+            }
+        }
+    }
+
+    private func inputAttachments(in conversation: ConversationThread) -> [ConversationMessageAttachment] {
+        conversation.visibleMessages
+            .filter { $0.role == .user && $0.kind == .chat }
+            .flatMap(\.attachments)
+    }
+
+    private func inspectorAttachment(_ attachment: ConversationMessageAttachment) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: attachment.systemImage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(attachmentTint(attachment))
+                    .frame(width: 16)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(attachment.title)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(attachment.kind.rawValue)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            ForEach(attachment.inspectorDetailItems) { detail in
+                LabeledContent(detail.label, value: detail.value)
+                    .font(.caption)
+            }
+        }
+    }
+
+    private func attachmentTint(_ attachment: ConversationMessageAttachment) -> Color {
+        switch attachment.status {
+        case .failed:
+            return .red
+        case .degraded:
+            return .orange
+        case .ready:
+            switch attachment.kind {
+            case .image:
+                return .blue
+            case .directory:
+                return .green
+            case .file, .unknown:
+                return .secondary
             }
         }
     }

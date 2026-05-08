@@ -39,7 +39,7 @@ function printUsage(): void {
       "delete-terminal-access-rule, export-runtime-run, project-runtime-run, " +
       "project-runtime-run-replay, classify-runtime-run-wait, " +
       "submit-workspace-message, submit-routed-workspace-message, " +
-      "submit-quick-prompt, perform-task-action, get-chat-routing-settings, " +
+      "submit-quick-prompt, cancel-active-run, perform-task-action, get-chat-routing-settings, " +
       "save-chat-routing-settings, set-highest-authorization, add-system-skill-source, " +
       "remove-system-skill-source, add-persona-skill-source, remove-persona-skill-source, " +
       "codex-export-status, codex-export-list-capabilities, " +

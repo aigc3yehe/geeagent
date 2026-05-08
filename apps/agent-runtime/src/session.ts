@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { extname, isAbsolute, join, normalize, relative } from "node:path";
 
+import type { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import {
   createSdkMcpServer,
   query,
@@ -38,6 +40,9 @@ import {
   DEFAULT_SDK_AVAILABLE_TOOLS,
   isGeeHostSdkTool,
 } from "./sdk-tool-policy.js";
+import type { RuntimeInputAttachment } from "./native-runtime/store/types.js";
+import { filesDirectorySnapshot } from "./native-runtime/tools/files.js";
+import type { ToolOutcome } from "./native-runtime/tools/types.js";
 
 type SessionConfig = {
   sessionId: string;
@@ -76,13 +81,20 @@ type PendingHostAction = {
 
 type RuntimeBootstrapState = "not_sent" | "queued" | "sent";
 
+export type RuntimeSdkUserContent =
+  | string
+  | {
+      text: string;
+      attachments?: RuntimeInputAttachment[];
+    };
+
 type QueuedRuntimeMessage = {
-  content: string;
+  content: RuntimeSdkUserContent;
   includeRuntimeBootstrap: boolean;
 };
 
 type RuntimeSdkSession = {
-  send(content: string): void;
+  send(content: RuntimeSdkUserContent): void | Promise<void>;
   stream(): AsyncIterable<SDKMessage>;
   close(): void;
 };
@@ -90,6 +102,14 @@ type RuntimeSdkSession = {
 type RuntimeSdkSessionFactory = (
   options: Parameters<typeof unstable_v2_createSession>[0],
 ) => RuntimeSdkSession;
+
+const SDK_IMAGE_HARD_MAX_BYTES = 10 * 1024 * 1024;
+const SUPPORTED_IMAGE_MEDIA_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
 
 class AsyncMessageQueue<T> implements AsyncIterable<T> {
   private readonly values: T[] = [];
@@ -136,16 +156,141 @@ class AsyncMessageQueue<T> implements AsyncIterable<T> {
   }
 }
 
-function sdkUserMessage(content: string): SDKUserMessage {
+async function sdkUserMessage(content: RuntimeSdkUserContent): Promise<SDKUserMessage> {
+  const text = runtimeSdkContentText(content);
+  const attachments = runtimeSdkContentAttachments(content);
+  const blocks: ContentBlockParam[] = [
+    {
+      type: "text",
+      text,
+    },
+    ...(await sdkImageContentBlocks(attachments)),
+  ];
   return {
     type: "user",
     session_id: "",
     message: {
       role: "user",
-      content: [{ type: "text", text: content }],
+      content: blocks,
     },
     parent_tool_use_id: null,
   };
+}
+
+function runtimeSdkContentText(content: RuntimeSdkUserContent): string {
+  return typeof content === "string" ? content : content.text;
+}
+
+function runtimeSdkContentAttachments(content: RuntimeSdkUserContent): RuntimeInputAttachment[] {
+  if (typeof content === "string") {
+    return [];
+  }
+  return content.attachments ?? [];
+}
+
+async function sdkImageContentBlocks(
+  attachments: RuntimeInputAttachment[],
+): Promise<ContentBlockParam[]> {
+  const blocks: ContentBlockParam[] = [];
+  for (const attachment of attachments) {
+    if (attachment.kind !== "image" || attachment.status !== "ready") {
+      continue;
+    }
+    const path = await resolvedReadableAttachmentPath(attachment);
+    const mediaType = supportedImageMediaType(attachment.mime_type, path);
+    if (!mediaType) {
+      throw new Error(
+        `Ready image attachment ${attachment.attachment_id} uses unsupported media type ${attachment.mime_type ?? "unknown"}.`,
+      );
+    }
+    const maxBytes = attachmentMaxBytes(attachment);
+    const metadata = await stat(path);
+    if (!metadata.isFile()) {
+      throw new Error(`Ready image attachment ${attachment.attachment_id} is not a file: ${path}`);
+    }
+    if (metadata.size > maxBytes) {
+      throw new Error(
+        `Ready image attachment ${attachment.attachment_id} is ${metadata.size} bytes, above the ${maxBytes} byte SDK image limit.`,
+      );
+    }
+    const bytes = await readFile(path);
+    if (bytes.byteLength > maxBytes) {
+      throw new Error(
+        `Ready image attachment ${attachment.attachment_id} read ${bytes.byteLength} bytes, above the ${maxBytes} byte SDK image limit.`,
+      );
+    }
+    blocks.push({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: mediaType,
+        data: bytes.toString("base64"),
+      },
+    });
+  }
+  return blocks;
+}
+
+async function resolvedReadableAttachmentPath(attachment: RuntimeInputAttachment): Promise<string> {
+  const inputPath = attachment.resolved_path ?? attachment.original_path;
+  if (!inputPath) {
+    throw new Error(`Ready attachment ${attachment.attachment_id} has no readable local path.`);
+  }
+  const resolvedPath = await realpath(inputPath);
+  const root = attachment.access.root;
+  if (!root) {
+    return resolvedPath;
+  }
+  const resolvedRoot = await realpath(root);
+  if (!pathIsWithinRoot(resolvedPath, resolvedRoot)) {
+    throw new Error(
+      `Ready attachment ${attachment.attachment_id} path ${resolvedPath} escapes scoped attachment root ${resolvedRoot}.`,
+    );
+  }
+  return resolvedPath;
+}
+
+function supportedImageMediaType(
+  mimeType: string | undefined,
+  path: string,
+): "image/jpeg" | "image/png" | "image/gif" | "image/webp" | null {
+  const normalized = mimeType?.split(";")[0]?.trim().toLowerCase();
+  if (normalized && SUPPORTED_IMAGE_MEDIA_TYPES.has(normalized)) {
+    return normalized as "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+  }
+  switch (extname(path).toLowerCase()) {
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".png":
+      return "image/png";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    default:
+      return null;
+  }
+}
+
+function attachmentMaxBytes(attachment: RuntimeInputAttachment): number {
+  const requested = attachment.limits?.max_bytes;
+  if (requested === undefined || !Number.isFinite(requested) || requested <= 0) {
+    return SDK_IMAGE_HARD_MAX_BYTES;
+  }
+  return Math.min(Math.floor(requested), SDK_IMAGE_HARD_MAX_BYTES);
+}
+
+function pathIsWithinRoot(path: string, root: string): boolean {
+  const relativePath = relative(normalize(root), normalize(path));
+  return (
+    relativePath === "" ||
+    (
+      relativePath !== ".." &&
+      !relativePath.startsWith(`..${"/"}`) &&
+      !isAbsolute(relativePath)
+    )
+  );
 }
 
 function createQueryBackedSession(
@@ -160,11 +305,11 @@ function createQueryBackedSession(
   let closed = false;
 
   return {
-    send(content: string): void {
+    async send(content: RuntimeSdkUserContent): Promise<void> {
       if (closed) {
         throw new Error("SDK query session is already closed");
       }
-      input.enqueue(sdkUserMessage(content));
+      input.enqueue(await sdkUserMessage(content));
     },
     async *stream(): AsyncIterable<SDKMessage> {
       while (!closed) {
@@ -230,6 +375,7 @@ function buildSystemPrompt(
     "Observe, decide, act, and continue until the task is complete or blocked by approval.",
     "Do not ask the user to type 'continue' for ordinary operator work.",
     "Use built-in shell and file tools when needed.",
+    "For greetings, thanks, small talk, or other pure conversation, answer directly without calling tools.",
     "When the user asks you to inspect local machine state, use GeeAgent's Bash tool for read-only checks instead of telling the user to run a terminal command.",
     "Local machine state includes ports, processes, files, directories, command availability, local services, repository state, build output, and test output.",
     "If the latest user request asks for local machine state, you MUST call an appropriate tool before answering. A response that says you cannot directly inspect is incorrect unless the host denies or withholds the tool.",
@@ -239,6 +385,7 @@ function buildSystemPrompt(
     "Gee's default specialty and preset task domain are not code development. Unless the user explicitly asks you to develop, fix, refactor, or edit code, do not modify local project source code or configuration as the way to satisfy a request.",
     "If a task needs scripting, data processing, inspection helpers, or a temporary automation program, you may write and run that code as an implementation detail, but do not turn ordinary app control, file management, research, or configuration requests into edits to the user's local codebase.",
     "Do not use fallback task execution paths. If the intended tool, Gear, provider, permission, or session continuation is unavailable, report the real failed or degraded state instead of switching to another route or presenting partial work as complete.",
+    "When a provider, tool, or runtime step fails, explain it in user-facing language with the next useful action. Do not expose internal SDK names, gateway names, raw JSON error payloads, or provider branding unless the user explicitly asks for technical details.",
   ];
 
   if (context) {
@@ -266,6 +413,15 @@ function buildSystemPrompt(
         "- Gee Gear controls are available through the host bridge. If `mcp__gee__gear_list_capabilities`, `mcp__gee__gear_invoke`, or `mcp__gee__app_open_surface` are visible as callable tools, use them deliberately and inspect each structured result before deciding the next step.",
       );
       lines.push(
+        "- For directory input attachments, use `mcp__gee__files_directory_snapshot` with the attachment id or attached path to inspect a bounded directory structure inside the active run. If the tool reports a scope or read failure, surface that real degraded state instead of using Bash or guessing from the manifest.",
+      );
+      lines.push(
+        "- For screenshot-vs-folder tasks, read the image content directly, list the referenced directory through the bounded directory snapshot tool, and compare the two structures yourself. Do not look for a dedicated screenshot-directory comparison tool.",
+      );
+      lines.push(
+        "- For ready image input attachments, inspect the image directly through the multimodal model context. Do not call Read, Bash, OCR, metadata tools, or filesystem probes as the first step for ordinary image understanding or text extraction unless the user explicitly asks for OCR/tool-based verification or the model reports that the image is unreadable.",
+      );
+      lines.push(
         "- For requests that match an installed Gear or built-in app, use the Gee Gear bridge as the execution path. Do not inspect GeeAgent source files, call SDK Skill aliases, or use Bash to discover product internals unless the user explicitly asks to debug GeeAgent itself.",
       );
       lines.push(
@@ -282,6 +438,12 @@ function buildSystemPrompt(
       );
       lines.push(
         "- When the current surface is Telegram and the user asks to send, upload, attach, or return a local file, first identify a real local file path with the available file tools, then invoke `telegram.bridge/telegram_direct.send_file` with `file_path` and a fresh `idempotency_key`. Inspect the structured result before replying; do not call Telegram Bot API directly.",
+      );
+      lines.push(
+        "- For `todo.manager/todo.create`, pass a stable `idempotency_key` for one logical user request. If the user mentions today, tomorrow, a clock time, morning/afternoon/evening, or a reminder, convert that intent into structured `due_at`, `start_at`, `is_all_day`, `timezone`, and `reminders` arguments instead of leaving the time words only in the title.",
+      );
+      lines.push(
+        "- If recent conversation context says a Gear write completed but the final reply timed out or the same agent run could not resume, and the latest user only asks to retry, do not repeat the write capability. Use the recorded structured result or ask before creating a duplicate.",
       );
       lines.push(renderGearCapabilityContractHints());
       lines.push(
@@ -331,12 +493,24 @@ function sdkSessionBootstrapPrompt(
   return buildSystemPrompt(config.systemPrompt, config.runtimeContext);
 }
 
-function runtimeUserMessage(content: string, runtimePrompt?: string): string {
+function runtimeUserMessage(
+  content: RuntimeSdkUserContent,
+  runtimePrompt?: string,
+): RuntimeSdkUserContent {
+  const text = runtimeSdkContentText(content);
+  const attachments = runtimeSdkContentAttachments(content);
   const trimmedPrompt = runtimePrompt?.trim() ?? "";
-  if (trimmedPrompt.length > 0) {
-    return `${trimmedPrompt}\n\n[GeeAgent Turn]\n${content}`;
+  const wrappedText =
+    trimmedPrompt.length > 0
+      ? `${trimmedPrompt}\n\n[GeeAgent Turn]\n${text}`
+      : text;
+  if (attachments.length > 0) {
+    return {
+      text: wrappedText,
+      attachments,
+    };
   }
-  return content;
+  return wrappedText;
 }
 
 function sanitizeToolInput(
@@ -352,6 +526,237 @@ function compactRecord(record: Record<string, unknown>): Record<string, unknown>
   return Object.fromEntries(
     Object.entries(record).filter(([, value]) => value !== undefined),
   );
+}
+
+type DirectorySnapshotToolContext = {
+  cwd: string;
+  attachments: RuntimeInputAttachment[];
+};
+
+type GeeMcpTextToolResult = {
+  content: Array<{ type: "text"; text: string }>;
+  isError: boolean;
+};
+
+async function filesDirectorySnapshotToolResult(
+  args: Record<string, unknown>,
+  context: DirectorySnapshotToolContext,
+): Promise<GeeMcpTextToolResult> {
+  const attachmentID = stringValue(args.attachment_id);
+  const requestedPath = stringValue(args.path);
+  let scope: DirectorySnapshotScope | null = null;
+
+  if (attachmentID) {
+    const attachment = context.attachments.find(
+      (candidate) => candidate.attachment_id === attachmentID,
+    );
+    if (!attachment) {
+      return mcpErrorToolResult(
+        "files.directorySnapshot",
+        "files.directory_attachment_not_found",
+        `No active directory attachment exists for attachment_id ${attachmentID}.`,
+      );
+    }
+    if (attachment.kind !== "directory" || attachment.status !== "ready") {
+      return mcpErrorToolResult(
+        "files.directorySnapshot",
+        "files.directory_attachment_unavailable",
+        `Attachment ${attachmentID} is ${attachment.kind}/${attachment.status}, not a ready directory attachment.`,
+      );
+    }
+    const attachmentPath = attachment.resolved_path ?? attachment.original_path;
+    const root = attachment.access.root ?? attachmentPath;
+    if (!attachmentPath || !root) {
+      return mcpErrorToolResult(
+        "files.directorySnapshot",
+        "files.directory_attachment_path_missing",
+        `Directory attachment ${attachmentID} has no readable local path.`,
+      );
+    }
+    scope = {
+      path: requestedPath ?? attachmentPath,
+      root,
+      attachment,
+    };
+  } else if (requestedPath) {
+    scope = await directorySnapshotScopeForPath(requestedPath, context);
+    if (!scope) {
+      return mcpErrorToolResult(
+        "files.directorySnapshot",
+        "files.directory_snapshot_scope_missing",
+        `Path ${requestedPath} is not inside the current workspace or a ready directory attachment for this run.`,
+      );
+    }
+  } else {
+    return mcpErrorToolResult(
+      "files.directorySnapshot",
+      "files.directory_snapshot_path_missing",
+      "Provide either attachment_id or path.",
+    );
+  }
+
+  const outcome = await filesDirectorySnapshot({
+    tool_id: "files.directorySnapshot",
+    arguments: directorySnapshotArgs(args, scope),
+    files_root: scope.root,
+  });
+  return mcpToolResultFromOutcome("files.directorySnapshot", outcome);
+}
+
+type DirectorySnapshotScope = {
+  path: string;
+  root: string;
+  attachment?: RuntimeInputAttachment;
+};
+
+async function directorySnapshotScopeForPath(
+  path: string,
+  context: DirectorySnapshotToolContext,
+): Promise<DirectorySnapshotScope | null> {
+  const attachmentScope = await directoryAttachmentScopeForPath(path, context.attachments);
+  if (attachmentScope) {
+    return attachmentScope;
+  }
+  const workspaceScope = await workspaceScopeForPath(path, context.cwd);
+  if (workspaceScope) {
+    return workspaceScope;
+  }
+  return null;
+}
+
+async function directoryAttachmentScopeForPath(
+  path: string,
+  attachments: RuntimeInputAttachment[],
+): Promise<DirectorySnapshotScope | null> {
+  for (const attachment of attachments) {
+    if (attachment.kind !== "directory" || attachment.status !== "ready") {
+      continue;
+    }
+    const root = attachment.access.root ?? attachment.resolved_path ?? attachment.original_path;
+    if (!root) {
+      continue;
+    }
+    const candidate = await realpathWithinCandidateRoot(path, root);
+    if (candidate) {
+      return {
+        path,
+        root,
+        attachment,
+      };
+    }
+  }
+  return null;
+}
+
+async function workspaceScopeForPath(
+  path: string,
+  cwd: string,
+): Promise<DirectorySnapshotScope | null> {
+  const candidate = await realpathWithinCandidateRoot(path, cwd);
+  if (!candidate) {
+    return null;
+  }
+  return {
+    path,
+    root: cwd,
+  };
+}
+
+async function realpathWithinCandidateRoot(
+  path: string,
+  root: string,
+): Promise<string | null> {
+  try {
+    const absolutePath = isAbsolute(path) ? path : join(root, path);
+    const [resolvedPath, resolvedRoot] = await Promise.all([
+      realpath(absolutePath),
+      realpath(root),
+    ]);
+    return pathIsWithinRoot(resolvedPath, resolvedRoot) ? resolvedPath : null;
+  } catch {
+    return null;
+  }
+}
+
+function directorySnapshotArgs(
+  args: Record<string, unknown>,
+  scope: DirectorySnapshotScope,
+): Record<string, unknown> {
+  return compactRecord({
+    path: scope.path,
+    max_depth: args.max_depth ?? scope.attachment?.limits?.max_depth,
+    max_entries: args.max_entries ?? scope.attachment?.limits?.max_entries,
+    include_hidden: args.include_hidden,
+    include_sizes: args.include_sizes,
+    follow_symlinks: args.follow_symlinks,
+  });
+}
+
+function mcpToolResultFromOutcome(
+  toolID: string,
+  outcome: ToolOutcome,
+): GeeMcpTextToolResult {
+  if (outcome.kind === "completed") {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              tool_id: outcome.tool_id || toolID,
+              status: "succeeded",
+              ...outcome.payload,
+              fallback_attempted: false,
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+      isError: false,
+    };
+  }
+  if (outcome.kind === "error") {
+    return mcpErrorToolResult(toolID, outcome.code, outcome.message);
+  }
+  if (outcome.kind === "denied") {
+    return mcpErrorToolResult(toolID, "files.directory_snapshot_denied", outcome.reason);
+  }
+  return mcpErrorToolResult(
+    toolID,
+    "files.directory_snapshot_needs_approval",
+    outcome.prompt,
+  );
+}
+
+function mcpErrorToolResult(
+  toolID: string,
+  code: string,
+  message: string,
+): GeeMcpTextToolResult {
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          {
+            tool_id: toolID,
+            status: "failed",
+            code,
+            message,
+            fallback_attempted: false,
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+    isError: true,
+  };
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
 function shallowRecordEqual(left: Record<string, unknown>, right: Record<string, unknown>): boolean {
@@ -458,6 +863,37 @@ function mergeDeterministicGearInvokeInput(
   };
 }
 
+function withHostActionIdempotency(
+  hostActionID: string,
+  toolID: string,
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  if (toolID !== "gee.gear.invoke") {
+    return input;
+  }
+  const gearID = typeof input.gear_id === "string" ? input.gear_id : "";
+  const capabilityID = typeof input.capability_id === "string" ? input.capability_id : "";
+  const args =
+    input.args && typeof input.args === "object" && !Array.isArray(input.args)
+      ? (input.args as Record<string, unknown>)
+      : {};
+  if (
+    gearID !== "todo.manager" ||
+    capabilityID !== "todo.create" ||
+    typeof args.idempotency_key === "string" ||
+    typeof args.idempotencyKey === "string"
+  ) {
+    return input;
+  }
+  return {
+    ...input,
+    args: {
+      ...args,
+      idempotency_key: hostActionID,
+    },
+  };
+}
+
 function summarizeToolResultContent(content: unknown): string | undefined {
   if (typeof content === "string") {
     const trimmed = content.trim();
@@ -504,6 +940,7 @@ export class ClaudeRuntimeSession {
   private readonly pendingHostActions = new Map<string, PendingHostAction>();
   private readonly queuedMessages: QueuedRuntimeMessage[] = [];
   private readonly sdkSession: RuntimeSdkSession;
+  private activeInputAttachments: RuntimeInputAttachment[] = [];
   private runtimeBootstrapState: RuntimeBootstrapState = "not_sent";
   private requestedGeeHostAction = false;
   private listening = false;
@@ -581,7 +1018,7 @@ export class ClaudeRuntimeSession {
     this.sdkSession = (config.sdkSessionFactory ?? createQueryBackedSession)(sdkOptions);
   }
 
-  send(content: string): void {
+  send(content: RuntimeSdkUserContent): void {
     if (this.closed) {
       throw new Error(`session ${this.sessionId} is already closed`);
     }
@@ -662,7 +1099,7 @@ export class ClaudeRuntimeSession {
       return null;
     }
     return (
-      "This turn is a Gee Gear task. GeeAgent requires the active SDK run to " +
+      "This turn is a Gee Gear task. GeeAgent requires the active agent run to " +
       "use the Gee MCP Gear bridge before any shell, file, skill, or source " +
       "inspection tools. The request was blocked so bridge/tool problems are " +
       "exposed instead of hidden by fallback probing."
@@ -683,6 +1120,24 @@ export class ClaudeRuntimeSession {
             module_id: z.string().optional(),
           },
           async (args) => this.callGeeHostAction("gee.app.openSurface", compactRecord(args)),
+        ),
+        tool(
+          "files_directory_snapshot",
+          "Return a bounded deterministic tree snapshot for the current workspace or a directory attachment in this active GeeAgent run. Prefer attachment_id from the input attachment manifest when available.",
+          {
+            path: z.string().optional(),
+            attachment_id: z.string().optional(),
+            max_depth: z.number().int().nonnegative().optional(),
+            max_entries: z.number().int().positive().optional(),
+            include_hidden: z.boolean().optional(),
+            include_sizes: z.boolean().optional(),
+            follow_symlinks: z.boolean().optional(),
+          },
+          async (args) =>
+            filesDirectorySnapshotToolResult(compactRecord(args), {
+              cwd: this.config.cwd,
+              attachments: this.activeInputAttachments,
+            }),
         ),
         tool(
           "gear_list_capabilities",
@@ -773,10 +1228,11 @@ export class ClaudeRuntimeSession {
     toolID: string,
     args: Record<string, unknown>,
   ) {
+    const hostActionID = hostActionId(toolID);
     const completion = await this.requestGeeHostAction({
-      host_action_id: hostActionId(toolID),
+      host_action_id: hostActionID,
       tool_id: toolID,
-      arguments: args,
+      arguments: withHostActionIdempotency(hostActionID, toolID, args),
     });
     const prepared = await prepareHostActionCompletionsForModel(
       [completion],
@@ -896,7 +1352,9 @@ export class ClaudeRuntimeSession {
     const runtimePrompt = message.includeRuntimeBootstrap
       ? sdkSessionBootstrapPrompt(this.config)
       : undefined;
-    await this.sdkSession.send(runtimeUserMessage(message.content, runtimePrompt));
+    const content = runtimeUserMessage(message.content, runtimePrompt);
+    this.activeInputAttachments = runtimeSdkContentAttachments(content);
+    await this.sdkSession.send(content);
   }
 
   private forgetUnconfirmedBootstrap(message: QueuedRuntimeMessage): void {
@@ -1009,6 +1467,8 @@ function isGeeHostToolName(toolName: string): boolean {
     isGeeHostSdkTool(toolName) ||
     [
       "gee.app.openSurface",
+      "gee.files.directorySnapshot",
+      "files_directory_snapshot",
       "gee.gear.listCapabilities",
       "gee.gear.invoke",
     ].includes(toolName)
@@ -1024,8 +1484,11 @@ export const __sessionTestHooks = {
   runtimeUserMessage,
   sanitizeToolInput,
   sanitizedSdkEnvironment,
+  sdkUserMessage,
   sdkSessionBootstrapPrompt,
   summarizeToolResultContent,
+  withHostActionIdempotency,
+  filesDirectorySnapshotToolResult,
   gearCapabilityContracts,
   validateGearCapabilityArgs,
 };

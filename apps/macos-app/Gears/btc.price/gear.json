@@ -8,6 +8,8 @@
   "category": "Market",
   "kind": "widget",
   "display_mode": "in_nav",
+  "cover": "assets/cover.png",
+  "icon": "assets/icon.png",
   "entry": {
     "type": "widget",
     "native_id": "btc.price"

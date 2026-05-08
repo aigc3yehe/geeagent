@@ -8,6 +8,8 @@
   "category": "Developer",
   "kind": "atmosphere",
   "display_mode": "full_canvas",
+  "cover": "assets/cover.png",
+  "icon": "assets/icon.png",
   "entry": {
     "type": "native",
     "native_id": "app.icon.forge"
@@ -30,7 +32,9 @@
         ],
         "input_schema": {
           "type": "object",
-          "required": ["source_path"],
+          "required": [
+            "source_path"
+          ],
           "additionalProperties": false,
           "properties": {
             "source_path": {
@@ -66,22 +70,52 @@
         "output_schema": {
           "type": "object",
           "properties": {
-            "status": { "type": "string", "enum": ["succeeded", "failed"] },
-            "gear_id": { "type": "string" },
-            "capability_id": { "type": "string" },
-            "source_path": { "type": "string" },
-            "output_dir": { "type": "string" },
-            "icns_path": { "type": "string" },
-            "iconset_path": { "type": "string" },
-            "appiconset_path": { "type": "string" },
-            "preview_path": { "type": "string" },
+            "status": {
+              "type": "string",
+              "enum": [
+                "succeeded",
+                "failed"
+              ]
+            },
+            "gear_id": {
+              "type": "string"
+            },
+            "capability_id": {
+              "type": "string"
+            },
+            "source_path": {
+              "type": "string"
+            },
+            "output_dir": {
+              "type": "string"
+            },
+            "icns_path": {
+              "type": "string"
+            },
+            "iconset_path": {
+              "type": "string"
+            },
+            "appiconset_path": {
+              "type": "string"
+            },
+            "preview_path": {
+              "type": "string"
+            },
             "generated_files": {
               "type": "array",
-              "items": { "type": "string" }
+              "items": {
+                "type": "string"
+              }
             },
-            "code": { "type": "string" },
-            "error": { "type": "string" },
-            "recovery": { "type": "string" }
+            "code": {
+              "type": "string"
+            },
+            "error": {
+              "type": "string"
+            },
+            "recovery": {
+              "type": "string"
+            }
           }
         },
         "side_effect": "filesystem.write.user_selected",
@@ -109,7 +143,9 @@
         ],
         "input_schema": {
           "type": "object",
-          "required": ["source_path"],
+          "required": [
+            "source_path"
+          ],
           "additionalProperties": false,
           "properties": {
             "source_path": {
@@ -145,23 +181,55 @@
         "output_schema": {
           "type": "object",
           "properties": {
-            "status": { "type": "string", "enum": ["succeeded", "failed"] },
-            "gear_id": { "type": "string" },
-            "capability_id": { "type": "string" },
-            "source_path": { "type": "string" },
-            "output_dir": { "type": "string" },
-            "assets_path": { "type": "string" },
-            "icon_path": { "type": "string" },
-            "manifest_icon": { "type": "string" },
-            "preview_path": { "type": "string" },
-            "metadata_path": { "type": "string" },
+            "status": {
+              "type": "string",
+              "enum": [
+                "succeeded",
+                "failed"
+              ]
+            },
+            "gear_id": {
+              "type": "string"
+            },
+            "capability_id": {
+              "type": "string"
+            },
+            "source_path": {
+              "type": "string"
+            },
+            "output_dir": {
+              "type": "string"
+            },
+            "assets_path": {
+              "type": "string"
+            },
+            "icon_path": {
+              "type": "string"
+            },
+            "manifest_icon": {
+              "type": "string"
+            },
+            "preview_path": {
+              "type": "string"
+            },
+            "metadata_path": {
+              "type": "string"
+            },
             "generated_files": {
               "type": "array",
-              "items": { "type": "string" }
+              "items": {
+                "type": "string"
+              }
             },
-            "code": { "type": "string" },
-            "error": { "type": "string" },
-            "recovery": { "type": "string" }
+            "code": {
+              "type": "string"
+            },
+            "error": {
+              "type": "string"
+            },
+            "recovery": {
+              "type": "string"
+            }
           }
         },
         "side_effect": "filesystem.write.user_selected",

@@ -26,7 +26,7 @@ import {
   terminalAccessDecisionForScope,
   type TerminalAccessScope,
 } from "./store/terminal-permissions.js";
-import type { AgentProfile } from "./store/types.js";
+import type { AgentProfile, RuntimeInputAttachment } from "./store/types.js";
 import { loadSecurityPreferences } from "./store/persistence.js";
 import { skillPromptMetadataForProfile } from "./store/skill-sources.js";
 import { resolveConfigDir, runtimeProjectPath } from "./paths.js";
@@ -95,6 +95,7 @@ export type SdkTurnResult = {
   final_result?: string;
   tool_events: SdkToolEvent[];
   auto_approved_tools: number;
+  assistant_text_stale_after_tool?: boolean;
   failed_reason?: string;
   pending_terminal_approval?: PendingTerminalApproval;
   pending_host_actions?: RuntimeHostActionIntent[];
@@ -107,6 +108,7 @@ type ManagedSession = {
   events: RuntimeEvent[];
   waiters: Array<(event: RuntimeEvent) => void>;
   toolBoundaryMode: "default" | "gear_first";
+  requestedToolConfigKey: string;
   runPlan?: RuntimeRunPlan | null;
   toolInvocationCount?: number;
   pendingHostActionMode?: "mcp" | "directive";
@@ -118,6 +120,7 @@ type RuntimeTurnOptions = {
   disallowedTools?: string[];
   enableGeeHostTools?: boolean;
   eventIdleTimeoutMs?: number;
+  inputAttachments?: RuntimeInputAttachment[];
   toolBoundaryMode?: "default" | "gear_first";
   runPlan?: RuntimeRunPlan | null;
   onAssistantText?: (delta: string) => void | Promise<void>;
@@ -144,10 +147,13 @@ export async function runSdkRuntimeTurn(
   managed.runPlan = options.runPlan ?? managed.runPlan ?? null;
   managed.session.updateRunPlan(managed.runPlan);
   const turn = emptyTurnResult();
+  const turnPrompt = options.toolBoundaryMode === "gear_first"
+    ? gearFirstTurnPrompt(prompt, options.runPlan ?? null)
+    : prompt;
   managed.session.send(
-    options.toolBoundaryMode === "gear_first"
-      ? gearFirstTurnPrompt(prompt, options.runPlan ?? null)
-      : prompt,
+    options.inputAttachments && options.inputAttachments.length > 0
+      ? { text: turnPrompt, attachments: options.inputAttachments }
+      : turnPrompt,
   );
   try {
     await collectEventsUntilPauseOrResult(
@@ -324,10 +330,14 @@ async function ensureSession(
   activeProfile: AgentProfile,
   options: RuntimeTurnOptions = {},
 ): Promise<ManagedSession> {
+  const nextToolBoundaryMode = options.toolBoundaryMode ?? "default";
+  const nextRequestedToolConfigKey = requestedToolConfigKey(options);
   const existing = sessions.get(sessionId);
   if (existing) {
-    const nextToolBoundaryMode = options.toolBoundaryMode ?? "default";
-    if (existing.toolBoundaryMode === nextToolBoundaryMode) {
+    if (
+      existing.toolBoundaryMode === nextToolBoundaryMode &&
+      existing.requestedToolConfigKey === nextRequestedToolConfigKey
+    ) {
       existing.runPlan = options.runPlan ?? existing.runPlan ?? null;
       return existing;
     }
@@ -347,16 +357,11 @@ async function ensureSession(
     highestAuthorizationEnabled: security.highest_authorization_enabled,
     toolBoundaryMode: options.toolBoundaryMode ?? "default",
   });
-  const hostCapabilities = [
-    "bash",
-    "read",
-    "write",
-    "edit",
-    "grep",
-    "glob",
-    "ls",
-  ];
-  if (options.enableGeeHostTools ?? true) {
+  const hostCapabilities = hostCapabilitiesForTools(availableTools);
+  if (
+    (options.enableGeeHostTools ?? true) &&
+    availableTools.some(isGeeHostSdkTool)
+  ) {
     hostCapabilities.push("gee_host_bridge");
   }
 
@@ -396,6 +401,7 @@ async function ensureSession(
     events: [],
     waiters: [],
     toolBoundaryMode: options.toolBoundaryMode ?? "default",
+    requestedToolConfigKey: nextRequestedToolConfigKey,
     runPlan: options.runPlan ?? null,
     toolInvocationCount: 0,
   };
@@ -407,6 +413,36 @@ async function ensureSession(
     cwd: runtimeFacts.cwd,
   });
   return managed;
+}
+
+function requestedToolConfigKey(options: RuntimeTurnOptions): string {
+  return JSON.stringify({
+    availableTools: options.availableTools ?? null,
+    autoApproveTools: options.autoApproveTools ?? null,
+    disallowedTools: options.disallowedTools ?? null,
+    enableGeeHostTools: options.enableGeeHostTools ?? true,
+  });
+}
+
+function hostCapabilitiesForTools(availableTools: string[]): string[] {
+  const capabilities: string[] = [];
+  const toolToCapability = new Map<string, string>([
+    ["Bash", "bash"],
+    ["Read", "read"],
+    ["Write", "write"],
+    ["Edit", "edit"],
+    ["MultiEdit", "edit"],
+    ["Grep", "grep"],
+    ["Glob", "glob"],
+    ["LS", "ls"],
+  ]);
+  for (const tool of availableTools) {
+    const capability = toolToCapability.get(tool);
+    if (capability && !capabilities.includes(capability)) {
+      capabilities.push(capability);
+    }
+  }
+  return capabilities;
 }
 
 function sdkAutoApproveToolsForSecurity(input: {
@@ -629,6 +665,7 @@ async function collectEventsUntilPauseOrResult(
   const toolInputsById = new Map<string, SeenSdkToolInvocation>();
   const assistantControlFilter = createAssistantControlTextFilter();
   const idleTimeoutMs = sdkEventIdleTimeoutMs(eventIdleTimeoutMs);
+  let needsAssistantReplyAfterTool = false;
   while (true) {
     const event = await nextEventWithTimeout(managed, idleTimeoutMs);
     if (!event) {
@@ -773,6 +810,7 @@ async function collectEventsUntilPauseOrResult(
         };
         turn.tool_events.push(toolEvent);
         await onToolEvent?.(toolEvent);
+        needsAssistantReplyAfterTool = true;
         continue;
       case "session.tool_result": {
         const normalized = await normalizeSdkToolResult(
@@ -790,6 +828,7 @@ async function collectEventsUntilPauseOrResult(
         };
         turn.tool_events.push(toolEvent);
         await onToolEvent?.(toolEvent);
+        needsAssistantReplyAfterTool = true;
         continue;
       }
       case "session.assistant_text": {
@@ -805,6 +844,7 @@ async function collectEventsUntilPauseOrResult(
         if (trimmed) {
           turn.assistant_chunks.push(trimmed);
           await onAssistantText?.(visibleText);
+          needsAssistantReplyAfterTool = false;
         }
         continue;
       }
@@ -825,6 +865,9 @@ async function collectEventsUntilPauseOrResult(
         }
         if (event.result?.trim()) {
           turn.final_result = event.result.trim();
+        }
+        if (needsAssistantReplyAfterTool && !turn.final_result?.trim()) {
+          turn.assistant_text_stale_after_tool = true;
         }
         if (isRecord(event.raw) && event.raw.is_error === true) {
           turn.failed_reason = turn.final_result ?? "The SDK returned an error result.";

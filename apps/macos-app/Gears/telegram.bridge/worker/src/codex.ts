@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import {
   mkdir,
   mkdtemp,
-  readdir,
+  opendir,
   readFile,
   rm,
   stat,
@@ -16,6 +16,11 @@ import {
 import { createInterface } from "node:readline";
 
 const DEFAULT_CODEX_BIN = "/Applications/Codex.app/Contents/Resources/codex";
+const FILE_SCAN_RECENT_DIRECTORY_LIMIT = 14;
+const FILE_SCAN_MAX_FILES_PER_DIRECTORY = 60;
+const FILE_SCAN_MAX_DIRECTORY_ENTRY_READS = 240;
+const FILE_SCAN_MAX_CANDIDATE_COUNT = 300;
+const FILE_SCAN_THREAD_READ_LINE_LIMIT = 400;
 
 export type CodexThreadSource = "file_scan" | "app_server";
 export type CodexSendMode = "cli_resume" | "app_server";
@@ -192,8 +197,8 @@ export function buildCodexExecResumeArgs({
 }
 
 async function listFileScanThreads(codexHome: string, limit: number): Promise<CodexThread[]> {
-  const files = await findJsonlFiles(join(codexHome, "sessions"));
-  files.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  const candidateLimit = Math.min(Math.max(limit * 3, 80), FILE_SCAN_MAX_CANDIDATE_COUNT);
+  const files = await findRecentJsonlFiles(join(codexHome, "sessions"), candidateLimit);
   const threads: CodexThread[] = [];
   for (const file of files) {
     const thread = await readCodexThread(file.filePath, codexHome, file.mtimeMs);
@@ -216,7 +221,7 @@ async function readCodexThread(
   let title = "";
   let cwd = "";
   let updatedAt: string | null = new Date(mtimeMs).toISOString();
-  for await (const line of readJsonlLines(filePath)) {
+  for await (const line of readJsonlLines(filePath, FILE_SCAN_THREAD_READ_LINE_LIMIT)) {
     let event: Record<string, unknown>;
     try {
       event = JSON.parse(line) as Record<string, unknown>;
@@ -297,36 +302,165 @@ async function readOutputOrStdout(outputFile: string, stdout: string): Promise<s
   }
 }
 
-async function findJsonlFiles(rootDir: string): Promise<Array<{ filePath: string; mtimeMs: number }>> {
+async function findRecentJsonlFiles(rootDir: string, limit: number): Promise<Array<{ filePath: string; mtimeMs: number }>> {
+  if (!(await directoryExists(rootDir)) || limit <= 0) {
+    return [];
+  }
+  const files: Array<{ filePath: string; mtimeMs: number }> = [];
+  const directories = await recentSessionDirectories(rootDir);
+  for (const directory of directories) {
+    files.push(
+      ...(await directJsonlFiles(
+        directory,
+        Math.min(FILE_SCAN_MAX_FILES_PER_DIRECTORY, Math.max(limit - files.length, 0)),
+      )),
+    );
+    trimRecentFileCandidates(files, limit);
+    if (files.length >= limit) {
+      break;
+    }
+  }
+  return files;
+}
+
+async function recentSessionDirectories(rootDir: string): Promise<string[]> {
+  const candidates: string[] = [];
+  if ((await directJsonlFiles(rootDir, 1)).length > 0) {
+    candidates.push(rootDir);
+  }
+
+  for (const yearDir of await childDirectories(rootDir, 6)) {
+    if ((await directJsonlFiles(yearDir, 1)).length > 0) {
+      candidates.push(yearDir);
+    }
+    for (const monthDir of await childDirectories(yearDir, 12)) {
+      if ((await directJsonlFiles(monthDir, 1)).length > 0) {
+        candidates.push(monthDir);
+      }
+      candidates.push(...(await childDirectories(monthDir, 31)));
+    }
+  }
+
+  return candidates
+    .sort((left, right) => sessionDirectorySortKey(right, rootDir).localeCompare(sessionDirectorySortKey(left, rootDir)))
+    .slice(0, FILE_SCAN_RECENT_DIRECTORY_LIMIT);
+}
+
+async function childDirectories(directory: string, limit: number): Promise<string[]> {
+  if (limit <= 0) {
+    return [];
+  }
+  let dir;
+  try {
+    dir = await opendir(directory);
+  } catch {
+    return [];
+  }
+  const directories: string[] = [];
+  const entryReadLimit = Math.max(FILE_SCAN_MAX_DIRECTORY_ENTRY_READS, limit);
+  let readCount = 0;
+  try {
+    while (directories.length < limit && readCount < entryReadLimit) {
+      const entry = await dir.read();
+      if (!entry) {
+        break;
+      }
+      readCount += 1;
+      if (entry.name.startsWith(".")) {
+        continue;
+      }
+      const childPath = join(directory, entry.name);
+      let childStat;
+      try {
+        childStat = await stat(childPath);
+      } catch {
+        continue;
+      }
+      if (!childStat.isDirectory()) {
+        continue;
+      }
+      directories.push(childPath);
+    }
+  } finally {
+    await dir.close().catch(() => {});
+  }
+  return directories.sort((left, right) => right.localeCompare(left)).slice(0, limit);
+}
+
+async function directJsonlFiles(directory: string, limit: number): Promise<Array<{ filePath: string; mtimeMs: number }>> {
+  if (limit <= 0) {
+    return [];
+  }
+  let dir;
+  try {
+    dir = await opendir(directory);
+  } catch {
+    return [];
+  }
+  const files: Array<{ filePath: string; mtimeMs: number }> = [];
+  const entryReadLimit = Math.max(FILE_SCAN_MAX_DIRECTORY_ENTRY_READS, limit);
+  let readCount = 0;
+  try {
+    while (files.length < limit && readCount < entryReadLimit) {
+      const entry = await dir.read();
+      if (!entry) {
+        break;
+      }
+      readCount += 1;
+      if (entry.name.startsWith(".") || !entry.name.endsWith(".jsonl")) {
+        continue;
+      }
+      const filePath = join(directory, entry.name);
+      let fileStat;
+      try {
+        fileStat = await stat(filePath);
+      } catch {
+        continue;
+      }
+      if (!fileStat.isFile()) {
+        continue;
+      }
+      files.push({ filePath, mtimeMs: fileStat.mtimeMs });
+    }
+  } finally {
+    await dir.close().catch(() => {});
+  }
+  trimRecentFileCandidates(files, limit);
+  return files;
+}
+
+async function directoryExists(rootDir: string): Promise<boolean> {
   let rootStat;
   try {
     rootStat = await stat(rootDir);
   } catch {
-    return [];
+    return false;
   }
-  if (!rootStat.isDirectory()) {
-    return [];
-  }
-  const results: Array<{ filePath: string; mtimeMs: number }> = [];
-  const entries = await readdir(rootDir, { withFileTypes: true });
-  for (const entry of entries) {
-    const fullPath = join(rootDir, entry.name);
-    if (entry.isDirectory()) {
-      results.push(...(await findJsonlFiles(fullPath)));
-    } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
-      const fileStat = await stat(fullPath);
-      results.push({ filePath: fullPath, mtimeMs: fileStat.mtimeMs });
-    }
-  }
-  return results;
+  return rootStat.isDirectory();
 }
 
-async function* readJsonlLines(filePath: string): AsyncGenerator<string> {
+function trimRecentFileCandidates(files: Array<{ filePath: string; mtimeMs: number }>, limit: number): void {
+  files.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  if (files.length > limit) {
+    files.splice(limit);
+  }
+}
+
+function sessionDirectorySortKey(directory: string, rootDir: string): string {
+  return relative(rootDir, directory) || "";
+}
+
+async function* readJsonlLines(filePath: string, maxLines?: number): AsyncGenerator<string> {
   const stream = createReadStream(filePath, { encoding: "utf8" });
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  let lineCount = 0;
   for await (const line of lines) {
     const trimmed = line.trim();
     if (trimmed) {
+      lineCount += 1;
+      if (maxLines !== undefined && lineCount > maxLines) {
+        break;
+      }
       yield trimmed;
     }
   }

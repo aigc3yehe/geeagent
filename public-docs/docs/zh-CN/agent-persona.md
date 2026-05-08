@@ -4,7 +4,7 @@
 
 GeeAgent 不只是一个通用 agent runtime。它在共享运行时之上提供 agent persona 产品层。persona 定义 agent 的身份、行为方式、视觉呈现，以及它可以建议或约束的本地能力。
 
-persona 层必须和运行时执行真相分开。run、session、event、approval、task continuation、tool execution 属于 phase-2 runtime spine。
+persona 层必须和运行时执行真相分开。run、session、event、approval、task continuation、tool execution 属于共享 runtime foundation，并会在 Phase 4 产品深化阶段继续演进。
 
 ## 当前状态
 
@@ -128,7 +128,7 @@ global background 的优先级是 video 优先，然后 image。
 
 如果 Live2D persona 没有声明 `global_background`，GeeAgent 会把 Live2D 渲染在默认 abstract Home 背景上。
 
-Live2D persona 可以通过本地 UI 暴露姿势、动作、表情、viewport 位置和缩放。在 Home surface 上，点击可见角色可以触发可用动作或表情变化，并且本地交互层会在 viewport 位置或缩放调整后保持对齐。
+Live2D persona 可以通过本地 UI 暴露姿势、动作、表情、viewport 位置和缩放。在 Home surface 上，点击可见角色可以触发可用动作或表情变化。动作发现只扫描顶层 motion 资源，除非 model 或 companion descriptor 显式引用了子目录文件；临时动作结束后会停止或回到当前选中的姿势。本地交互层会在 viewport 位置或缩放调整后保持对齐，并且 GeeAgent 会让缺少 Cubism Layout 的 Live2D bundle 在宽窗和高窄窗口里都优先完整落在可见 Home 画面内，同时在缩放变化时把 viewport 平移维持在可恢复的可见范围内，这样把被边缘截断的内容再缩小时可以重新回到视野里。
 
 ## 运行时影响
 
@@ -184,6 +184,7 @@ Reload：
 
 - 重新读取本地 persona workspace；
 - 重新编译 layered context；
+- 按 reload 后的 persona 刷新 Home visual 资源路径，同时保留 Live2D 位置和缩放等本地交互状态；
 - 刷新 persona 级 skill source metadata；
 - 如果校验失败，保留之前已加载的 profile。
 

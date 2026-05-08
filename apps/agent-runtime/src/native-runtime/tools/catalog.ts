@@ -106,6 +106,14 @@ const TOOL_CATALOG: ToolSpec[] = [
     blastRadius: "local",
   },
   {
+    id: "files.directorySnapshot",
+    title: "Snapshot directory",
+    description:
+      "Return a bounded, deterministic tree summary for a local directory without reading file contents.",
+    needsApproval: false,
+    blastRadius: "local",
+  },
+  {
     id: "files.writeText",
     title: "Write text file",
     description: "Write UTF-8 content to the local filesystem. Requires approval.",

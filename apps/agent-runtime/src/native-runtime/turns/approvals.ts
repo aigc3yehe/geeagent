@@ -71,12 +71,12 @@ export function installClaudeSdkTerminalApproval(
   appendTurnStep(
     cursor,
     store,
-    "delegating this turn into the SDK loop through the Xenodia gateway so the agent can reason and request host-reviewed tools",
+    "starting this turn in the active agent runtime so the agent can reason and request host-reviewed tools",
   );
   appendTurnStep(
     cursor,
     store,
-    "the SDK loop requested terminal access that GeeAgent has not seen before, so the host stopped for an explicit review choice",
+    "the agent runtime requested terminal access that GeeAgent has not seen before, so the host stopped for an explicit review choice",
   );
   appendTranscriptEvent(store, cursor.sessionId, {
     kind: "tool_invocation",
@@ -192,7 +192,7 @@ export function applyClaudeSdkTerminalDenial(
   appendTurnStep(
     cursor,
     store,
-    "delegating this turn into the SDK loop through the Xenodia gateway so the agent can reason about the request",
+    "starting this turn in the active agent runtime so the agent can reason about the request",
   );
   appendTurnStep(
     cursor,
@@ -417,23 +417,23 @@ async function resolveSdkRuntimeTerminalApproval(
 
   const assistantReply = assistantReplyFromTurn(
     sdkTurn,
-    "The SDK completed the resumed run without a text summary.",
+    "The agent runtime completed the resumed run without a text summary.",
   );
   appendClaudeSdkRuntimeFollowUp(
     store,
     route.surface,
     decision === "deny"
-      ? `terminal access denied, resuming the paused SDK run with a deny decision: ${summarizePrompt(command, 120)}`
+      ? `terminal access denied, resuming the paused agent run with a deny decision: ${summarizePrompt(command, 120)}`
       : sdkTurn.failed_reason
-        ? "approval granted, resuming the paused SDK run and committing the failed result truthfully"
-        : `approval granted, resuming the paused SDK run with terminal access allowed: ${summarizePrompt(command, 120)}`,
+        ? "approval granted, resuming the paused agent run and committing the failed result truthfully"
+        : `approval granted, resuming the paused agent run with terminal access allowed: ${summarizePrompt(command, 120)}`,
     sdkTurn,
     assistantReply,
     decision === "deny"
-      ? "the paused SDK run received the terminal denial and GeeAgent committed the blocked result back into the active conversation"
+      ? "the paused agent run received the terminal denial and GeeAgent committed the blocked result back into the active conversation"
       : sdkTurn.failed_reason
-        ? "the resumed SDK run failed after terminal approval, and GeeAgent committed that failed result back into the active conversation"
-        : "the same SDK run continued after the terminal approval decision and GeeAgent committed the resulting tool trace back into the active conversation",
+        ? "the resumed agent run failed after terminal approval, and GeeAgent committed that failed result back into the active conversation"
+        : "the same agent run continued after the terminal approval decision and GeeAgent committed the resulting tool trace back into the active conversation",
   );
 
   const summary = sdkTurn.failed_reason
@@ -467,7 +467,7 @@ function installFollowUpClaudeSdkTerminalApproval(
   appendSessionStateForSession(
     store,
     sessionId,
-    `the SDK run needs another terminal review before it can continue: ${summarizePrompt(pending.command, 140)}`,
+    `the agent run needs another terminal review before it can continue: ${summarizePrompt(pending.command, 140)}`,
   );
   appendTranscriptEvent(store, sessionId, {
     kind: "tool_invocation",
@@ -518,7 +518,7 @@ function installFollowUpClaudeSdkTerminalApproval(
     store.active_conversation_id,
     "waiting_review",
     "terminal_permission_review_required",
-    `GeeAgent paused the same SDK run for another terminal permission review: ${summarizePrompt(pending.command, 180)}`,
+    `GeeAgent paused the same agent run for another terminal permission review: ${summarizePrompt(pending.command, 180)}`,
     true,
     taskId,
     moduleRunIdForTask(store, taskId),

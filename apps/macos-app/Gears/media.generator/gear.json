@@ -8,6 +8,8 @@
   "category": "Creative",
   "kind": "atmosphere",
   "display_mode": "full_canvas",
+  "cover": "assets/cover.png",
+  "icon": "assets/icon.png",
   "entry": {
     "type": "native",
     "native_id": "media.generator"

@@ -91,6 +91,50 @@ private struct RuntimeConversationMessageDTO: Decodable {
     let role: String
     let content: String
     let timestamp: String
+    let attachments: [RuntimeInputAttachmentDTO]?
+}
+
+private struct RuntimeInputAttachmentDTO: Decodable {
+    struct Access: Decodable {
+        let scope: String?
+        let mode: String?
+        let root: String?
+        let expiresAt: String?
+    }
+
+    struct ImageInfo: Decodable {
+        let width: Int?
+        let height: Int?
+        let storedBase64Ref: String?
+        let resized: Bool?
+    }
+
+    struct Limits: Decodable {
+        let maxBytes: Int?
+        let maxEntries: Int?
+        let maxDepth: Int?
+    }
+
+    struct Failure: Decodable {
+        let code: String?
+        let message: String?
+    }
+
+    let attachmentId: String
+    let kind: String
+    let source: String?
+    let displayName: String
+    let originalPath: String?
+    let resolvedPath: String?
+    let mimeType: String?
+    let sizeBytes: Int?
+    let createdAt: String?
+    let status: String?
+    let access: Access?
+    let image: ImageInfo?
+    let limits: Limits?
+    let error: Failure?
+    let fallbackAttempted: Bool?
 }
 
 private struct RuntimeConversationDTO: Decodable {
@@ -320,6 +364,8 @@ private struct RuntimeRunProjectionRowDTO: Decodable {
     let projectionScope: String
     let expandable: Bool
     let artifactIds: [String]
+    let attachmentIds: [String]?
+    let attachmentStatuses: [String]?
 }
 
 private struct RuntimeRunArtifactRefDTO: Decodable {
@@ -399,7 +445,7 @@ private struct RuntimeRunPlanDTO: Decodable {
 }
 
 private enum RuntimeTranscriptEventPayloadDTO: Decodable {
-    case userMessage(messageId: String, content: String)
+    case userMessage(messageId: String, content: String, attachments: [RuntimeInputAttachmentDTO])
     case assistantMessage(messageId: String, content: String)
     case assistantMessageDelta(messageId: String, delta: String)
     case runPlanCreated(runPlan: RuntimeRunPlanDTO?, summary: String?)
@@ -461,6 +507,7 @@ private enum RuntimeTranscriptEventPayloadDTO: Decodable {
         case summary
         case error
         case artifacts
+        case attachments
     }
 
     init(from decoder: Decoder) throws {
@@ -469,7 +516,8 @@ private enum RuntimeTranscriptEventPayloadDTO: Decodable {
         case "user_message":
             self = .userMessage(
                 messageId: try container.decode(String.self, forKey: .messageId),
-                content: try container.decode(String.self, forKey: .content)
+                content: try container.decode(String.self, forKey: .content),
+                attachments: try container.decodeIfPresent([RuntimeInputAttachmentDTO].self, forKey: .attachments) ?? []
             )
         case "assistant_message":
             self = .assistantMessage(
@@ -826,6 +874,10 @@ private final class AgentRuntimeProcess {
         nativeRuntimeServer.stop()
     }
 
+    func interruptActiveRequest() {
+        nativeRuntimeServer.interrupt()
+    }
+
     func loadSnapshot() throws -> RuntimeSnapshotDTO {
         try decodeSnapshotStandalone(arguments: ["snapshot"])
     }
@@ -850,8 +902,28 @@ private final class AgentRuntimeProcess {
         try decodeSnapshot(arguments: ["submit-workspace-message", message])
     }
 
+    func submitWorkspaceMessage(_ payload: WorkspaceMessageInputPayload) throws -> RuntimeSnapshotDTO {
+        let data = try encoder.encode(payload)
+        guard let raw = String(data: data, encoding: .utf8) else {
+            throw RuntimeProcessError.runtimeInvocation(
+                "Could not encode workspace message input as UTF-8 JSON."
+            )
+        }
+        return try decodeSnapshot(arguments: ["submit-workspace-message", raw])
+    }
+
     func submitRoutedWorkspaceMessage(_ message: String) throws -> RuntimeSnapshotDTO {
         try decodeSnapshot(arguments: ["submit-routed-workspace-message", message])
+    }
+
+    func submitRoutedWorkspaceMessage(_ payload: WorkspaceMessageInputPayload) throws -> RuntimeSnapshotDTO {
+        let data = try encoder.encode(payload)
+        guard let raw = String(data: data, encoding: .utf8) else {
+            throw RuntimeProcessError.runtimeInvocation(
+                "Could not encode workspace routed message input as UTF-8 JSON."
+            )
+        }
+        return try decodeSnapshot(arguments: ["submit-routed-workspace-message", raw])
     }
 
     func submitQuickPrompt(_ prompt: String) throws -> RuntimeSnapshotDTO {
@@ -866,6 +938,10 @@ private final class AgentRuntimeProcess {
             )
         }
         return try decodeSnapshot(arguments: ["submit-channel-message", raw])
+    }
+
+    func cancelActiveRun() throws -> RuntimeSnapshotDTO {
+        try decodeSnapshot(arguments: ["cancel-active-run"])
     }
 
     func completeHostActionTurn(_ completions: [WorkbenchHostActionCompletion]) throws -> RuntimeSnapshotDTO {
@@ -1226,6 +1302,7 @@ private final class AgentRuntimeProcess {
         "submit-routed-workspace-message",
         "submit-channel-message",
         "submit-quick-prompt",
+        "cancel-active-run",
         "perform-task-action",
         "complete-host-action-turn",
         "invoke-tool",
@@ -1577,7 +1654,7 @@ private final class AgentRuntimeProcess {
     }
 }
 
-final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sendable {
+final class NativeWorkbenchRuntimeClient: WorkbenchAttachmentRuntimeClient, @unchecked Sendable {
     private let runtime = AgentRuntimeProcess()
     private let rawSnapshotLock = NSLock()
     private var rawSnapshot: RuntimeSnapshotDTO?
@@ -1587,6 +1664,20 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let snapshot = try decoder.decode(RuntimeSnapshotDTO.self, from: data)
         return NativeWorkbenchRuntimeClient().map(snapshot)
+    }
+
+    static func projectRuntimeRunProjectionForTesting(from data: Data) throws -> WorkbenchRuntimeRunProjection {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let projection = try decoder.decode(RuntimeRunProjectionDTO.self, from: data)
+        return NativeWorkbenchRuntimeClient().mapRuntimeRunProjection(projection)
+    }
+
+    static func classifyRuntimeRunWaitForTesting(from data: Data) throws -> WorkbenchRuntimeRunWaitClassification {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let classification = try decoder.decode(RuntimeRunWaitClassificationDTO.self, from: data)
+        return NativeWorkbenchRuntimeClient().mapRuntimeRunWaitClassification(classification)
     }
 
     func shutdown() {
@@ -1655,6 +1746,22 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
         conversationID: ConversationThread.ID,
         allowAutoRouting: Bool
     ) async throws -> WorkbenchSnapshot {
+        try await sendMessage(
+            message,
+            attachments: [],
+            in: snapshot,
+            conversationID: conversationID,
+            allowAutoRouting: allowAutoRouting
+        )
+    }
+
+    func sendMessage(
+        _ message: String,
+        attachments: [WorkspaceInputAttachment],
+        in snapshot: WorkbenchSnapshot,
+        conversationID: ConversationThread.ID,
+        allowAutoRouting: Bool
+    ) async throws -> WorkbenchSnapshot {
         _ = snapshot
 
         var latestSnapshot = currentRawSnapshot()
@@ -1667,6 +1774,7 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
         }
 
         let routeSnapshot = latestSnapshot
+        let payload = WorkspaceMessageInputPayload(text: message, attachments: attachments)
         let nextSnapshot: RuntimeSnapshotDTO = try await runOffMainThread {
             if allowAutoRouting,
                self.shouldUseWorkspaceAutoRouting(
@@ -1674,12 +1782,26 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
                 conversationID: conversationID,
                 rawSnapshot: routeSnapshot
             ) {
-                return try self.runtime.submitRoutedWorkspaceMessage(message)
+                return attachments.isEmpty
+                    ? try self.runtime.submitRoutedWorkspaceMessage(message)
+                    : try self.runtime.submitRoutedWorkspaceMessage(payload)
             }
 
-            return try self.runtime.submitWorkspaceMessage(message)
+            return attachments.isEmpty
+                ? try self.runtime.submitWorkspaceMessage(message)
+                : try self.runtime.submitWorkspaceMessage(payload)
         }
 
+        storeRawSnapshot(nextSnapshot)
+        return map(nextSnapshot)
+    }
+
+    func cancelActiveRun(in snapshot: WorkbenchSnapshot) async throws -> WorkbenchSnapshot {
+        _ = snapshot
+        runtime.interruptActiveRequest()
+        let nextSnapshot = try await runOffMainThread {
+            try self.runtime.cancelActiveRun()
+        }
         storeRawSnapshot(nextSnapshot)
         return map(nextSnapshot)
     }
@@ -2178,7 +2300,9 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
             toolName: dto.toolName,
             projectionScope: dto.projectionScope,
             expandable: dto.expandable,
-            artifactIDs: dto.artifactIds
+            artifactIDs: dto.artifactIds,
+            attachmentIDs: dto.attachmentIds ?? [],
+            attachmentStatuses: dto.attachmentStatuses ?? []
         )
     }
 
@@ -2525,14 +2649,16 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
 
         for event in transcriptEvents {
             switch event.payload {
-            case let .userMessage(messageId, content):
+            case let .userMessage(messageId, content, attachments):
                 projectedMessages.append(
                     ConversationMessage(
                         id: messageId,
                         role: .user,
                         kind: .chat,
                         content: content,
-                        timestampLabel: formattedConversationTimestamp(event.createdAt)
+                        timestampLabel: formattedConversationTimestamp(event.createdAt),
+                        attachments: conversationMessageAttachments(attachments),
+                        detailItems: attachmentDetailItems(attachments)
                     )
                 )
             case let .assistantMessage(messageId, content):
@@ -2653,18 +2779,27 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
         let lowSignalFragments = [
             "Turn setup complete.",
             "delegating this turn into the SDK loop",
+            "starting this turn in the active agent runtime",
             "the agent inspected the Gear result and requested another native Gear host action inside the same SDK run",
+            "the agent inspected the Gear result and requested another native Gear host action inside the same agent run",
             "the agent requested native Gear host action(s)",
             "GeeAgent paused the same SDK run until the macOS host returns structured results",
+            "GeeAgent paused the same agent run until the macOS host returns structured results",
             "the SDK runtime is waiting on native Gear host action results",
+            "the agent runtime is waiting on native Gear host action results",
             "native Gear actions completed; returning structured host results to the SDK runtime",
+            "native Gear actions completed; returning structured host results to the active agent run",
             "the SDK runtime continued after Gear host results and completed the active user turn",
+            "the agent runtime continued after Gear host results and completed the active user turn",
             "Turn finalized after",
             "the SDK runtime completed",
+            "the agent runtime completed",
             "completed the active turn",
             "completed the active user turn",
             "committed the resulting tool trace",
             "committed that failed turn",
+            "Stopped by the user.",
+            "interrupted the active run",
         ]
 
         return !lowSignalFragments.contains { fragment in
@@ -2737,8 +2872,82 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
             role: role,
             kind: .chat,
             content: role == .assistant ? sanitizedAssistantContent(message.content) : message.content,
-            timestampLabel: formattedConversationTimestamp(message.timestamp)
+            timestampLabel: formattedConversationTimestamp(message.timestamp),
+            attachments: role == .user ? conversationMessageAttachments(message.attachments ?? []) : [],
+            detailItems: role == .user ? attachmentDetailItems(message.attachments ?? []) : []
         )
+    }
+
+    private func conversationMessageAttachments(_ attachments: [RuntimeInputAttachmentDTO]) -> [ConversationMessageAttachment] {
+        attachments.map { attachment in
+            ConversationMessageAttachment(
+                id: attachment.attachmentId,
+                kind: conversationAttachmentKind(attachment.kind),
+                displayName: attachment.displayName,
+                originalPath: attachment.originalPath,
+                resolvedPath: attachment.resolvedPath,
+                mimeType: attachment.mimeType,
+                sizeBytes: attachment.sizeBytes,
+                status: conversationAttachmentStatus(attachment.status),
+                source: attachment.source,
+                createdAt: attachment.createdAt,
+                accessScope: attachment.access?.scope,
+                accessMode: attachment.access?.mode,
+                accessRoot: attachment.access?.root,
+                accessExpiresAt: attachment.access?.expiresAt,
+                imageWidth: attachment.image?.width,
+                imageHeight: attachment.image?.height,
+                maxBytes: attachment.limits?.maxBytes,
+                maxEntries: attachment.limits?.maxEntries,
+                maxDepth: attachment.limits?.maxDepth,
+                errorCode: attachment.error?.code,
+                errorMessage: attachment.error?.message,
+                fallbackAttempted: attachment.fallbackAttempted
+            )
+        }
+    }
+
+    private func conversationAttachmentKind(_ kind: String) -> ConversationMessageAttachment.Kind {
+        switch kind {
+        case "image":
+            return .image
+        case "file":
+            return .file
+        case "directory":
+            return .directory
+        default:
+            return .unknown
+        }
+    }
+
+    private func conversationAttachmentStatus(_ status: String?) -> ConversationMessageAttachment.Status {
+        switch status {
+        case "degraded":
+            return .degraded
+        case "failed":
+            return .failed
+        default:
+            return .ready
+        }
+    }
+
+    private func attachmentDetailItems(_ attachments: [RuntimeInputAttachmentDTO]) -> [ConversationMessageDetailItem] {
+        attachments.map { attachment in
+            let title = attachment.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? attachment.attachmentId
+                : attachment.displayName
+            let status = attachment.status ?? "ready"
+            let path = attachment.originalPath ?? attachment.resolvedPath
+            let value = [
+                "\(attachment.kind) · \(title)",
+                path,
+                status == "ready" ? nil : status,
+            ]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: " · ")
+            return ConversationMessageDetailItem(label: "Attachment", value: value)
+        }
     }
 
     private func sanitizedAssistantContent(_ content: String) -> String {
@@ -2747,7 +2956,7 @@ final class NativeWorkbenchRuntimeClient: WorkbenchRuntimeClient, @unchecked Sen
 
     private func transcriptMessageID(for event: RuntimeTranscriptEventDTO) -> String? {
         switch event.payload {
-        case let .userMessage(messageId, _),
+        case let .userMessage(messageId, _, _),
              let .assistantMessage(messageId, _),
              let .assistantMessageDelta(messageId, _):
             return messageId

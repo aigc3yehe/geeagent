@@ -1,6 +1,14 @@
 import { hasValidApprovalToken } from "./tools/args.js";
 import { TOOL_SPECS } from "./tools/catalog.js";
-import { coreFind, coreGrep, coreLs, filesEditText, filesReadText, filesWriteText } from "./tools/files.js";
+import {
+  coreFind,
+  coreGrep,
+  coreLs,
+  filesDirectorySnapshot,
+  filesEditText,
+  filesReadText,
+  filesWriteText,
+} from "./tools/files.js";
 import { geeGearInvoke, geeGearListCapabilities } from "./tools/gears.js";
 import { geeAppOpenSurface, navigateOpenModule, navigateOpenSection } from "./tools/navigation.js";
 import { shellRequestNeedsApproval, shellRun } from "./tools/shell.js";
@@ -85,6 +93,8 @@ async function runTool(request: ToolRequest): Promise<ToolOutcome> {
       return coreFind(request);
     case "core.ls":
       return coreLs(request);
+    case "files.directorySnapshot":
+      return filesDirectorySnapshot(request);
     case "navigate.openSection":
     case "gee.app.openSection":
       return navigateOpenSection(request);

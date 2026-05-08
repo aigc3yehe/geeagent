@@ -4,7 +4,7 @@ Telegram Bridge is an optional GeeAgent Gear for Telegram-connected workflows.
 
 The current implementation includes the Gear package, native shell,
 GearHost-backed push delivery, native app-started polling, Codex remote
-control, and GeeAgent Phase 3 channel ingress. Push delivery and the native
+control, and GeeAgent runtime channel ingress. Push delivery and the native
 polling service read bot tokens from GeeAgent's local app data store in the
 native app, while the standalone worker service reads tokens from environment
 variables.
@@ -22,15 +22,21 @@ variables.
   accidental Telegram messages do not immediately resume a Codex thread. The
   file-scan path only lists Codex Desktop-originated, non-subagent sessions so
   Telegram does not show internal conversations that are invisible in the Codex
-  app. It scans Codex JSONL session summaries incrementally so very large
-  session files do not block the Telegram reply path. Long Telegram replies are
-  split into multiple messages instead of being truncated.
-- `gee_direct`: bidirectional Telegram channel for GeeAgent Phase 3 runs.
+  app. The file-scan path reads only a bounded recent set of Codex session date
+  directories, limits files per directory and total candidates, and scans JSONL
+  summaries incrementally so large session stores do not make Telegram commands
+  walk the full Codex history. `/latest` reads a bounded tail window from the
+  selected session file. `/list` keeps project names and paths compact so a
+  large Codex history does not produce an oversized Telegram response. Long
+  Telegram replies are split into multiple messages instead of being truncated,
+  and outbound Telegram sends have a bounded timeout so polling can advance with
+  recorded failure evidence if the Bot API stalls.
+- `gee_direct`: bidirectional Telegram channel for GeeAgent runtime runs.
   Send `/new` to start a fresh GeeAgent conversation for the same Telegram
   chat and clear the previous runtime history. When a Gee Direct run needs to
   return a local file, it can use `telegram_direct.send_file`; the native
   Gear validates the local path and sends it to the active Telegram chat. If
-  the Phase 3 runtime fails before producing a reply projection, the native
+  the GeeAgent runtime fails before producing a reply projection, the native
   bridge sends that failure back to the same Telegram chat and records it as
   `runtime_failed`.
 - `push_only`: one-way Telegram delivery channel for scheduled reports and
@@ -65,11 +71,14 @@ From the repository root:
 
 ```bash
 cd apps/agent-runtime
-node --test --import tsx ../macos-app/Gears/telegram.bridge/worker/src/*.test.ts
+node --test --import tsx ../macos-app/Gears/telegram.bridge/worker/src/*.test.ts ../macos-app/Gears/telegram.bridge/worker/src/*.check.ts
 ```
 
 The worker currently validates configuration shape, push-only account rules,
-push channel account binding, redacted Telegram targets, push message delivery
+push channel account binding, redacted Telegram targets, canonical Gateway
+envelope normalization, security decisions, Gee Direct runtime input creation,
+outbound Telegram text projection, Gateway health/status diagnostics,
+polling lifecycle readiness, poll-loop lifecycle events, push message delivery
 contracts, Telegram Bot API response mapping, polling state, Codex remote
 commands, native runtime channel submission, and structured command dispatch
 for:
@@ -85,10 +94,30 @@ The native GearHost bridge exposes `telegram_bridge.status`,
 `telegram_push.send_message`, and `telegram_push.send_file`, plus contextual
 `telegram_direct.send_file` for Gee Direct conversations, to GeeAgent. Codex
 export is enabled for status, list, push text send, and push file send.
+Status results include `gateway_health` diagnostics for missing tokens,
+webhook-not-ready accounts, polling offsets, push-channel counts, and lifecycle
+readiness (`polling_loop`, `poll_interval_ms`, webhook `not_implemented`)
+without contacting Telegram or trying fallback routes.
 `upsert_channel` stays Gee-native only because target confirmation and bot
 token binding are local setup steps. Direct file send is not exported to
 detached Codex pushes because it depends on the active Gee Direct Telegram
 chat.
+
+## Native Checks
+
+From the repository root:
+
+```bash
+swift test --package-path apps/macos-app --scratch-path /tmp/geeagent-telegram-gateway-swift-build --filter TelegramBridgeGearTests
+```
+
+The native test suite covers Telegram Bridge registration, token storage,
+conversation dedupe, Codex Remote routing, push and direct file delivery, runtime
+failure projection, and the native Gateway envelope/security/runtime
+payload/outbound evidence boundary. It also covers the Codex Remote per-chat
+session state used for selected threads and pending prompt confirmation, plus
+typed route parsing for text commands, inline callbacks, and `/send` selected
+thread disambiguation.
 
 ## Standalone Worker
 
@@ -126,7 +155,10 @@ npm run cli -- poll-once \
   --runtime-config-dir ~/Library/Application\ Support/GeeAgent
 ```
 
-Use `poll-loop` for a long-running local service. The worker never falls back
-from app-server Codex mode to CLI resume or from runtime channel ingress to a
+Use `poll-loop` for a long-running local service. It writes structured
+`poll_loop_started`, `poll_loop_iteration_failed`, and `poll_loop_stopped`
+lifecycle events with `fallback_attempted: false`, so a supervisor can see the
+worker state without scraping prose logs. The worker never falls back from
+app-server Codex mode to CLI resume or from runtime channel ingress to a
 chat-only completion; unavailable dependencies produce structured
 `failed`/`degraded` results with `fallback_attempted: false`.

@@ -9,6 +9,17 @@ import type {
   PushSendDependencies,
   TelegramSendClient,
 } from "./send.js";
+import {
+  authorizeTelegramGatewayEnvelope,
+  buildGeeDirectRuntimeInput,
+  normalizeTelegramGatewayUpdate,
+  telegramGatewayUpdateId,
+  type RuntimeChannelMessageInput,
+  type TelegramGatewayUpdate,
+} from "./gateway.js";
+import {
+  sendTelegramTextProjection,
+} from "./outbound.js";
 
 export type RuntimeChannelClient = {
   submitChannelMessage(input: RuntimeChannelMessageInput): Promise<RuntimeSnapshotLike>;
@@ -32,32 +43,6 @@ export type CodexRemoteClient = {
   cliResumeSend?(input: { sessionId: string; prompt: string }): Promise<CodexSendResult>;
 };
 
-export type RuntimeChannelMessageInput = {
-  source: "telegram.bridge";
-  role: "gee_direct";
-  channelIdentity: string;
-  message: {
-    idempotencyKey: string;
-    telegramUpdateId: number;
-    chatId: string;
-    messageId: string;
-    fromUserId: string;
-    text: string;
-    attachments: unknown[];
-  };
-  security: {
-    decision: "allowed";
-    policyId: string;
-  };
-  projection: {
-    surface: "telegram";
-    replyTarget: {
-      chatId: string;
-      messageId: string;
-    };
-  };
-};
-
 type RuntimeSnapshotLike = {
   last_run_state?: Record<string, unknown>;
   active_conversation?: {
@@ -65,21 +50,6 @@ type RuntimeSnapshotLike = {
       role?: unknown;
       content?: unknown;
     }>;
-  };
-};
-
-export type TelegramUpdate = {
-  update_id?: unknown;
-  message?: {
-    message_id?: unknown;
-    chat?: {
-      id?: unknown;
-      type?: unknown;
-    };
-    from?: {
-      id?: unknown;
-    };
-    text?: unknown;
   };
 };
 
@@ -140,11 +110,11 @@ export function pollingAccountIds(config: TelegramBridgeConfig): string[] {
 export async function handleTelegramBridgeUpdate(
   config: TelegramBridgeConfig,
   accountId: string,
-  update: TelegramUpdate,
+  update: TelegramGatewayUpdate,
   dependencies: TelegramBridgeServiceDependencies,
 ): Promise<TelegramBridgeUpdateResult> {
   const account = config.accounts.find((candidate) => candidate.id === accountId);
-  const updateId = numberValue(update.update_id);
+  const updateId = telegramGatewayUpdateId(update);
   if (!account) {
     return serviceFailure("failed", accountId, updateId, "account_not_found", `Telegram account \`${accountId}\` was not found.`);
   }
@@ -157,72 +127,43 @@ export async function handleTelegramBridgeUpdate(
       `Push-only account \`${accountId}\` does not accept Telegram inbound updates.`,
     );
   }
-  const message = update.message;
-  const text = stringValue(message?.text);
-  if (!message || !text) {
-    return serviceFailure("dropped", accountId, updateId, "message_not_text", "Telegram update did not contain a text message.");
-  }
-  const chatId = idValue(message.chat?.id);
-  const messageId = idValue(message.message_id);
-  const fromUserId = idValue(message.from?.id);
-  if (!chatId || !messageId || !fromUserId || updateId === undefined) {
-    return serviceFailure("dropped", accountId, updateId, "message_identity_missing", "Telegram update is missing stable identity fields.");
+
+  const normalized = normalizeTelegramGatewayUpdate(account, update);
+  if (normalized.status !== "success") {
+    return serviceFailure("dropped", accountId, normalized.updateId, normalized.error.code, normalized.error.message);
   }
 
-  const security = securityDecision(account, chatId, fromUserId, stringValue(message.chat?.type), text);
+  const envelope = normalized.envelope;
+  const security = authorizeTelegramGatewayEnvelope(account, envelope);
   if (security.status !== "allowed") {
-    return serviceFailure("dropped", accountId, updateId, security.code, security.message);
+    return serviceFailure("dropped", accountId, envelope.updateId, security.code, security.message);
   }
 
   if (account.role === "codex_remote") {
     return handleCodexRemoteText(
       account,
-      text,
+      envelope.message.text,
       {
-        chatId,
-        updateId,
+        chatId: envelope.chat.id,
+        updateId: envelope.updateId,
       },
       dependencies,
     );
   }
 
-  const runtimeInput: RuntimeChannelMessageInput = {
-    source: "telegram.bridge",
-    role: "gee_direct",
-    channelIdentity: `telegram:${account.id}:bot:unknown:dm:${chatId}`,
-    message: {
-      idempotencyKey: `telegram:update:${updateId}`,
-      telegramUpdateId: updateId,
-      chatId,
-      messageId,
-      fromUserId,
-      text,
-      attachments: [],
-    },
-    security: {
-      decision: "allowed",
-      policyId: security.policyId,
-    },
-    projection: {
-      surface: "telegram",
-      replyTarget: {
-        chatId,
-        messageId,
-      },
-    },
-  };
+  const runtimeInput = buildGeeDirectRuntimeInput(envelope, security);
 
   let snapshot: RuntimeSnapshotLike;
   try {
     snapshot = await dependencies.runtimeClient.submitChannelMessage(runtimeInput);
   } catch (error) {
-    return serviceFailure("failed", accountId, updateId, "runtime_submit_failed", errorMessage(error));
+    return serviceFailure("failed", accountId, envelope.updateId, "runtime_submit_failed", errorMessage(error));
   }
   if (snapshot.last_run_state?.duplicate_channel_message === true) {
     return serviceFailure(
       "dropped",
       accountId,
-      updateId,
+      envelope.updateId,
       "duplicate_channel_message",
       "Gee runtime already accepted this Telegram update idempotency key.",
     );
@@ -233,46 +174,13 @@ export async function handleTelegramBridgeUpdate(
     return serviceFailure(
       "degraded",
       accountId,
-      updateId,
+      envelope.updateId,
       "runtime_reply_missing",
       "Gee runtime accepted the Telegram message but did not produce a reply projection.",
     );
   }
 
-  const token = await dependencies.tokenProvider(account.id);
-  if (!token?.trim()) {
-    return serviceFailure("failed", accountId, updateId, "token_missing", `Telegram bot token is missing for account \`${account.id}\`.`);
-  }
-
-  const sendResult = await dependencies.telegramClient.sendMessage({
-    token: token.trim(),
-    target: { kind: "chat_id", value: chatId },
-    message: reply,
-    disableWebPreview: true,
-    idempotencyKey: `telegram:reply:${updateId}`,
-  });
-  if (!sendResult.ok) {
-    return serviceFailure(
-      sendResult.code === "telegram_rate_limited" || sendResult.code === "network_unavailable" ? "degraded" : "failed",
-      accountId,
-      updateId,
-      sendResult.code,
-      sendResult.message,
-      sendResult.retryAfterMs,
-    );
-  }
-
-  return {
-    status: "success",
-    fallback_attempted: false,
-    accountId,
-    updateId,
-    delivery: {
-      telegramMessageId: sendResult.telegramMessageId,
-      sentAt: sendResult.sentAt,
-    },
-    error: null,
-  };
+  return sendTelegramServiceReply(account, envelope.chat.id, envelope.updateId, reply, dependencies);
 }
 
 async function handleCodexRemoteText(
@@ -352,38 +260,13 @@ async function sendTelegramServiceReply(
   message: string,
   dependencies: Pick<TelegramBridgeServiceDependencies, "tokenProvider" | "telegramClient">,
 ): Promise<TelegramBridgeUpdateResult> {
-  const token = await dependencies.tokenProvider(account.id);
-  if (!token?.trim()) {
-    return serviceFailure("failed", account.id, updateId, "token_missing", `Telegram bot token is missing for account \`${account.id}\`.`);
-  }
-  const result = await dependencies.telegramClient.sendMessage({
-    token: token.trim(),
-    target: { kind: "chat_id", value: chatId },
-    message,
-    disableWebPreview: true,
-    idempotencyKey: `telegram:reply:${updateId}`,
-  });
-  if (!result.ok) {
-    return serviceFailure(
-      result.code === "telegram_rate_limited" || result.code === "network_unavailable" ? "degraded" : "failed",
-      account.id,
-      updateId,
-      result.code,
-      result.message,
-      result.retryAfterMs,
-    );
-  }
-  return {
-    status: "success",
-    fallback_attempted: false,
-    accountId: account.id,
+  return sendTelegramTextProjection({
+    account,
+    chatId,
     updateId,
-    delivery: {
-      telegramMessageId: result.telegramMessageId,
-      sentAt: result.sentAt,
-    },
-    error: null,
-  };
+    message,
+    idempotencyKey: `telegram:reply:${updateId}`,
+  }, dependencies);
 }
 
 function codexListText(result: CodexThreadListResult): string {
@@ -424,80 +307,6 @@ function codexStatusToServiceStatus(status: CodexSendResult["status"]): Exclude<
   }
 }
 
-function securityDecision(
-  account: TelegramBridgeAccount,
-  chatId: string,
-  fromUserId: string,
-  chatType: string | undefined,
-  text: string,
-):
-  | { status: "allowed"; policyId: string }
-  | { status: "denied"; code: string; message: string } {
-  if (account.security?.requirePairing === true) {
-    return {
-      status: "denied",
-      code: "pairing_required_unavailable",
-      message: "Telegram pairing is required for this account, but pairing is not implemented in this Gear release.",
-    };
-  }
-  if (chatType && chatType !== "private") {
-    const groupPolicy = account.security?.groupPolicy ?? "deny";
-    if (groupPolicy === "deny") {
-      return {
-        status: "denied",
-        code: "group_policy_denied",
-        message: "Telegram group messages are denied for this account.",
-      };
-    }
-    if (groupPolicy === "mention_required") {
-      if (!account.botUsername?.trim()) {
-        return {
-          status: "denied",
-          code: "group_policy_bot_username_missing",
-          message: "Telegram mention-required group policy needs botUsername to be configured.",
-        };
-      }
-      if (!hasBotMention(text, account.botUsername)) {
-        return {
-          status: "denied",
-          code: "group_policy_mention_required",
-          message: "Telegram group messages must mention this bot before GeeAgent accepts them.",
-        };
-      }
-    }
-  }
-  const allowedUsers = normalizedIdSet(account.security?.allowUserIds);
-  if (allowedUsers.size > 0 && !allowedUsers.has(fromUserId)) {
-    return {
-      status: "denied",
-      code: "user_not_allowed",
-      message: "Telegram user is not authorized for this account.",
-    };
-  }
-  const allowedChats = normalizedIdSet(account.security?.allowChatIds);
-  if (allowedChats.size > 0 && !allowedChats.has(chatId)) {
-    return {
-      status: "denied",
-      code: "chat_not_allowed",
-      message: "Telegram chat is not authorized for this account.",
-    };
-  }
-  return { status: "allowed", policyId: "allowlist" };
-}
-
-function hasBotMention(text: string, botUsername: string): boolean {
-  const username = botUsername.trim().replace(/^@+/, "").toLowerCase();
-  if (!username) {
-    return false;
-  }
-  const pattern = new RegExp(`(^|[^A-Za-z0-9_])@${escapeRegExp(username)}($|[^A-Za-z0-9_])`);
-  return pattern.test(text.toLowerCase());
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 function latestAssistantReply(snapshot: RuntimeSnapshotLike): string | null {
   const messages = snapshot.active_conversation?.messages ?? [];
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -528,35 +337,6 @@ function serviceFailure(
       retryAfterMs,
     },
   };
-}
-
-function normalizedIdSet(values: unknown): Set<string> {
-  if (!Array.isArray(values)) {
-    return new Set();
-  }
-  return new Set(
-    values
-      .map((value) => String(value).trim())
-      .filter(Boolean),
-  );
-}
-
-function idValue(value: unknown): string | null {
-  if (typeof value === "string" && value.trim()) {
-    return value.trim();
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return String(value);
-  }
-  return null;
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function numberValue(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function errorMessage(error: unknown): string {

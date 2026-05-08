@@ -8,6 +8,8 @@
   "category": "Productivity",
   "kind": "atmosphere",
   "display_mode": "full_canvas",
+  "cover": "assets/cover.png",
+  "icon": "assets/icon.png",
   "entry": {
     "type": "native",
     "native_id": "todo.manager"
@@ -35,12 +37,18 @@
         ],
         "input_schema": {
           "type": "object",
-          "required": ["title"],
+          "required": [
+            "title"
+          ],
           "additionalProperties": false,
           "properties": {
             "title": {
               "type": "string",
               "description": "Todo title."
+            },
+            "idempotency_key": {
+              "type": "string",
+              "description": "Stable key for one logical create request. Reusing the key returns the existing task instead of creating a duplicate."
             },
             "content": {
               "type": "string",
@@ -61,7 +69,12 @@
             },
             "priority": {
               "type": "integer",
-              "enum": [0, 1, 3, 5],
+              "enum": [
+                0,
+                1,
+                3,
+                5
+              ],
               "description": "TickTick-style priority: none 0, low 1, medium 3, high 5."
             },
             "start_at": {
@@ -81,7 +94,22 @@
             "reminders": {
               "type": "array",
               "items": {
-                "type": "object"
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "trigger_at": {
+                    "type": "string",
+                    "description": "ISO-8601 absolute reminder time."
+                  },
+                  "minutes_before_due": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Relative reminder offset. Requires due_at."
+                  }
+                }
               },
               "description": "Reminder objects with trigger_at or minutes_before_due."
             },
@@ -98,13 +126,16 @@
           }
         },
         "side_effect": "write_gear_data",
-        "permissions": ["gear_data.write", "notification.schedule"],
+        "permissions": [
+          "gear_data.write",
+          "notification.schedule"
+        ],
         "exports": {
           "codex": {
             "enabled": true,
             "risk": "medium",
             "requires_approval": false,
-            "skill_hint": "Use when Codex needs to create a local GeeAgent Todo Manager task from an explicit user request. Pass structured dates, tags, and priority when the user supplies them; report reminder authorization warnings exactly as Gee returns them."
+            "skill_hint": "Use when Codex needs to create a local GeeAgent Todo Manager task from an explicit user request. Provide a stable idempotency_key for one logical create request. When the user mentions today, tomorrow, a single non-reminder day part, a next weekday, this weekend, an explicit YYYY-MM-DD date, a clock time, or reminders, pass structured due_at/start_at/is_all_day/timezone/reminders. Reminder requests still need a concrete clock time; report reminder authorization warnings exactly as Gee returns them."
           }
         }
       },
@@ -123,7 +154,12 @@
           "properties": {
             "status": {
               "type": "string",
-              "enum": ["open", "completed", "deleted", "all"]
+              "enum": [
+                "open",
+                "completed",
+                "deleted",
+                "all"
+              ]
             },
             "list_id": {
               "type": "string"
@@ -141,12 +177,23 @@
               "type": "array",
               "items": {
                 "type": "integer",
-                "enum": [0, 1, 3, 5]
+                "enum": [
+                  0,
+                  1,
+                  3,
+                  5
+                ]
               }
             },
             "due": {
               "type": "string",
-              "enum": ["today", "upcoming", "overdue", "none", "any"]
+              "enum": [
+                "today",
+                "upcoming",
+                "overdue",
+                "none",
+                "any"
+              ]
             },
             "start_at": {
               "type": "string"
@@ -165,7 +212,9 @@
           }
         },
         "side_effect": "read_only",
-        "permissions": ["gear_data.read"],
+        "permissions": [
+          "gear_data.read"
+        ],
         "exports": {
           "codex": {
             "enabled": true,
@@ -186,7 +235,9 @@
         ],
         "input_schema": {
           "type": "object",
-          "required": ["task_id"],
+          "required": [
+            "task_id"
+          ],
           "additionalProperties": false,
           "properties": {
             "task_id": {
@@ -212,11 +263,19 @@
             },
             "priority": {
               "type": "integer",
-              "enum": [0, 1, 3, 5]
+              "enum": [
+                0,
+                1,
+                3,
+                5
+              ]
             },
             "status": {
               "type": "string",
-              "enum": ["open", "completed"]
+              "enum": [
+                "open",
+                "completed"
+              ]
             },
             "completed": {
               "type": "boolean"
@@ -242,7 +301,20 @@
             "reminders": {
               "type": "array",
               "items": {
-                "type": "object"
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "trigger_at": {
+                    "type": "string"
+                  },
+                  "minutes_before_due": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
               }
             },
             "repeat_rrule": {
@@ -257,7 +329,10 @@
           }
         },
         "side_effect": "write_gear_data",
-        "permissions": ["gear_data.write", "notification.schedule"],
+        "permissions": [
+          "gear_data.write",
+          "notification.schedule"
+        ],
         "exports": {
           "codex": {
             "enabled": true,
@@ -277,7 +352,9 @@
         ],
         "input_schema": {
           "type": "object",
-          "required": ["task_id"],
+          "required": [
+            "task_id"
+          ],
           "additionalProperties": false,
           "properties": {
             "task_id": {
@@ -286,7 +363,10 @@
           }
         },
         "side_effect": "write_gear_data",
-        "permissions": ["gear_data.write", "notification.schedule"],
+        "permissions": [
+          "gear_data.write",
+          "notification.schedule"
+        ],
         "exports": {
           "codex": {
             "enabled": true,

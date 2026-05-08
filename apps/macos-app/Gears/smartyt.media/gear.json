@@ -8,6 +8,8 @@
   "category": "Media",
   "kind": "atmosphere",
   "display_mode": "full_canvas",
+  "cover": "assets/cover.png",
+  "icon": "assets/icon.png",
   "entry": {
     "type": "native",
     "native_id": "smartyt.media"
@@ -22,7 +24,9 @@
         "required": true,
         "detect": {
           "command": "yt-dlp",
-          "args": ["--version"]
+          "args": [
+            "--version"
+          ]
         },
         "installer": {
           "type": "recipe",
@@ -36,7 +40,9 @@
         "required": true,
         "detect": {
           "command": "ffmpeg",
-          "args": ["-version"]
+          "args": [
+            "-version"
+          ]
         },
         "installer": {
           "type": "recipe",
@@ -50,7 +56,9 @@
         "required": true,
         "detect": {
           "command": "ffprobe",
-          "args": ["-version"]
+          "args": [
+            "-version"
+          ]
         },
         "installer": {
           "type": "recipe",

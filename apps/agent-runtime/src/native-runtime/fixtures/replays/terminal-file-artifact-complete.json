@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "run_id": "run_golden_terminal_file_artifact",
+  "exported_at": "2026-05-07T00:00:00.000Z",
+  "event_count": 4,
+  "conversation_ids": ["conv_golden_phase3_file"],
+  "execution_session_ids": ["session_golden_phase3_file"],
+  "sdk_session_ids": ["sdk_golden_phase3_file"],
+  "parent_run_ids": [],
+  "host_action_runs": [],
+  "approval_requests": [],
+  "artifact_ids": [],
+  "artifact_refs": [],
+  "diagnostics": {
+    "duplicate_event_ids": [],
+    "missing_parent_event_ids": [],
+    "missing_sequence_numbers": [],
+    "out_of_order_event_ids": []
+  },
+  "events": [
+    {
+      "event_id": "evt_file_001_user",
+      "session_id": "session_golden_phase3_file",
+      "parent_event_id": null,
+      "run_id": "run_golden_terminal_file_artifact",
+      "sequence": 1,
+      "payload": {
+        "kind": "user_message",
+        "content": "Read the runtime log and summarize it without inlining the full file.",
+        "run_id": "run_golden_terminal_file_artifact"
+      }
+    },
+    {
+      "event_id": "evt_file_002_tool",
+      "session_id": "session_golden_phase3_file",
+      "parent_event_id": "evt_file_001_user",
+      "run_id": "run_golden_terminal_file_artifact",
+      "sequence": 2,
+      "payload": {
+        "kind": "tool_invocation",
+        "invocation": {
+          "invocation_id": "toolu_read_runtime_log",
+          "tool_name": "Read",
+          "status": "running",
+          "input_summary": "Read runtime.log"
+        },
+        "run_id": "run_golden_terminal_file_artifact"
+      }
+    },
+    {
+      "event_id": "evt_file_003_result",
+      "session_id": "session_golden_phase3_file",
+      "parent_event_id": "evt_file_002_tool",
+      "run_id": "run_golden_terminal_file_artifact",
+      "sequence": 3,
+      "payload": {
+        "kind": "tool_result",
+        "invocation_id": "toolu_read_runtime_log",
+        "status": "succeeded",
+        "summary": "Runtime log was materialized as an artifact because it was too large for prompt context.",
+        "artifacts": [
+          {
+            "artifact_id": "artifact_runtime_log_read",
+            "kind": "tool_result_artifact",
+            "title": "Runtime log read result",
+            "path": "/tmp/geeagent/golden/runtime-log-read.json",
+            "summary": "Large runtime log output stored outside prompt context.",
+            "sha256": "93bc1f5d7d26b85b5f189e7e0000000000000000000000000000000000000000",
+            "byte_count": 24000,
+            "token_estimate": 4800,
+            "mime_type": "application/json"
+          }
+        ],
+        "run_id": "run_golden_terminal_file_artifact"
+      }
+    },
+    {
+      "event_id": "evt_file_004_assistant",
+      "session_id": "session_golden_phase3_file",
+      "parent_event_id": "evt_file_003_result",
+      "run_id": "run_golden_terminal_file_artifact",
+      "sequence": 4,
+      "payload": {
+        "kind": "assistant_message",
+        "content": "The runtime log was read and summarized from the artifact reference.",
+        "run_id": "run_golden_terminal_file_artifact"
+      }
+    }
+  ]
+}

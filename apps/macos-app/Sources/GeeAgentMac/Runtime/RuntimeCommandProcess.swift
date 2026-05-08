@@ -61,6 +61,16 @@ final class RuntimeCommandServer {
         stopLocked()
     }
 
+    func interrupt() {
+        if serverLock.try() {
+            defer { serverLock.unlock() }
+            stopLocked()
+            return
+        }
+
+        serverProcess?.terminate()
+    }
+
     func run(
         command: String,
         args: [String],

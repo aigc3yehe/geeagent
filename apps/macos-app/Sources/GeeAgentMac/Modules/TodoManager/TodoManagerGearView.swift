@@ -6,8 +6,26 @@ struct TodoManagerGearModuleView: View {
     }
 }
 
+private enum TodoManagerReminderDraftMode: String, CaseIterable, Identifiable {
+    case absolute
+    case relative
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .absolute: "At Time"
+        case .relative: "Before Due"
+        }
+    }
+}
+
 struct TodoManagerGearWindow: View {
     @StateObject private var model = TodoManagerGearStore.shared
+    @State private var reminderDraft = Date().addingTimeInterval(3600)
+    @State private var reminderDraftMode: TodoManagerReminderDraftMode = .absolute
+    @State private var relativeReminderMinutes = 30
+    @State private var editingReminderID: String?
 
     var body: some View {
         GeometryReader { proxy in
@@ -149,6 +167,7 @@ struct TodoManagerGearWindow: View {
                             TodoManagerTaskRow(
                                 task: task,
                                 listName: model.listName(for: task.listID),
+                                scheduleSummary: model.scheduleSummary(for: task),
                                 isSelected: model.selectedTaskID == task.id,
                                 onSelect: {
                                     model.selectedTaskID = task.id
@@ -188,8 +207,10 @@ struct TodoManagerGearWindow: View {
                         TodoManagerInspectorHeader(task: task)
 
                         TodoManagerInspectorSection(title: "Details") {
+                            let schedule = model.scheduleSummary(for: task)
                             TodoManagerKeyValue(label: "List", value: model.listName(for: task.listID))
                             TodoManagerKeyValue(label: "Status", value: task.status.capitalized)
+                            TodoManagerKeyValue(label: "Schedule", value: scheduleInspectorLabel(schedule))
                             TodoManagerKeyValue(label: "Priority", value: TodoManagerPriority.label(task.priority))
                             if let dueAt = task.dueAt {
                                 TodoManagerKeyValue(label: "Due", value: dueAt.formatted(date: .abbreviated, time: .shortened))
@@ -199,6 +220,125 @@ struct TodoManagerGearWindow: View {
                             }
                             if let repeatRRULE = task.repeatRRULE?.nilIfBlank {
                                 TodoManagerKeyValue(label: "Repeat", value: repeatRRULE)
+                            }
+                        }
+
+                        TodoManagerInspectorSection(title: "Reminders") {
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack(alignment: .top, spacing: 8) {
+                                    Image(systemName: model.notificationState.systemImage)
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 18)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(model.notificationState.title)
+                                            .font(.subheadline.weight(.medium))
+                                        Text(model.notificationState.detail)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    Spacer()
+                                    Button {
+                                        model.refreshNotificationState()
+                                    } label: {
+                                        Image(systemName: "arrow.clockwise")
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .help("Refresh notification state")
+                                    if model.notificationState.showsSettingsAction {
+                                        Button {
+                                            model.openNotificationSettings()
+                                        } label: {
+                                            Image(systemName: "gearshape")
+                                        }
+                                        .buttonStyle(.borderless)
+                                        .help("Open notification settings")
+                                    }
+                                }
+
+                                if task.reminders.isEmpty {
+                                    TodoManagerKeyValue(label: "Scheduled", value: "None")
+                                } else {
+                                    ForEach(task.reminders) { reminder in
+                                        HStack(spacing: 8) {
+                                            Label(reminderLabel(reminder, task: task), systemImage: "bell")
+                                                .font(.subheadline)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                            Spacer()
+                                            Button {
+                                                beginEditing(reminder)
+                                            } label: {
+                                                Image(systemName: "pencil")
+                                            }
+                                            .buttonStyle(.borderless)
+                                            .help("Edit reminder")
+                                            Button {
+                                                removeReminder(reminder, from: task)
+                                            } label: {
+                                                Image(systemName: "minus.circle")
+                                            }
+                                            .buttonStyle(.borderless)
+                                            .help("Remove reminder")
+                                        }
+                                    }
+                                }
+
+                                Picker("Reminder kind", selection: $reminderDraftMode) {
+                                    ForEach(TodoManagerReminderDraftMode.allCases) { mode in
+                                        Text(mode.title).tag(mode)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+
+                                switch reminderDraftMode {
+                                case .absolute:
+                                    DatePicker(
+                                        "Reminder",
+                                        selection: $reminderDraft,
+                                        displayedComponents: [.date, .hourAndMinute]
+                                    )
+                                    .datePickerStyle(.compact)
+                                case .relative:
+                                    Stepper(
+                                        "\(relativeReminderMinutes)m before due",
+                                        value: $relativeReminderMinutes,
+                                        in: 0...10_080,
+                                        step: 5
+                                    )
+                                    .disabled(task.dueAt == nil)
+                                    if task.dueAt == nil {
+                                        Text("Relative reminders require a due date.")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+
+                                HStack(spacing: 8) {
+                                    Button {
+                                        applyReminderDraft(to: task)
+                                    } label: {
+                                        Label(editingReminderID == nil ? "Add" : "Update", systemImage: editingReminderID == nil ? "plus.circle" : "checkmark.circle")
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(reminderDraftMode == .relative && task.dueAt == nil)
+
+                                    Button {
+                                        resetReminderDraft()
+                                    } label: {
+                                        Label("Cancel", systemImage: "xmark.circle")
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(editingReminderID == nil)
+
+                                    Button {
+                                        clearReminders(task)
+                                    } label: {
+                                        Label("Clear All", systemImage: "bell.slash")
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(task.reminders.isEmpty)
+                                }
                             }
                         }
 
@@ -270,6 +410,97 @@ struct TodoManagerGearWindow: View {
         .padding(18)
         .background(.thinMaterial)
     }
+
+    private func reminderLabel(_ reminder: TodoManagerReminderRecord, task: TodoManagerTaskRecord) -> String {
+        if let triggerDate = reminder.triggerDate(for: task) {
+            return triggerDate.formatted(date: .abbreviated, time: .shortened)
+        }
+        if let minutesBeforeDue = reminder.minutesBeforeDue {
+            return "\(minutesBeforeDue)m before due"
+        }
+        return "Unscheduled"
+    }
+
+    private func scheduleInspectorLabel(_ summary: TodoManagerTaskScheduleSummary) -> String {
+        let source: String
+        switch summary.dateSource {
+        case "due_at": source = "Due"
+        case "start_at": source = "Start"
+        case "reminder": source = "Reminder"
+        default: source = "No date"
+        }
+        guard let relevantAt = summary.relevantAt else {
+            return source
+        }
+        let state = summary.dateState == "overdue" ? "Overdue" : source
+        let time = summary.timeState == "all_day"
+            ? relevantAt.formatted(date: .abbreviated, time: .omitted)
+            : relevantAt.formatted(date: .abbreviated, time: .shortened)
+        return "\(state) - \(time)"
+    }
+
+    private func beginEditing(_ reminder: TodoManagerReminderRecord) {
+        editingReminderID = reminder.id
+        if let triggerAt = reminder.triggerAt {
+            reminderDraftMode = .absolute
+            reminderDraft = triggerAt
+        } else if let minutesBeforeDue = reminder.minutesBeforeDue {
+            reminderDraftMode = .relative
+            relativeReminderMinutes = minutesBeforeDue
+        }
+    }
+
+    private func applyReminderDraft(to task: TodoManagerTaskRecord) {
+        Task {
+            let payload: [String: Any]
+            if let editingReminderID {
+                switch reminderDraftMode {
+                case .absolute:
+                    payload = await model.updateReminder(editingReminderID, in: task, at: reminderDraft)
+                case .relative:
+                    payload = await model.updateRelativeReminder(
+                        editingReminderID,
+                        in: task,
+                        minutesBeforeDue: relativeReminderMinutes
+                    )
+                }
+            } else {
+                switch reminderDraftMode {
+                case .absolute:
+                    payload = await model.addReminder(task, at: reminderDraft)
+                case .relative:
+                    payload = await model.addRelativeReminder(task, minutesBeforeDue: relativeReminderMinutes)
+                }
+            }
+            if payload["status"] as? String != "failed" {
+                resetReminderDraft()
+            }
+        }
+    }
+
+    private func removeReminder(_ reminder: TodoManagerReminderRecord, from task: TodoManagerTaskRecord) {
+        Task {
+            let payload = await model.removeReminder(reminder.id, from: task)
+            if payload["status"] as? String != "failed", editingReminderID == reminder.id {
+                resetReminderDraft()
+            }
+        }
+    }
+
+    private func clearReminders(_ task: TodoManagerTaskRecord) {
+        Task {
+            let payload = await model.clearReminders(task)
+            if payload["status"] as? String != "failed" {
+                resetReminderDraft()
+            }
+        }
+    }
+
+    private func resetReminderDraft() {
+        editingReminderID = nil
+        reminderDraftMode = .absolute
+        reminderDraft = Date().addingTimeInterval(3600)
+    }
 }
 
 private struct TodoManagerSidebarButton: View {
@@ -300,6 +531,7 @@ private struct TodoManagerSidebarButton: View {
 private struct TodoManagerTaskRow: View {
     var task: TodoManagerTaskRecord
     var listName: String
+    var scheduleSummary: TodoManagerTaskScheduleSummary
     var isSelected: Bool
     var onSelect: () -> Void
     var onToggle: () -> Void
@@ -331,8 +563,9 @@ private struct TodoManagerTaskRow: View {
 
                     HStack(spacing: 8) {
                         Text(listName)
-                        if let dueAt = task.dueAt {
-                            Label(dueAt.formatted(date: .abbreviated, time: .omitted), systemImage: "calendar")
+                        TodoManagerScheduleChip(summary: scheduleSummary)
+                        if !task.reminders.isEmpty {
+                            Image(systemName: "bell")
                         }
                         if !task.tags.isEmpty {
                             Text(task.tags.prefix(2).map { "#\($0)" }.joined(separator: " "))
@@ -353,6 +586,64 @@ private struct TodoManagerTaskRow: View {
         .buttonStyle(.plain)
         Divider()
             .padding(.leading, 54)
+    }
+}
+
+private struct TodoManagerScheduleChip: View {
+    var summary: TodoManagerTaskScheduleSummary
+
+    var body: some View {
+        Label(title, systemImage: systemImage)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(foreground)
+            .padding(.horizontal, 7)
+            .frame(height: 20)
+            .background(foreground.opacity(0.10), in: Capsule())
+            .help(help)
+    }
+
+    private var title: String {
+        guard let relevantAt = summary.relevantAt else {
+            return "No date"
+        }
+        if summary.dateState == "overdue" {
+            return "Overdue"
+        }
+        if summary.dateState == "today" {
+            return summary.timeState == "all_day"
+                ? "Today"
+                : relevantAt.formatted(date: .omitted, time: .shortened)
+        }
+        return summary.timeState == "all_day"
+            ? relevantAt.formatted(date: .abbreviated, time: .omitted)
+            : relevantAt.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    private var systemImage: String {
+        switch summary.dateSource {
+        case "due_at": "calendar"
+        case "start_at": "play.circle"
+        case "reminder": "bell"
+        default: "calendar.badge.exclamationmark"
+        }
+    }
+
+    private var foreground: Color {
+        switch summary.dateState {
+        case "overdue": .red
+        case "today": .accentColor
+        case "upcoming": Color(nsColor: .secondaryLabelColor)
+        default: Color(nsColor: .tertiaryLabelColor)
+        }
+    }
+
+    private var help: String {
+        switch summary.dateSource {
+        case "due_at": "Due date"
+        case "start_at": "Start date"
+        case "reminder": "Reminder date"
+        default: "Unscheduled"
+        }
     }
 }
 

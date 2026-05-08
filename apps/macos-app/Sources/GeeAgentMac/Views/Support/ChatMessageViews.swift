@@ -255,12 +255,21 @@ struct ChatMessageCard: View {
 
     private var userChatMessageLayout: some View {
         HStack(alignment: .top, spacing: 10) {
-            ChatMarkdownText(
-                content: message.content,
-                font: .geeBody(14),
-                lineSpacing: 7,
-                color: prominentBackground ? .white.opacity(0.94) : .primary
-            )
+            VStack(alignment: .leading, spacing: 8) {
+                ChatMarkdownText(
+                    content: message.content,
+                    font: .geeBody(14),
+                    lineSpacing: 7,
+                    color: prominentBackground ? .white.opacity(0.94) : .primary
+                )
+
+                if !message.attachments.isEmpty {
+                    ConversationAttachmentChipGrid(
+                        attachments: message.attachments,
+                        prominentBackground: prominentBackground
+                    )
+                }
+            }
             .layoutPriority(1)
 
             if message.canDelete {
@@ -610,6 +619,143 @@ struct ChatMessageCard: View {
             return .orange
         case .critical:
             return .red
+        }
+    }
+}
+
+private struct ConversationAttachmentChipGrid: View {
+    var attachments: [ConversationMessageAttachment]
+    var prominentBackground: Bool
+
+    private let columns = [
+        GridItem(.adaptive(minimum: 132, maximum: 220), spacing: 6, alignment: .leading)
+    ]
+
+    var body: some View {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
+            ForEach(attachments) { attachment in
+                ConversationAttachmentChip(
+                    attachment: attachment,
+                    prominentBackground: prominentBackground
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ConversationAttachmentChip: View {
+    var attachment: ConversationMessageAttachment
+    var prominentBackground: Bool
+
+    var body: some View {
+        Group {
+            if attachment.path != nil {
+                Button(action: revealAttachment) {
+                    chipBody
+                }
+                .buttonStyle(.plain)
+            } else {
+                chipBody
+            }
+        }
+        .help(helpText)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var chipBody: some View {
+        HStack(spacing: 7) {
+            Image(systemName: attachment.systemImage)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 14, height: 14)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(attachment.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(prominentBackground ? .white.opacity(0.92) : .primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Text(metadataLabel)
+                    .font(.caption2)
+                    .foregroundStyle(prominentBackground ? .white.opacity(0.58) : .secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 34)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(tint.opacity(prominentBackground ? 0.16 : 0.12))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(tint.opacity(prominentBackground ? 0.32 : 0.24), lineWidth: 0.8)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var metadataLabel: String {
+        [
+            attachment.kind.rawValue,
+            attachment.statusLabel,
+            formattedSize,
+        ]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
+    }
+
+    private var formattedSize: String? {
+        guard let sizeBytes = attachment.sizeBytes else {
+            return nil
+        }
+        return ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file)
+    }
+
+    private var tint: Color {
+        switch attachment.status {
+        case .failed:
+            return .red
+        case .degraded:
+            return .orange
+        case .ready:
+            switch attachment.kind {
+            case .image:
+                return .blue
+            case .file:
+                return .secondary
+            case .directory:
+                return .green
+            case .unknown:
+                return .secondary
+            }
+        }
+    }
+
+    private var helpText: String {
+        if let path = attachment.path {
+            return "\(attachment.title)\n\(path)"
+        }
+        return attachment.title
+    }
+
+    private var accessibilityLabel: String {
+        "\(attachment.kind.rawValue) attachment, \(attachment.title)"
+    }
+
+    private func revealAttachment() {
+        guard let path = attachment.path else {
+            return
+        }
+        let url = URL(fileURLWithPath: path)
+        if FileManager.default.fileExists(atPath: path) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            NSWorkspace.shared.open(url.deletingLastPathComponent())
         }
     }
 }
@@ -1014,19 +1160,28 @@ private func isLowSignalRuntimeThinking(_ message: ConversationMessage) -> Bool 
     let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
     return content.localizedCaseInsensitiveContains("Turn setup complete.")
         || content.localizedCaseInsensitiveContains("delegating this turn into the SDK loop")
+        || content.localizedCaseInsensitiveContains("starting this turn in the active agent runtime")
         || content.localizedCaseInsensitiveContains("the agent inspected the Gear result and requested another native Gear host action inside the same SDK run")
+        || content.localizedCaseInsensitiveContains("the agent inspected the Gear result and requested another native Gear host action inside the same agent run")
         || content.localizedCaseInsensitiveContains("the agent requested native Gear host action(s)")
         || content.localizedCaseInsensitiveContains("GeeAgent paused the same SDK run until the macOS host returns structured results")
+        || content.localizedCaseInsensitiveContains("GeeAgent paused the same agent run until the macOS host returns structured results")
         || content.localizedCaseInsensitiveContains("the SDK runtime is waiting on native Gear host action results")
+        || content.localizedCaseInsensitiveContains("the agent runtime is waiting on native Gear host action results")
         || content.localizedCaseInsensitiveContains("native Gear actions completed; returning structured host results to the SDK runtime")
+        || content.localizedCaseInsensitiveContains("native Gear actions completed; returning structured host results to the active agent run")
         || content.localizedCaseInsensitiveContains("the SDK runtime continued after Gear host results and completed the active user turn")
+        || content.localizedCaseInsensitiveContains("the agent runtime continued after Gear host results and completed the active user turn")
         || content.localizedCaseInsensitiveContains("Turn finalized after")
         || content.localizedCaseInsensitiveContains("the SDK runtime completed")
+        || content.localizedCaseInsensitiveContains("the agent runtime completed")
         || content.localizedCaseInsensitiveContains("the host auto-approved")
         || content.localizedCaseInsensitiveContains("completed the active turn")
         || content.localizedCaseInsensitiveContains("completed the active user turn")
         || content.localizedCaseInsensitiveContains("committed the resulting tool trace")
         || content.localizedCaseInsensitiveContains("committed that failed turn")
+        || content.localizedCaseInsensitiveContains("Stopped by the user.")
+        || content.localizedCaseInsensitiveContains("interrupted the active run")
         || content.localizedCaseInsensitiveContains("finalized")
 }
 

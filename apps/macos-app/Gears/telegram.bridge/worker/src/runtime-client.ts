@@ -3,8 +3,8 @@ import { join } from "node:path";
 
 import type {
   RuntimeChannelClient,
-  RuntimeChannelMessageInput,
 } from "./service.js";
+import type { RuntimeChannelMessageInput } from "./gateway.js";
 
 export type RuntimeCommandResult = {
   code: number;

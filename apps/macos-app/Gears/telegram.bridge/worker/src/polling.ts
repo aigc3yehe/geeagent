@@ -6,8 +6,8 @@ import {
   type CodexRemoteClient,
   type RuntimeChannelClient,
   type TelegramBridgeUpdateResult,
-  type TelegramUpdate,
 } from "./service.js";
+import type { TelegramGatewayUpdate } from "./gateway.js";
 import type {
   PushSendDependencies,
   TelegramSendClient,
@@ -136,7 +136,7 @@ async function pollAccount(
     const updateId = telegramUpdateId(update);
     let updateResult: TelegramBridgeUpdateResult;
     try {
-      updateResult = await handleTelegramBridgeUpdate(config, accountId, update as TelegramUpdate, dependencies);
+      updateResult = await handleTelegramBridgeUpdate(config, accountId, update as TelegramGatewayUpdate, dependencies);
     } catch (error) {
       updateResult = {
         status: "failed",

@@ -36,6 +36,7 @@ import {
   deleteTerminalAccessRule,
 } from "./store/terminal-permissions.js";
 import {
+  cancelActiveRun,
   completeHostActionTurn,
   performTaskAction,
   submitChannelMessage,
@@ -189,6 +190,9 @@ export async function handleNativeRuntimeCommand(
     case "submit-channel-message":
       assertArgCount(command, args, 1);
       return stringify(await submitChannelMessage(configDir, JSON.parse(args[0]) as unknown));
+    case "cancel-active-run":
+      assertArgCount(command, args, 0);
+      return stringify(await cancelActiveRun(configDir));
     case "submit-quick-prompt":
       assertArgCount(command, args, 1);
       return stringify(await submitQuickPrompt(configDir, args[0]));

@@ -629,6 +629,155 @@ struct ConversationMessageDetailItem: Identifiable, Hashable {
     var value: String
 }
 
+struct ConversationMessageAttachment: Identifiable, Hashable, Sendable {
+    enum Kind: String, Hashable, Sendable {
+        case image
+        case file
+        case directory
+        case unknown
+    }
+
+    enum Status: String, Hashable, Sendable {
+        case ready
+        case degraded
+        case failed
+    }
+
+    var id: String
+    var kind: Kind
+    var displayName: String
+    var originalPath: String?
+    var resolvedPath: String?
+    var mimeType: String?
+    var sizeBytes: Int?
+    var status: Status = .ready
+    var source: String? = nil
+    var createdAt: String? = nil
+    var accessScope: String? = nil
+    var accessMode: String? = nil
+    var accessRoot: String? = nil
+    var accessExpiresAt: String? = nil
+    var imageWidth: Int? = nil
+    var imageHeight: Int? = nil
+    var maxBytes: Int? = nil
+    var maxEntries: Int? = nil
+    var maxDepth: Int? = nil
+    var errorCode: String? = nil
+    var errorMessage: String? = nil
+    var fallbackAttempted: Bool? = nil
+
+    var title: String {
+        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? id : trimmed
+    }
+
+    var path: String? {
+        let preferredPath = originalPath ?? resolvedPath
+        let trimmed = preferredPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    var systemImage: String {
+        switch kind {
+        case .image:
+            return "photo"
+        case .file:
+            return "doc"
+        case .directory:
+            return "folder"
+        case .unknown:
+            return "paperclip"
+        }
+    }
+
+    var statusLabel: String? {
+        status == .ready ? nil : status.rawValue
+    }
+
+    var inspectorDetailItems: [ConversationMessageDetailItem] {
+        var details = [ConversationMessageDetailItem(label: "Status", value: status.rawValue)]
+        appendInspectorDetail("Source", source, to: &details)
+        appendInspectorDetail("Created", createdAt, to: &details)
+        appendInspectorDetail("Original path", originalPath, to: &details)
+        appendInspectorDetail("Resolved path", resolvedPath, to: &details)
+        appendInspectorDetail("MIME", mimeType, to: &details)
+        if let sizeBytes {
+            details.append(
+                ConversationMessageDetailItem(
+                    label: "Size",
+                    value: ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file)
+                )
+            )
+        }
+        appendInspectorDetail("Access", accessSummary, to: &details)
+        appendInspectorDetail("Image", imageSummary, to: &details)
+        appendInspectorDetail("Limits", limitsSummary, to: &details)
+        appendInspectorDetail("Error", errorSummary, to: &details)
+        if let fallbackAttempted {
+            details.append(
+                ConversationMessageDetailItem(
+                    label: "Fallback attempted",
+                    value: fallbackAttempted ? "Yes" : "No"
+                )
+            )
+        }
+        return details
+    }
+
+    private var accessSummary: String? {
+        nonEmptyJoined([accessScope, accessMode, accessRoot, accessExpiresAt], separator: " · ")
+    }
+
+    private var imageSummary: String? {
+        guard let imageWidth, let imageHeight else {
+            return nil
+        }
+        return "\(imageWidth) x \(imageHeight)"
+    }
+
+    private var limitsSummary: String? {
+        var parts = [String]()
+        if let maxBytes {
+            parts.append("max \(ByteCountFormatter.string(fromByteCount: Int64(maxBytes), countStyle: .file))")
+        }
+        if let maxEntries {
+            parts.append("\(maxEntries) entries")
+        }
+        if let maxDepth {
+            parts.append("depth \(maxDepth)")
+        }
+        return nonEmptyJoined(parts, separator: " · ")
+    }
+
+    private var errorSummary: String? {
+        nonEmptyJoined([errorCode, errorMessage], separator: " · ")
+    }
+
+    private func appendInspectorDetail(
+        _ label: String,
+        _ value: String?,
+        to details: inout [ConversationMessageDetailItem]
+    ) {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty
+        else {
+            return
+        }
+        details.append(ConversationMessageDetailItem(label: label, value: trimmed))
+    }
+
+    private func nonEmptyJoined(_ values: [String?], separator: String) -> String? {
+        nonEmptyJoined(values.compactMap { $0 }, separator: separator)
+    }
+
+    private func nonEmptyJoined(_ values: [String], separator: String) -> String? {
+        let visible = values
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return visible.isEmpty ? nil : visible.joined(separator: separator)
+    }
+}
+
 struct ConversationMessage: Identifiable, Hashable {
     enum Role: String {
         case user
@@ -668,6 +817,7 @@ struct ConversationMessage: Identifiable, Hashable {
     var statusLabel: String? = nil
     var systemImage: String? = nil
     var secondaryContent: String? = nil
+    var attachments: [ConversationMessageAttachment] = []
     var detailItems: [ConversationMessageDetailItem] = []
     var primaryActionLabel: String? = nil
     var primaryActionTaskID: String? = nil
@@ -747,6 +897,8 @@ struct WorkbenchRuntimeRunProjectionRow: Identifiable, Hashable, Sendable {
     var projectionScope: String
     var expandable: Bool
     var artifactIDs: [String]
+    var attachmentIDs: [String] = []
+    var attachmentStatuses: [String] = []
 }
 
 struct WorkbenchRuntimeRunArtifactRef: Identifiable, Hashable, Sendable {

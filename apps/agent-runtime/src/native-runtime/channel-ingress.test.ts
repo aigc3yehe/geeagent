@@ -55,7 +55,7 @@ describe("native runtime channel ingress", () => {
       assert.equal(snapshot.active_conversation.messages.at(-2).role, "user");
       assert.equal(snapshot.active_conversation.messages.at(-2).content, "hello from telegram");
       assert.equal(snapshot.active_conversation.messages.at(-1).role, "assistant");
-      assert.match(snapshot.active_conversation.messages.at(-1).content, /SDK runtime is not live/i);
+      assert.match(snapshot.active_conversation.messages.at(-1).content, /Chat is waiting for model provider configuration/i);
       assert.equal(snapshot.last_request_outcome.source, "telegram.bridge");
       assert.equal(snapshot.last_run_state.fallback_attempted, false);
       assert.deepEqual(store.channel_bindings, [
@@ -82,6 +82,7 @@ describe("native runtime channel ingress", () => {
         chat_id: "777",
         message_id: "12",
         from_user_id: "1234",
+        attachments: [],
         security_decision: "allowed",
         security_policy_id: "paired-dm",
         projection_surface: "telegram",
@@ -189,6 +190,74 @@ describe("native runtime channel ingress", () => {
         chat_id: "7973901539",
         message_id: "5",
       });
+    } finally {
+      if (previousKey === undefined) {
+        delete process.env.XENODIA_API_KEY;
+      } else {
+        process.env.XENODIA_API_KEY = previousKey;
+      }
+    }
+  });
+
+  it("records Telegram artifact references on channel ingress events and replay", async () => {
+    const configDir = await tempConfigDir();
+    const previousKey = process.env.XENODIA_API_KEY;
+    delete process.env.XENODIA_API_KEY;
+    try {
+      const raw = await handleNativeRuntimeCommand(
+        "submit-channel-message",
+        [
+          JSON.stringify({
+            source: "telegram.bridge",
+            role: "gee_direct",
+            channelIdentity: "telegram:gee_direct_default:bot:42:dm:777",
+            message: {
+              idempotencyKey: "telegram:update:9004",
+              telegramUpdateId: 9004,
+              chatId: "777",
+              messageId: "15",
+              fromUserId: "1234",
+              text: "photo caption",
+              attachments: [
+                {
+                  artifact_id: "telegram:gee_direct_default:9004:photo:photo_unique_id",
+                  kind: "telegram_file",
+                  type: "image",
+                  title: "Telegram photo",
+                  uri: "telegram://file/photo_file_id",
+                  summary: "Telegram photo attachment from chat 777 message 15.",
+                  mime_type: "image/*",
+                },
+              ],
+            },
+            security: {
+              decision: "allowed",
+              policyId: "paired-dm",
+            },
+            projection: {
+              surface: "telegram",
+              replyTarget: {
+                chatId: "777",
+                messageId: "15",
+              },
+            },
+          }),
+        ],
+        { configDir },
+      );
+      const snapshot = JSON.parse(raw);
+      const runId = snapshot.last_run_state.run_id;
+      const ingress = snapshot.transcript_events.find(
+        (event: { payload?: { kind?: string } }) => event.payload?.kind === "channel_message_received",
+      );
+
+      assert.equal(ingress.payload.channel.attachments[0].artifact_id, "telegram:gee_direct_default:9004:photo:photo_unique_id");
+
+      const replayRaw = await handleNativeRuntimeCommand("export-runtime-run", [runId], { configDir });
+      const replay = JSON.parse(replayRaw);
+      assert.equal(replay.artifact_ids[0], "telegram:gee_direct_default:9004:photo:photo_unique_id");
+      assert.equal(replay.artifact_refs[0].path, "telegram://file/photo_file_id");
+      assert.equal(replay.artifact_refs[0].mime_type, "image/*");
     } finally {
       if (previousKey === undefined) {
         delete process.env.XENODIA_API_KEY;

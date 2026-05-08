@@ -47,12 +47,23 @@ struct Live2DActionCatalog: Hashable {
 struct Live2DMotionPlaybackRequest: Hashable {
     let requestID: String
     let bundlePath: String
-    let motion: Live2DMotionRecord
+    let motion: Live2DMotionRecord?
+    var isStopRequest: Bool { motion == nil }
 
     init(bundlePath: String, motion: Live2DMotionRecord) {
         self.requestID = UUID().uuidString
         self.bundlePath = URL(fileURLWithPath: bundlePath).standardizedFileURL.path
         self.motion = motion
+    }
+
+    private init(bundlePath: String) {
+        self.requestID = UUID().uuidString
+        self.bundlePath = URL(fileURLWithPath: bundlePath).standardizedFileURL.path
+        self.motion = nil
+    }
+
+    static func stop(bundlePath: String) -> Live2DMotionPlaybackRequest {
+        Live2DMotionPlaybackRequest(bundlePath: bundlePath)
     }
 }
 
@@ -62,12 +73,24 @@ struct Live2DViewportState: Codable, Hashable {
     var scale: Double
 
     static let `default` = Live2DViewportState(offsetX: 0, offsetY: 0, scale: 1)
+    private static let minimumScale = 0.65
+    private static let maximumScale = 1.8
+    private static let maximumHorizontalOffset = 420.0
+    private static let maximumVerticalOffset = 260.0
 
     func clamped() -> Live2DViewportState {
-        Live2DViewportState(
-            offsetX: min(max(offsetX, -420), 420),
-            offsetY: min(max(offsetY, -260), 260),
-            scale: min(max(scale, 0.65), 1.8)
+        let clampedScale = min(max(scale, Self.minimumScale), Self.maximumScale)
+        let offsetProgress = min(
+            max((clampedScale - Self.minimumScale) / (Self.maximumScale - Self.minimumScale), 0),
+            1
+        )
+        let horizontalLimit = Self.maximumHorizontalOffset * offsetProgress
+        let verticalLimit = Self.maximumVerticalOffset * offsetProgress
+
+        return Live2DViewportState(
+            offsetX: min(max(offsetX, -horizontalLimit), horizontalLimit),
+            offsetY: min(max(offsetY, -verticalLimit), verticalLimit),
+            scale: clampedScale
         )
     }
 }
@@ -281,11 +304,15 @@ enum Live2DMotionCatalog {
         actionsByPath: inout [String: Live2DMotionRecord],
         expressionsByPath: inout [String: Live2DExpressionRecord]
     ) {
-        guard let enumerator = FileManager.default.enumerator(at: bundleDirectory, includingPropertiesForKeys: nil) else {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: bundleDirectory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
             return
         }
 
-        for case let fileURL as URL in enumerator {
+        for fileURL in files {
             guard let relativePath = relativePath(for: fileURL, within: bundleDirectory) else { continue }
             let lowercasedPath = relativePath.lowercased()
 

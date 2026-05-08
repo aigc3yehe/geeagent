@@ -3,6 +3,22 @@ import XCTest
 @testable import GeeAgentMac
 
 final class Live2DInteractionSurfaceTests: XCTestCase {
+    func testViewportClampPullsEdgePositionBackWhenScaleShrinks() {
+        let enlarged = Live2DViewportState(offsetX: 420, offsetY: 260, scale: 1.8).clamped()
+        XCTAssertEqual(enlarged.offsetX, 420, accuracy: 0.001)
+        XCTAssertEqual(enlarged.offsetY, 260, accuracy: 0.001)
+
+        let shrunken = Live2DViewportState(
+            offsetX: enlarged.offsetX,
+            offsetY: enlarged.offsetY,
+            scale: 0.65
+        ).clamped()
+
+        XCTAssertEqual(shrunken.offsetX, 0, accuracy: 0.001)
+        XCTAssertEqual(shrunken.offsetY, 0, accuracy: 0.001)
+        XCTAssertEqual(shrunken.scale, 0.65, accuracy: 0.001)
+    }
+
     func testInteractionRectCoversVisibleHeroCenterWithExtremeViewportOffsets() {
         let bounds = CGRect(x: 0, y: 0, width: 1093, height: 768)
         let viewport = Live2DViewportState(offsetX: -420, offsetY: -259.5, scale: 0.65)
@@ -39,6 +55,20 @@ final class Live2DInteractionSurfaceTests: XCTestCase {
             app.contains("runtimeCanvas.style.touchAction = \"none\""),
             "runtime canvases should be able to receive pointer interactions without browser gesture side effects"
         )
+    }
+
+    func testLive2DHostCentersModelsWithoutDescriptorLayout() throws {
+        let bootstrap = try String(contentsOf: live2DHostResource("live2d-bootstrap.js"), encoding: .utf8)
+
+        XCTAssertTrue(
+            bootstrap.contains("this._usesFallbackLayout = layout.size === 0;"),
+            "models that omit Cubism Layout metadata should use the host fallback layout path"
+        )
+        XCTAssertTrue(bootstrap.contains("this._fallbackLayoutBounds = this.measureVisibleDrawableBounds();"))
+        XCTAssertTrue(bootstrap.contains("this.applyFallbackLayoutToViewport("))
+        XCTAssertTrue(bootstrap.contains("if (model._usesFallbackLayout) {"))
+        XCTAssertTrue(bootstrap.contains("model.applyFallbackLayoutToViewport(width, height);"))
+        XCTAssertTrue(bootstrap.contains("projection.scale(height / width, 1);"))
     }
 
     @MainActor

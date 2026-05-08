@@ -1,4 +1,4 @@
-import type { AgentProfile } from "../store/types.js";
+import type { AgentProfile, RuntimeInputAttachment } from "../store/types.js";
 import type { ContextProjection } from "../context/types.js";
 
 export type TurnReplayCursor = {
@@ -15,6 +15,7 @@ export type PreparedTurnContext = {
   stageCapsuleMessages: Array<{ role: "assistant"; content: string }>;
   contextProjection: ContextProjection;
   shouldReuseActiveConversation: boolean;
+  inputAttachments: RuntimeInputAttachment[];
 };
 
 export type JsonRecord = Record<string, unknown>;

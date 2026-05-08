@@ -18,6 +18,10 @@ import {
   type TelegramPushTargetKind,
 } from "./config.js";
 import { createCodexRemoteClient } from "./codex.js";
+import {
+  buildTelegramBridgeGatewayHealth,
+  tokenStatusProviderFromTokenProvider,
+} from "./diagnostics.js";
 import { pollTelegramBridgeOnce } from "./polling.js";
 import { createNativeRuntimeChannelClient } from "./runtime-client.js";
 import { sendPushFile, sendPushMessage } from "./send.js";
@@ -28,6 +32,69 @@ type ParsedArgs = {
   options: Record<string, string | string[] | boolean>;
   positionals: string[];
 };
+
+export type TelegramBridgePollLoopLifecycleEventName =
+  | "poll_loop_started"
+  | "poll_loop_iteration_failed"
+  | "poll_loop_stopped";
+
+export type TelegramBridgePollLoopLifecycleEvent = {
+  event: TelegramBridgePollLoopLifecycleEventName;
+  status: "running" | "failed" | "stopped";
+  fallback_attempted: false;
+  mode: "worker_cli";
+  polling_loop: "running" | "stopped";
+  poll_interval_ms: number;
+  config_path: string;
+  state_path: string;
+  occurred_at: string;
+  error?: {
+    code: string;
+    message: string;
+  };
+};
+
+export type TelegramBridgePollLoopLifecycleInput = {
+  event: TelegramBridgePollLoopLifecycleEventName;
+  pollIntervalMs: number;
+  configPath: string;
+  statePath: string;
+  occurredAt?: string;
+  error?: {
+    code: string;
+    message: string;
+  };
+};
+
+export function buildPollLoopLifecycleEvent(
+  input: TelegramBridgePollLoopLifecycleInput,
+): TelegramBridgePollLoopLifecycleEvent {
+  return {
+    event: input.event,
+    status: pollLoopLifecycleStatus(input.event),
+    fallback_attempted: false,
+    mode: "worker_cli",
+    polling_loop: input.event === "poll_loop_stopped" ? "stopped" : "running",
+    poll_interval_ms: input.pollIntervalMs,
+    config_path: input.configPath,
+    state_path: input.statePath,
+    occurred_at: input.occurredAt ?? new Date().toISOString(),
+    ...(input.error ? { error: input.error } : {}),
+  };
+}
+
+function pollLoopLifecycleStatus(
+  event: TelegramBridgePollLoopLifecycleEventName,
+): TelegramBridgePollLoopLifecycleEvent["status"] {
+  switch (event) {
+    case "poll_loop_started":
+      return "running";
+    case "poll_loop_iteration_failed":
+      return "failed";
+    case "poll_loop_stopped":
+      return "stopped";
+  }
+}
 
 export async function runTelegramBridgeCli(argv: string[]): Promise<number> {
   const parsed = parseArgs(argv);
@@ -61,6 +128,16 @@ export async function runTelegramBridgeCli(argv: string[]): Promise<number> {
 async function statusCommand(parsed: ParsedArgs): Promise<Record<string, unknown>> {
   const config = await loadBridgeConfigFile(configPath(parsed));
   const state = await loadPollingStateFile(statePath(parsed));
+  const health = await buildTelegramBridgeGatewayHealth(
+    config,
+    state,
+    tokenStatusProviderFromTokenProvider(createEnvironmentTokenProvider()),
+    {
+      mode: "worker_cli",
+      pollingLoop: "stopped",
+      pollIntervalMs: numberOption(parsed, "interval-ms") ?? 3_000,
+    },
+  );
   return {
     status: "success",
     fallback_attempted: false,
@@ -71,9 +148,11 @@ async function statusCommand(parsed: ParsedArgs): Promise<Record<string, unknown
       role: account.role,
       transport: account.transport.mode,
       bot_username: account.botUsername,
+      ...health.accounts.find((candidate) => candidate.id === account.id),
     })),
     push_channels: channelSummaries(config),
     polling_offsets: state.offsets,
+    gateway_health: health,
   };
 }
 
@@ -185,30 +264,46 @@ async function pollOnceCommand(parsed: ParsedArgs): Promise<Record<string, unkno
 
 async function pollLoopCommand(parsed: ParsedArgs): Promise<number> {
   const intervalMs = numberOption(parsed, "interval-ms") ?? 3_000;
+  const lifecycleContext = {
+    pollIntervalMs: intervalMs,
+    configPath: configPath(parsed),
+    statePath: statePath(parsed),
+  };
   let stopped = false;
   const stop = () => {
     stopped = true;
   };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
-  while (!stopped) {
-    try {
-      process.stdout.write(`${JSON.stringify(await pollOnceCommand(parsed))}\n`);
-    } catch (error) {
-      process.stdout.write(
-        `${JSON.stringify({
-          status: "failed",
-          fallback_attempted: false,
-          error: {
-            code: "poll_loop_failed",
-            message: errorMessage(error),
-          },
-        })}\n`,
-      );
+  process.stdout.write(
+    `${JSON.stringify(buildPollLoopLifecycleEvent({ ...lifecycleContext, event: "poll_loop_started" }))}\n`,
+  );
+  try {
+    while (!stopped) {
+      try {
+        process.stdout.write(`${JSON.stringify(await pollOnceCommand(parsed))}\n`);
+      } catch (error) {
+        process.stdout.write(
+          `${JSON.stringify(buildPollLoopLifecycleEvent({
+            ...lifecycleContext,
+            event: "poll_loop_iteration_failed",
+            error: {
+              code: "poll_loop_failed",
+              message: errorMessage(error),
+            },
+          }))}\n`,
+        );
+      }
+      if (!stopped) {
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      }
     }
-    if (!stopped) {
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    }
+  } finally {
+    process.off("SIGINT", stop);
+    process.off("SIGTERM", stop);
+    process.stdout.write(
+      `${JSON.stringify(buildPollLoopLifecycleEvent({ ...lifecycleContext, event: "poll_loop_stopped" }))}\n`,
+    );
   }
   return 0;
 }

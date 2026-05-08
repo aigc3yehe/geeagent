@@ -54,6 +54,42 @@ export type RuntimeConversationMessage = {
   role: "assistant" | "user" | string;
   content: string;
   timestamp: string;
+  attachments?: RuntimeInputAttachment[];
+};
+
+export type RuntimeInputAttachment = {
+  attachment_id: string;
+  kind: "image" | "file" | "directory";
+  source: "workspace_chat" | "channel_ingress" | "codex_bridge";
+  display_name: string;
+  original_path?: string;
+  resolved_path?: string;
+  mime_type?: string;
+  size_bytes?: number;
+  created_at: string;
+  status: "ready" | "degraded" | "failed";
+  access: {
+    scope: "run";
+    mode: "read";
+    root?: string;
+    expires_at?: string;
+  };
+  image?: {
+    width?: number;
+    height?: number;
+    stored_base64_ref?: string;
+    resized?: boolean;
+  };
+  limits?: {
+    max_bytes?: number;
+    max_entries?: number;
+    max_depth?: number;
+  };
+  error?: {
+    code: string;
+    message: string;
+  };
+  fallback_attempted: false;
 };
 
 export type RuntimeConversation = {
@@ -137,6 +173,7 @@ export type RuntimeChannelMessageRecord = {
   idempotency_key: string;
   run_id?: string | null;
   status: "accepted" | "duplicate" | "failed" | "degraded";
+  attachments?: unknown[];
   created_at: string;
   updated_at: string;
   fallback_attempted: false;

@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "run_id": "run_golden_session_lost_pending_tool",
+  "exported_at": "2026-05-07T00:00:00.000Z",
+  "event_count": 2,
+  "conversation_ids": ["conv_golden_phase3_lost"],
+  "execution_session_ids": ["session_golden_phase3_lost"],
+  "sdk_session_ids": ["sdk_golden_phase3_lost"],
+  "parent_run_ids": [],
+  "host_action_runs": [],
+  "approval_requests": [],
+  "artifact_ids": [],
+  "artifact_refs": [],
+  "diagnostics": {
+    "duplicate_event_ids": [],
+    "missing_parent_event_ids": [],
+    "missing_sequence_numbers": [],
+    "out_of_order_event_ids": []
+  },
+  "store_overlay": {
+    "last_run_state": {
+      "conversation_id": "conv_golden_phase3_lost",
+      "status": "failed",
+      "stop_reason": "sdk_host_action_session_lost",
+      "detail": "SDK stream closed while a tool call was pending.",
+      "resumable": false,
+      "task_id": null,
+      "module_run_id": null
+    }
+  },
+  "events": [
+    {
+      "event_id": "evt_lost_001_user",
+      "session_id": "session_golden_phase3_lost",
+      "parent_event_id": null,
+      "run_id": "run_golden_session_lost_pending_tool",
+      "sequence": 1,
+      "payload": {
+        "kind": "user_message",
+        "content": "Run the host tool and continue in the same runtime run.",
+        "run_id": "run_golden_session_lost_pending_tool"
+      }
+    },
+    {
+      "event_id": "evt_lost_002_tool",
+      "session_id": "session_golden_phase3_lost",
+      "parent_event_id": "evt_lost_001_user",
+      "run_id": "run_golden_session_lost_pending_tool",
+      "sequence": 2,
+      "payload": {
+        "kind": "tool_invocation",
+        "invocation": {
+          "invocation_id": "toolu_pending_when_lost",
+          "tool_name": "Bash",
+          "status": "running",
+          "input_summary": "long-running host check"
+        },
+        "run_id": "run_golden_session_lost_pending_tool"
+      }
+    }
+  ]
+}

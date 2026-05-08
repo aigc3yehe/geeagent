@@ -90,6 +90,14 @@ struct GearHostNativeWindowScenes: Scene {
             width: GearHost.todoManagerWindowDescriptor.defaultWidth,
             height: GearHost.todoManagerWindowDescriptor.defaultHeight
         )
+
+        Window(GearHost.powerVideoManagerWindowDescriptor.title, id: GearHost.powerVideoManagerWindowDescriptor.windowID) {
+            GearHost.makeNativeWindowView(for: GearHost.powerVideoManagerWindowDescriptor.gearID)
+        }
+        .defaultSize(
+            width: GearHost.powerVideoManagerWindowDescriptor.defaultWidth,
+            height: GearHost.powerVideoManagerWindowDescriptor.defaultHeight
+        )
     }
 }
 

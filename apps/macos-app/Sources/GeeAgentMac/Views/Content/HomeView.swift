@@ -4,11 +4,14 @@ import SwiftUI
 struct HomeView: View {
     @Bindable var store: WorkbenchStore
     @State private var draftMessage = ""
+    @State private var draftAttachments: [ChatAttachmentDraft] = []
     @State private var editingConversationTitle = false
     @State private var editedConversationTitle = ""
     @State private var pendingDraftRecovery: String?
+    @State private var pendingAttachmentRecovery: [ChatAttachmentDraft] = []
     @State private var isChatLauncherHovering = false
     @State private var isDisplayModeSwitcherHovering = false
+    @State private var isAttachmentDropTargeted = false
     @State private var chatLauncherDragTranslation: CGSize = .zero
     @AppStorage("geeagent.home.chatLauncher.position") private var storedChatLauncherPosition = ""
     @FocusState private var launcherComposerFocused: Bool
@@ -38,9 +41,20 @@ struct HomeView: View {
                         .transition(.opacity.combined(with: .scale(scale: 0.985)))
                         .zIndex(2)
                 }
+
+                if isAttachmentDropTargeted {
+                    attachmentDropOverlay
+                        .transition(.opacity)
+                        .zIndex(8)
+                }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
+        .onDrop(
+            of: ChatAttachmentTransfer.fileDropTypes,
+            isTargeted: $isAttachmentDropTargeted,
+            perform: handleHomeAttachmentDrop
+        )
         .onChange(of: store.homeSurfaceMode) { _, newValue in
             guard newValue == .chatFocus else { return }
 
@@ -58,18 +72,43 @@ struct HomeView: View {
             syncConversationTitleDraft()
         }
         .onChange(of: store.lastErrorMessage) { _, newValue in
-            guard newValue != nil, let pendingDraftRecovery, draftMessage.isEmpty else {
+            guard newValue != nil else {
                 return
             }
 
-            draftMessage = pendingDraftRecovery
-            self.pendingDraftRecovery = nil
+            if let pendingDraftRecovery, draftMessage.isEmpty {
+                draftMessage = pendingDraftRecovery
+                self.pendingDraftRecovery = nil
+            }
+            if draftAttachments.isEmpty {
+                draftAttachments = pendingAttachmentRecovery
+            }
+            pendingAttachmentRecovery = []
         }
         .onChange(of: store.isSendingMessage) { _, isSending in
             if !isSending, store.lastErrorMessage == nil {
                 pendingDraftRecovery = nil
+                pendingAttachmentRecovery = []
             }
         }
+    }
+
+    private var attachmentDropOverlay: some View {
+        RoundedRectangle(cornerRadius: 18, style: .continuous)
+            .stroke(Color.accentColor.opacity(0.8), style: StrokeStyle(lineWidth: 1.4, dash: [7, 5]))
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.08))
+            )
+            .overlay {
+                Image(systemName: "paperclip")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 44, height: 44)
+                    .background(.regularMaterial, in: Capsule())
+            }
+            .padding(22)
+            .allowsHitTesting(false)
     }
 
     @ViewBuilder
@@ -361,6 +400,19 @@ struct HomeView: View {
 
     private var inlineChatPrompt: some View {
         HStack(spacing: 8) {
+            Button {
+                showHomeAttachmentPicker()
+            } label: {
+                Image(systemName: "paperclip")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.86))
+                    .frame(width: 22, height: 26)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Attach files or folders")
+            .disabled(store.isSendingMessage || !store.canSendMessages)
+
             TextField(
                 "",
                 text: $draftMessage,
@@ -375,16 +427,21 @@ struct HomeView: View {
             }
 
             Button {
-                store.openHomeChatFocus()
+                if draftAttachments.isEmpty {
+                    store.openHomeChatFocus()
+                } else {
+                    sendInlineHomeChatMessage()
+                }
             } label: {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                Image(systemName: draftAttachments.isEmpty ? "arrow.up.left.and.arrow.down.right" : "arrow.up")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.86))
                     .frame(width: 26, height: 26)
                     .background(Color.white.opacity(0.1), in: Circle())
             }
             .buttonStyle(.plain)
-            .help("Open focused chat")
+            .help(draftAttachments.isEmpty ? "Open focused chat" : "Send with attachments")
+            .disabled(!draftAttachments.isEmpty && !canSendHomeDraft)
         }
         .frame(height: 34)
         .padding(.leading, 12)
@@ -492,41 +549,73 @@ struct HomeView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
 
-            HStack(spacing: 8) {
-                TextField("Ask GeeAgent…", text: $draftMessage)
-                    .textFieldStyle(.plain)
-                    .foregroundStyle(.white.opacity(0.94))
-                    .focused($chatComposerFocused)
-                    .padding(.horizontal, 14)
-                    .frame(height: 36)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color.black.opacity(0.22))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                            )
-                    )
-
-                ContextBudgetIndicator(budget: store.contextBudget)
-
-                Button {
-                    sendHomeChatMessage()
-                } label: {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(.black)
-                        .frame(width: 36, height: 36)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            VStack(alignment: .leading, spacing: 8) {
+                if !draftAttachments.isEmpty {
+                    ChatAttachmentDraftStrip(attachments: draftAttachments, prominentBackground: true) { id in
+                        draftAttachments.removeAll { $0.id == id }
+                    }
                 }
-                .buttonStyle(.plain)
-                .disabled(
-                    store.isSendingMessage ||
-                    draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                    !store.canSendMessages
-                )
+
+                HStack(spacing: 8) {
+                    Button {
+                        showHomeAttachmentPicker()
+                    } label: {
+                        Image(systemName: "paperclip")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.86))
+                            .frame(width: 30, height: 36)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Attach files or folders")
+                    .disabled(store.isSendingMessage || !store.canSendMessages)
+
+                    TextField("Ask GeeAgent…", text: $draftMessage)
+                        .textFieldStyle(.plain)
+                        .foregroundStyle(.white.opacity(0.94))
+                        .focused($chatComposerFocused)
+                        .padding(.horizontal, 14)
+                        .frame(height: 36)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.black.opacity(0.22))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                                )
+                        )
+                        .onSubmit(sendHomeChatMessage)
+
+                    ContextBudgetIndicator(budget: store.contextBudget)
+
+                    if store.isSendingMessage {
+                        Button {
+                            store.stopActiveChatRun()
+                        } label: {
+                            Image(systemName: "stop.fill")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 36, height: 36)
+                                .background(Color.red.opacity(0.78), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(store.isStoppingMessage)
+                        .help(store.isStoppingMessage ? "Stopping the current run" : "Stop the current run")
+                    } else {
+                        Button {
+                            sendHomeChatMessage()
+                        } label: {
+                            Image(systemName: "arrow.up")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(.black)
+                                .frame(width: 36, height: 36)
+                                .background(Color.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canSendHomeDraft)
+                    }
+                }
             }
-            .onSubmit(sendHomeChatMessage)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(16)
@@ -880,6 +969,16 @@ struct HomeView: View {
         return "\(activeTasks.count) active now"
     }
 
+    private var canSendHomeDraft: Bool {
+        !store.isSendingMessage &&
+            store.canSendMessages &&
+            (!draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasSendableHomeAttachmentDraft)
+    }
+
+    private var hasSendableHomeAttachmentDraft: Bool {
+        draftAttachments.contains { $0.isSendable }
+    }
+
     private func taskSortOrder(_ status: WorkbenchTaskStatus) -> Int {
         switch status {
         case .needsApproval:
@@ -913,26 +1012,60 @@ struct HomeView: View {
     }
 
     private func sendHomeChatMessage() {
-        let message = draftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !message.isEmpty else {
+        let message = draftMessage
+        guard canSendHomeDraft else {
             return
         }
 
         pendingDraftRecovery = message
+        let attachments = sendableHomeAttachmentDrafts.map(\.runtimeAttachment)
+        pendingAttachmentRecovery = draftAttachments
         draftMessage = ""
-        store.sendMessage(message, openSection: false)
+        draftAttachments = []
+        store.sendMessage(message, attachments: attachments, openSection: false)
     }
 
     private func sendInlineHomeChatMessage() {
-        let message = draftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !message.isEmpty else {
+        let message = draftMessage
+        guard canSendHomeDraft else {
             return
         }
 
         pendingDraftRecovery = message
+        let attachments = sendableHomeAttachmentDrafts.map(\.runtimeAttachment)
+        pendingAttachmentRecovery = draftAttachments
         draftMessage = ""
+        draftAttachments = []
         launcherComposerFocused = false
-        store.sendMessage(message, openSection: false)
+        store.sendMessage(message, attachments: attachments, openSection: false)
+    }
+
+    private var sendableHomeAttachmentDrafts: [ChatAttachmentDraft] {
+        draftAttachments.filter(\.isSendable)
+    }
+
+    private func handleHomeAttachmentDrop(_ providers: [NSItemProvider]) -> Bool {
+        ChatAttachmentTransfer.handleFileDrop(providers) { urls in
+            appendHomeAttachmentURLs(urls)
+            store.openHomeChatFocus()
+            chatComposerFocused = true
+        }
+    }
+
+    private func showHomeAttachmentPicker() {
+        ChatAttachmentTransfer.showAttachmentPicker { urls in
+            appendHomeAttachmentURLs(urls)
+            store.openHomeChatFocus()
+            chatComposerFocused = true
+        }
+    }
+
+    private func appendHomeAttachmentURLs(_ urls: [URL]) {
+        appendHomeAttachmentDrafts(urls.map(ChatAttachmentDraft.make(fileURL:)))
+    }
+
+    private func appendHomeAttachmentDrafts(_ drafts: [ChatAttachmentDraft]) {
+        draftAttachments.appendUniqueAttachmentDrafts(drafts)
     }
 
     private func saveConversationTitle() {

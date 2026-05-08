@@ -56,6 +56,341 @@ final class TelegramBridgeGearTests: XCTestCase {
         )
     }
 
+    func testNativeGatewayEnvelopeBuildsRuntimePayload() throws {
+        let account = TelegramBridgeAccountConfig(
+            id: "gee_direct_default",
+            role: "gee_direct",
+            botUsername: "gee_bot",
+            transport: .init(mode: "polling"),
+            security: .init(
+                allowUserIds: ["7973901539"],
+                allowChatIds: ["7973901539"],
+                requirePairing: false,
+                groupPolicy: "deny"
+            ),
+            push: nil,
+            codex: nil
+        )
+        let update = try telegramTextUpdate(
+            updateID: 491738609,
+            messageID: 35,
+            chatID: "7973901539",
+            fromUserID: "7973901539",
+            text: "hello gee"
+        )
+
+        guard case .accepted(let envelope) = TelegramBridgeGateway.normalize(account: account, update: update) else {
+            return XCTFail("Expected Telegram update to normalize into a Gateway envelope.")
+        }
+        let security = TelegramBridgeGateway.authorize(account: account, envelope: envelope)
+        let payload = TelegramBridgeGateway.runtimePayload(envelope: envelope, security: security)
+
+        XCTAssertEqual(envelope.idempotencyKey, "telegram:update:491738609")
+        XCTAssertEqual(envelope.channelIdentity, "telegram:gee_direct_default:chat:7973901539")
+        XCTAssertEqual(envelope.messageID, "35")
+        XCTAssertEqual(envelope.runtimeMessageID, "35")
+        XCTAssertEqual(security.decision, "allowed")
+        XCTAssertEqual(security.policyID, "telegram.allowlist")
+        XCTAssertEqual(payload.channelIdentity, "telegram:gee_direct_default:chat:7973901539")
+        XCTAssertEqual(payload.message.telegramUpdateId, 491738609)
+        XCTAssertEqual(payload.message.messageId, "35")
+        XCTAssertEqual(payload.message.fromUserId, "7973901539")
+        XCTAssertEqual(payload.message.text, "hello gee")
+        XCTAssertEqual(payload.security.decision, "allowed")
+        XCTAssertEqual(payload.security.policyId, "telegram.allowlist")
+        XCTAssertEqual(payload.projection.replyTarget.chatId, "7973901539")
+    }
+
+    func testNativeGatewayMentionRequiredGroupPolicy() throws {
+        let account = TelegramBridgeAccountConfig(
+            id: "gee_direct_default",
+            role: "gee_direct",
+            botUsername: "@gee_bot",
+            transport: .init(mode: "polling"),
+            security: .init(
+                allowUserIds: ["7973901539"],
+                allowChatIds: [],
+                requirePairing: false,
+                groupPolicy: "mention_required"
+            ),
+            push: nil,
+            codex: nil
+        )
+        let blockedUpdate = try telegramTextUpdate(
+            updateID: 491738610,
+            messageID: 36,
+            chatID: "-1001",
+            fromUserID: "7973901539",
+            text: "hello gee",
+            chatType: "supergroup"
+        )
+        guard case .accepted(let blockedEnvelope) = TelegramBridgeGateway.normalize(account: account, update: blockedUpdate) else {
+            return XCTFail("Expected group update to normalize.")
+        }
+
+        let blocked = TelegramBridgeGateway.authorize(account: account, envelope: blockedEnvelope)
+
+        XCTAssertEqual(blocked.decision, "denied")
+        XCTAssertEqual(blocked.policyID, "telegram.group_mention_required")
+
+        let allowedUpdate = try telegramTextUpdate(
+            updateID: 491738611,
+            messageID: 37,
+            chatID: "-1001",
+            fromUserID: "7973901539",
+            text: "@gee_bot hello",
+            chatType: "supergroup"
+        )
+        guard case .accepted(let allowedEnvelope) = TelegramBridgeGateway.normalize(account: account, update: allowedUpdate) else {
+            return XCTFail("Expected mentioned group update to normalize.")
+        }
+
+        let allowed = TelegramBridgeGateway.authorize(account: account, envelope: allowedEnvelope)
+
+        XCTAssertEqual(allowed.decision, "allowed")
+        XCTAssertEqual(allowed.policyID, "telegram.allowlist")
+    }
+
+    func testNativeGatewayBuildsMediaArtifactReferences() throws {
+        let account = TelegramBridgeAccountConfig(
+            id: "gee_direct_default",
+            role: "gee_direct",
+            botUsername: "gee_bot",
+            transport: .init(mode: "polling"),
+            security: .init(
+                allowUserIds: ["7973901539"],
+                allowChatIds: ["7973901539"],
+                requirePairing: false,
+                groupPolicy: "deny"
+            ),
+            push: nil,
+            codex: nil
+        )
+        let updateData = Data(
+            """
+            {
+              "update_id": 491738612,
+              "message": {
+                "message_id": 38,
+                "chat": { "id": 7973901539, "type": "private" },
+                "from": { "id": 7973901539 },
+                "caption": "photo caption",
+                "photo": [
+                  { "file_id": "photo_file_id", "file_unique_id": "photo_unique_id", "width": 800, "height": 600 }
+                ]
+              }
+            }
+            """.utf8
+        )
+        let update = try JSONDecoder().decode(TelegramBridgeSender.Update.self, from: updateData)
+
+        guard case .accepted(let envelope) = TelegramBridgeGateway.normalize(account: account, update: update) else {
+            return XCTFail("Expected media updates to normalize into Telegram artifact references.")
+        }
+        let payload = TelegramBridgeGateway.runtimePayload(
+            envelope: envelope,
+            security: .init(decision: "allowed", policyID: "telegram.allowlist")
+        )
+
+        XCTAssertEqual(envelope.text, "photo caption")
+        XCTAssertEqual(payload.message.attachments, [
+            TelegramChannelMessageAttachmentRef(
+                artifactId: "telegram:gee_direct_default:491738612:photo:photo_unique_id",
+                kind: "telegram_file",
+                type: "image",
+                title: "Telegram photo",
+                uri: "telegram://file/photo_file_id",
+                summary: "Telegram photo attachment from chat 7973901539 message 38.",
+                mimeType: "image/*",
+                telegramFileId: "photo_file_id",
+                telegramFileUniqueId: "photo_unique_id",
+                telegramMediaKind: "photo",
+                width: 800,
+                height: 600
+            )
+        ])
+    }
+
+    func testNativeGatewayDropsUnsupportedMediaAttachments() throws {
+        let account = TelegramBridgeAccountConfig(
+            id: "gee_direct_default",
+            role: "gee_direct",
+            botUsername: "gee_bot",
+            transport: .init(mode: "polling"),
+            security: .init(
+                allowUserIds: ["7973901539"],
+                allowChatIds: ["7973901539"],
+                requirePairing: false,
+                groupPolicy: "deny"
+            ),
+            push: nil,
+            codex: nil
+        )
+        let updateData = Data(
+            """
+            {
+              "update_id": 491738613,
+              "message": {
+                "message_id": 39,
+                "chat": { "id": 7973901539, "type": "private" },
+                "from": { "id": 7973901539 },
+                "caption": "paid media caption",
+                "paid_media": {}
+              }
+            }
+            """.utf8
+        )
+        let update = try JSONDecoder().decode(TelegramBridgeSender.Update.self, from: updateData)
+
+        guard case .dropped(let updateID, let code) = TelegramBridgeGateway.normalize(account: account, update: update) else {
+            return XCTFail("Expected unsupported media to be dropped before caption-only runtime forwarding.")
+        }
+
+        XCTAssertEqual(updateID, 491738613)
+        XCTAssertEqual(code, "telegram.message_attachment_unsupported")
+    }
+
+    func testNativeGatewayOutboundEvidenceMapsDeliveryResult() {
+        let projection = TelegramBridgeGatewayOutboundProjection(
+            chatID: "7973901539",
+            text: "reply text",
+            parseMode: nil,
+            disableWebPreview: true,
+            successStatus: "codex_replied",
+            successUpdateID: nil,
+            failureUpdateID: 491738612
+        )
+
+        let success = TelegramBridgeGateway.outboundEvidence(
+            projection: projection,
+            result: .success(telegramMessageID: "42", sentAt: "2026-05-07T02:40:01Z")
+        )
+        XCTAssertEqual(success.chatID, "7973901539")
+        XCTAssertEqual(success.text, "reply text")
+        XCTAssertEqual(success.messageID, "42")
+        XCTAssertNil(success.updateID)
+        XCTAssertEqual(success.status, "codex_replied")
+
+        let failure = TelegramBridgeGateway.outboundEvidence(
+            projection: projection,
+            result: .failure(
+                status: "degraded",
+                code: "network_unavailable",
+                message: "network down",
+                retryAfterMs: nil
+            )
+        )
+        XCTAssertEqual(failure.text, "network down")
+        XCTAssertNil(failure.messageID)
+        XCTAssertEqual(failure.updateID, 491738612)
+        XCTAssertEqual(failure.status, "network_unavailable")
+
+        let thrown = TelegramBridgeGateway.outboundExceptionEvidence(
+            projection: projection,
+            errorMessage: "send threw"
+        )
+        XCTAssertEqual(thrown.text, "send threw")
+        XCTAssertNil(thrown.messageID)
+        XCTAssertEqual(thrown.updateID, 491738612)
+        XCTAssertEqual(thrown.status, "telegram_send_failed")
+    }
+
+    func testCodexRemoteSessionStateTransitionsAreSingleRecord() {
+        var state = TelegramCodexRemoteSessionState()
+
+        XCTAssertNil(state.selectedThreadID)
+        XCTAssertNil(state.pendingPrompt)
+        XCTAssertEqual(state.projectListMode, .all)
+        XCTAssertTrue(state.lastThreadIDs.isEmpty)
+
+        state.selectThread("thread-a")
+        state.stagePrompt(sessionID: "thread-a", prompt: "please continue")
+        state.rememberThreadList(["thread-a", "thread-b"])
+
+        XCTAssertEqual(state.selectedThreadID, "thread-a")
+        XCTAssertEqual(state.pendingPrompt?.prompt, "please continue")
+        XCTAssertEqual(state.lastThreadIDs, ["thread-a", "thread-b"])
+
+        XCTAssertNil(state.popPendingPrompt(matching: "thread-b"))
+        XCTAssertEqual(state.pendingPrompt?.sessionID, "thread-a")
+
+        let pending = state.popPendingPrompt(matching: "thread-a")
+        XCTAssertEqual(pending?.prompt, "please continue")
+        XCTAssertNil(state.pendingPrompt)
+
+        state.stagePrompt(sessionID: "thread-a", prompt: "draft")
+        state.prepareProjectList(mode: .tracked)
+
+        XCTAssertNil(state.selectedThreadID)
+        XCTAssertNil(state.pendingPrompt)
+        XCTAssertEqual(state.projectListMode, .tracked)
+        XCTAssertTrue(state.lastThreadIDs.isEmpty)
+    }
+
+    func testCodexRemoteRouterParsesTextAndCallbackRoutes() {
+        XCTAssertEqual(TelegramCodexRemoteRouter.route("  /LIST@gee_bot  "), .list)
+        XCTAssertEqual(TelegramCodexRemoteRouter.route("please continue"), .plainText(prompt: "please continue"))
+        XCTAssertEqual(
+            TelegramCodexRemoteRouter.route("/send thread-a please continue"),
+            .send(arguments: "thread-a please continue")
+        )
+        XCTAssertEqual(
+            TelegramCodexRemoteRouter.route("/send please continue"),
+            .send(arguments: "please continue")
+        )
+        XCTAssertEqual(
+            TelegramCodexRemoteRouter.commandText(forCallbackData: "threadPage:3:2"),
+            "/threadPage 3 2"
+        )
+        XCTAssertEqual(
+            TelegramCodexRemoteRouter.route(forCallbackData: "threadPage:3:2"),
+            .threadPage(selector: "3", page: 2)
+        )
+        XCTAssertEqual(
+            TelegramCodexRemoteRouter.route(forCallbackData: "confirm:thread-a"),
+            .confirm(selector: "thread-a")
+        )
+        XCTAssertNil(TelegramCodexRemoteRouter.route(forCallbackData: "unknown:1"))
+    }
+
+    func testCodexRemoteSendPlannerDisambiguatesSelectedAndExplicitSession() {
+        let existingSessions: Set<String> = ["thread-a"]
+        let exists: (String) -> Bool = { existingSessions.contains($0) }
+
+        XCTAssertEqual(
+            TelegramCodexRemoteSendPlanner.decision(
+                arguments: "please continue",
+                selectedSessionID: "selected-thread",
+                explicitSessionExists: exists
+            ),
+            .stageSelected(sessionID: "selected-thread", prompt: "please continue")
+        )
+        XCTAssertEqual(
+            TelegramCodexRemoteSendPlanner.decision(
+                arguments: "thread-a please continue",
+                selectedSessionID: "selected-thread",
+                explicitSessionExists: exists
+            ),
+            .sendExplicit(sessionID: "thread-a", prompt: "please continue")
+        )
+        XCTAssertEqual(
+            TelegramCodexRemoteSendPlanner.decision(
+                arguments: "thread-b please continue",
+                selectedSessionID: nil,
+                explicitSessionExists: exists
+            ),
+            .sendExplicit(sessionID: "thread-b", prompt: "please continue")
+        )
+        XCTAssertEqual(
+            TelegramCodexRemoteSendPlanner.decision(
+                arguments: "thread-b",
+                selectedSessionID: nil,
+                explicitSessionExists: exists
+            ),
+            .blocked
+        )
+    }
+
     func testSoftwareTokenStorePersistsTokenInAppDataFile() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("telegram-token-store-\(UUID().uuidString)", isDirectory: true)
@@ -88,6 +423,126 @@ final class TelegramBridgeGearTests: XCTestCase {
         XCTAssertFalse(status.configured)
         XCTAssertEqual(status.status, "missing")
         XCTAssertNil(status.error)
+    }
+
+    @MainActor
+    func testStatusPayloadReportsGatewayHealthDiagnostics() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-config-store-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = TelegramBridgeFileDatabase(dataDirectoryURL: directory)
+        let tokenStore = TelegramBridgeTokenStore(storageURL: directory.appendingPathComponent("tokens.json"))
+        try database.saveConfig(
+            TelegramBridgeConfigFile(
+                accounts: [
+                    TelegramBridgeAccountConfig(
+                        id: "gee_direct_default",
+                        role: "gee_direct",
+                        botUsername: "gee_bot",
+                        transport: .init(mode: "polling"),
+                        security: nil,
+                        push: nil,
+                        codex: nil
+                    ),
+                    TelegramBridgeAccountConfig(
+                        id: "codex_remote_default",
+                        role: "codex_remote",
+                        botUsername: "codex_bot",
+                        transport: .init(mode: "webhook"),
+                        security: nil,
+                        push: nil,
+                        codex: .init(threadSource: "file_scan", sendMode: "cli_resume")
+                    ),
+                    TelegramBridgeAccountConfig(
+                        id: "news_push",
+                        role: "push_only",
+                        botUsername: nil,
+                        transport: .init(mode: "outbound_only"),
+                        security: nil,
+                        push: .init(acceptInbound: false),
+                        codex: nil
+                    )
+                ],
+                pushChannels: [
+                    TelegramBridgePushChannelConfig(
+                        id: "morning_news",
+                        title: "Morning News",
+                        accountId: "news_push",
+                        enabled: true,
+                        target: .init(kind: "chat_id", value: "123456"),
+                        format: nil
+                    ),
+                    TelegramBridgePushChannelConfig(
+                        id: "quiet_news",
+                        title: "Quiet News",
+                        accountId: "news_push",
+                        enabled: false,
+                        target: .init(kind: "chat_id", value: "789000"),
+                        format: nil
+                    )
+                ]
+            )
+        )
+        try database.savePollingState(TelegramBridgePollingState(offsets: ["gee_direct_default": 120]))
+        try tokenStore.saveToken("123456:codex", accountID: "codex_remote_default")
+        try tokenStore.saveToken("123456:push", accountID: "news_push")
+        let store = TelegramBridgeGearStore(database: database, tokenStore: tokenStore)
+
+        let result = await store.runAgentAction(capabilityID: "telegram_bridge.status", args: [:])
+
+        XCTAssertEqual(result["status"] as? String, "success")
+        let health = try XCTUnwrap(result["gateway_health"] as? [String: Any])
+        XCTAssertEqual(health["status"] as? String, "failed")
+        XCTAssertEqual(health["fallback_attempted"] as? Bool, false)
+        XCTAssertEqual(health["polling_account_count"] as? Int, 1)
+        XCTAssertEqual(health["webhook_account_count"] as? Int, 1)
+        XCTAssertEqual(health["push_only_account_count"] as? Int, 1)
+        XCTAssertEqual(health["enabled_push_channel_count"] as? Int, 1)
+        XCTAssertEqual(health["disabled_push_channel_count"] as? Int, 1)
+        XCTAssertEqual(health["missing_token_account_ids"] as? [String], ["gee_direct_default"])
+        XCTAssertEqual(health["webhook_account_ids"] as? [String], ["codex_remote_default"])
+        let issues = try XCTUnwrap(health["issues"] as? [[String: Any]])
+        XCTAssertEqual(issues.compactMap { $0["code"] as? String }, [
+            "token_missing",
+            "webhook_transport_not_ready"
+        ])
+        let accounts = try XCTUnwrap(health["accounts"] as? [[String: Any]])
+        XCTAssertEqual(accounts.first?["polling_offset"] as? Int, 120)
+        let lifecycle = try XCTUnwrap(health["lifecycle"] as? [String: Any])
+        XCTAssertEqual(lifecycle["mode"] as? String, "native_app")
+        XCTAssertEqual(lifecycle["polling_loop"] as? String, "stopped")
+        XCTAssertEqual(lifecycle["poll_interval_ms"] as? Int, 2_000)
+        XCTAssertEqual(lifecycle["webhook_ready"] as? Bool, false)
+        XCTAssertEqual(lifecycle["webhook_status"] as? String, "not_implemented")
+        XCTAssertEqual(lifecycle["fallback_attempted"] as? Bool, false)
+    }
+
+    @MainActor
+    func testStatusPayloadReportsRunningInboundLifecycle() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-config-store-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = TelegramBridgeFileDatabase(dataDirectoryURL: directory)
+        try database.saveConfig(TelegramBridgeConfigFile())
+        let store = TelegramBridgeGearStore(
+            database: database,
+            tokenStore: TelegramBridgeTokenStore(storageURL: directory.appendingPathComponent("tokens.json"))
+        )
+
+        store.startInboundService { _ in nil }
+        defer { store.stopInboundService() }
+
+        let result = await store.runAgentAction(capabilityID: "telegram_bridge.status", args: [:])
+
+        XCTAssertEqual(result["status"] as? String, "success")
+        let health = try XCTUnwrap(result["gateway_health"] as? [String: Any])
+        let lifecycle = try XCTUnwrap(health["lifecycle"] as? [String: Any])
+        XCTAssertEqual(lifecycle["mode"] as? String, "native_app")
+        XCTAssertEqual(lifecycle["polling_loop"] as? String, "running")
+        XCTAssertEqual(lifecycle["poll_interval_ms"] as? Int, 2_000)
+        XCTAssertEqual(lifecycle["webhook_ready"] as? Bool, false)
+        XCTAssertEqual(lifecycle["webhook_status"] as? String, "not_implemented")
+        XCTAssertEqual(lifecycle["fallback_attempted"] as? Bool, false)
     }
 
     @MainActor
@@ -401,6 +856,66 @@ final class TelegramBridgeGearTests: XCTestCase {
     }
 
     @MainActor
+    func testCodexRemoteTelegramSendTimeoutDoesNotBlockPollingOffset() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-config-store-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let update = try telegramTextUpdate(
+            updateID: 809369456,
+            messageID: 133,
+            chatID: "7973901539",
+            fromUserID: "7973901539",
+            text: "/list"
+        )
+        let sender = HangingTelegramBridgeSender(updates: [update])
+        let database = TelegramBridgeFileDatabase(dataDirectoryURL: directory)
+        try database.saveConfig(
+            TelegramBridgeConfigFile(
+                accounts: [
+                    TelegramBridgeAccountConfig(
+                        id: "codex_remote_default",
+                        role: "codex_remote",
+                        botUsername: nil,
+                        transport: .init(mode: "polling"),
+                        security: .init(
+                            allowUserIds: ["7973901539"],
+                            allowChatIds: [],
+                            requirePairing: false,
+                            groupPolicy: "deny"
+                        ),
+                        push: nil,
+                        codex: .init(threadSource: "file_scan", sendMode: "cli_resume")
+                    )
+                ],
+                pushChannels: []
+            )
+        )
+        let tokenStore = TelegramBridgeTokenStore(storageURL: directory.appendingPathComponent("tokens.json"))
+        try tokenStore.saveToken("123456:secret", accountID: "codex_remote_default")
+        let codexRemote = TelegramCodexRemoteBridge(
+            codexHomeURL: directory.appendingPathComponent(".codex", isDirectory: true),
+            codexBinaryURL: directory.appendingPathComponent("missing-codex")
+        )
+        let store = TelegramBridgeGearStore(
+            database: database,
+            tokenStore: tokenStore,
+            sender: sender,
+            codexRemote: codexRemote,
+            telegramSendTimeoutSeconds: 0.05
+        )
+
+        await store.pollInboundOnce { _ -> String? in nil }
+
+        let state = try database.loadPollingState()
+        XCTAssertEqual(state.offsets["codex_remote_default"], 809369457)
+        let log = try database.loadConversationLog()
+        let thread = try XCTUnwrap(log.threads.first { $0.id == "codex_remote_default:7973901539" })
+        XCTAssertEqual(thread.messages.map(\.status), ["allowed", "codex_remote_failed"])
+        XCTAssertTrue(thread.messages.last?.text.contains("Telegram send timed out") == true)
+    }
+
+    @MainActor
     func testConversationDuplicateCheckUsesUpdateIDBeforeMessageID() {
         let store = TelegramBridgeGearStore()
         let existing = TelegramBridgeConversationMessage(
@@ -711,6 +1226,78 @@ final class TelegramBridgeGearTests: XCTestCase {
     }
 
     @MainActor
+    func testCodexRemoteListKeepsProjectSummariesCompact() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-codex-remote-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let codexHome = directory.appendingPathComponent(".codex", isDirectory: true)
+        let sessions = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026/05/07", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        let longProjectName = "project-" + String(repeating: "very-long-name-", count: 12)
+        let projectURL = try makeCodexRemoteProjectRoot(directory: directory, name: longProjectName)
+        let nestedURL = projectURL
+            .appendingPathComponent("Sources", isDirectory: true)
+            .appendingPathComponent(String(repeating: "deep-folder-", count: 16), isDirectory: true)
+        try FileManager.default.createDirectory(at: nestedURL, withIntermediateDirectories: true)
+        try writeCodexRemoteSession(
+            sessionsDirectory: sessions,
+            id: "compact_list_thread",
+            title: String(repeating: "Huge title ", count: 80),
+            cwd: nestedURL.path,
+            timestamp: "2026-05-07T08:30:00.000Z"
+        )
+        let bridge = TelegramCodexRemoteBridge(
+            codexHomeURL: codexHome,
+            codexBinaryURL: directory.appendingPathComponent("missing-codex")
+        )
+
+        let reply = await bridge.reply(for: codexRemoteAccount(), text: "/list", chatID: "chat-1")
+
+        XCTAssertEqual(reply.status, "codex_success")
+        XCTAssertLessThan(reply.text.count, 320)
+        XCTAssertFalse(reply.text.contains(String(repeating: "deep-folder-", count: 8)))
+        XCTAssertFalse(reply.text.contains(String(repeating: "Huge title ", count: 8)))
+    }
+
+    @MainActor
+    func testCodexRemoteFileScanOnlyUsesRecentBoundedSessionDirectories() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-codex-remote-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let codexHome = directory.appendingPathComponent(".codex", isDirectory: true)
+        let projectURL = try makeCodexRemoteProjectRoot(directory: directory, name: "bounded-scan-project")
+        for day in 1...20 {
+            let dayString = String(format: "%02d", day)
+            let sessions = codexHome
+                .appendingPathComponent("sessions", isDirectory: true)
+                .appendingPathComponent("2026/05/\(dayString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+            try writeCodexRemoteSession(
+                sessionsDirectory: sessions,
+                id: day == 1 ? "old_thread" : "thread_\(dayString)",
+                title: "Thread \(dayString)",
+                cwd: projectURL.path,
+                timestamp: "2026-05-\(dayString)T10:00:00.000Z"
+            )
+        }
+        let bridge = TelegramCodexRemoteBridge(
+            codexHomeURL: codexHome,
+            codexBinaryURL: directory.appendingPathComponent("missing-codex")
+        )
+
+        let recentReply = await bridge.reply(for: codexRemoteAccount(), text: "/latest thread_20", chatID: "chat-1")
+        let oldReply = await bridge.reply(for: codexRemoteAccount(), text: "/latest old_thread", chatID: "chat-1")
+
+        XCTAssertEqual(recentReply.status, "codex_success")
+        XCTAssertEqual(oldReply.status, "codex_failed")
+        XCTAssertTrue(oldReply.text.contains("Session not found: old_thread"))
+    }
+
+    @MainActor
     func testCodexRemotePaginatesProjectAndThreadLists() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("telegram-codex-remote-\(UUID().uuidString)", isDirectory: true)
@@ -896,6 +1483,151 @@ final class TelegramBridgeGearTests: XCTestCase {
         XCTAssertEqual(runner.calls.count, 1)
         XCTAssertTrue(runner.calls.first?.arguments.joined(separator: " ").contains("confirm_thread") == true)
         XCTAssertEqual(confirmedReply.status, "codex_empty_result")
+
+        let stagedCommandReply = await bridge.reply(for: account, text: "/send please continue again", chatID: "chat-1")
+
+        XCTAssertEqual(runner.calls.count, 1)
+        XCTAssertTrue(stagedCommandReply.text.contains("Confirm sending to Confirm thread"))
+        XCTAssertTrue(stagedCommandReply.text.contains("please continue again"))
+
+        let confirmedCommandReply = await bridge.reply(for: account, text: "/confirm confirm_thread", chatID: "chat-1")
+
+        XCTAssertEqual(runner.calls.count, 2)
+        XCTAssertTrue(runner.calls.last?.arguments.joined(separator: " ").contains("confirm_thread") == true)
+        XCTAssertEqual(confirmedCommandReply.status, "codex_empty_result")
+    }
+
+    @MainActor
+    func testCodexRemoteSendUsesSelectedSessionWhenSourceCannotResolveExplicitIDs() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-codex-remote-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let codexHome = directory.appendingPathComponent(".codex", isDirectory: true)
+        let sessions = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026/05/05", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        let projectURL = try makeCodexRemoteProjectRoot(directory: directory, name: "app-server-project")
+        try writeCodexRemoteSession(
+            sessionsDirectory: sessions,
+            id: "selected_thread",
+            title: "Selected thread",
+            cwd: projectURL.path,
+            timestamp: "2026-05-05T10:00:00.000Z"
+        )
+        let fakeCodex = directory.appendingPathComponent("codex")
+        try "#!/bin/sh\nexit 0\n".write(to: fakeCodex, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeCodex.path)
+        let runner = RecordingGearCommandRunner()
+        let bridge = TelegramCodexRemoteBridge(
+            codexHomeURL: codexHome,
+            codexBinaryURL: fakeCodex,
+            runner: runner
+        )
+        let fileScanAccount = codexRemoteAccount()
+        let appServerSourceAccount = TelegramBridgeAccountConfig(
+            id: fileScanAccount.id,
+            role: fileScanAccount.role,
+            botUsername: fileScanAccount.botUsername,
+            transport: fileScanAccount.transport,
+            security: fileScanAccount.security,
+            push: fileScanAccount.push,
+            codex: .init(threadSource: "app_server", sendMode: "cli_resume")
+        )
+
+        _ = await bridge.reply(for: fileScanAccount, text: "/open selected_thread", chatID: "chat-1")
+        let stagedReply = await bridge.reply(for: appServerSourceAccount, text: "/send please continue", chatID: "chat-1")
+
+        XCTAssertEqual(runner.calls.count, 0)
+        XCTAssertEqual(stagedReply.status, "codex_confirmation_required")
+        XCTAssertTrue(stagedReply.text.contains("Confirm sending to Selected thread"))
+        XCTAssertTrue(stagedReply.text.contains("please continue"))
+    }
+
+    @MainActor
+    func testCodexRemoteUnavailableAppServerModesFailWithoutCliFallback() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-codex-remote-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let runner = RecordingGearCommandRunner()
+        let bridge = TelegramCodexRemoteBridge(
+            codexHomeURL: directory.appendingPathComponent(".codex", isDirectory: true),
+            codexBinaryURL: directory.appendingPathComponent("codex"),
+            runner: runner
+        )
+        let account = TelegramBridgeAccountConfig(
+            id: "codex_remote_default",
+            role: "codex_remote",
+            botUsername: nil,
+            transport: .init(mode: "polling"),
+            security: nil,
+            push: nil,
+            codex: .init(threadSource: "app_server", sendMode: "app_server")
+        )
+
+        let listReply = await bridge.reply(for: account, text: "/list", chatID: "chat-1")
+        let latestReply = await bridge.reply(for: account, text: "/latest session-1", chatID: "chat-1")
+        let desktopReply = await bridge.reply(for: account, text: "/desktop session-1", chatID: "chat-1")
+        let sendReply = await bridge.reply(for: account, text: "/send session-1 please continue", chatID: "chat-1")
+
+        XCTAssertEqual(listReply.status, "codex_failed")
+        XCTAssertTrue(listReply.text.contains("app-server thread listing is not configured"))
+        XCTAssertEqual(latestReply.status, "codex_failed")
+        XCTAssertTrue(latestReply.text.contains("app-server thread reading is not configured"))
+        XCTAssertEqual(desktopReply.status, "codex_failed")
+        XCTAssertTrue(desktopReply.text.contains("app-server thread reading is not configured"))
+        XCTAssertEqual(sendReply.status, "codex_failed")
+        XCTAssertTrue(sendReply.text.contains("app-server send is not configured"))
+        XCTAssertEqual(runner.calls.count, 0)
+    }
+
+    @MainActor
+    func testCodexRemoteFileScanIgnoresThreadMetadataBeyondLargeJSONLScanBudget() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-codex-remote-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let codexHome = directory.appendingPathComponent(".codex", isDirectory: true)
+        let sessions = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026/05/05", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        let visibleProjectURL = try makeCodexRemoteProjectRoot(directory: directory, name: "visible-large-jsonl-project")
+        let lateProjectURL = try makeCodexRemoteProjectRoot(directory: directory, name: "late-large-jsonl-project")
+        try writeCodexRemoteSession(
+            sessionsDirectory: sessions,
+            id: "visible_thread",
+            title: "Visible thread",
+            cwd: visibleProjectURL.path,
+            timestamp: "2026-05-05T10:00:00.000Z"
+        )
+        var lateLines = (0..<450).map { index in
+            #"{"timestamp":"2026-05-05T11:00:00.000Z","type":"event_msg","payload":{"type":"noise","index":\#(index)}}"#
+        }
+        lateLines.append(
+            #"{"timestamp":"2026-05-05T11:01:00.000Z","type":"session_meta","payload":{"id":"late_thread","cwd":"\#(lateProjectURL.path)","originator":"Codex Desktop","timestamp":"2026-05-05T11:01:00.000Z"}}"#
+        )
+        lateLines.append(
+            #"{"timestamp":"2026-05-05T11:02:00.000Z","type":"event_msg","payload":{"type":"thread_name_updated","thread_name":"Late hidden thread"}}"#
+        )
+        try lateLines.joined(separator: "\n").write(
+            to: sessions.appendingPathComponent("rollout-late-thread.jsonl", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+        let bridge = TelegramCodexRemoteBridge(
+            codexHomeURL: codexHome,
+            codexBinaryURL: directory.appendingPathComponent("missing-codex")
+        )
+
+        let reply = await bridge.reply(for: codexRemoteAccount(), text: "/list", chatID: "chat-1")
+
+        XCTAssertEqual(reply.status, "codex_success")
+        XCTAssertTrue(reply.text.contains("visible-large-jsonl-project"))
+        XCTAssertFalse(reply.text.contains("late-large-jsonl-project"))
+        XCTAssertFalse(reply.text.contains("late_thread"))
     }
 
     @MainActor
@@ -1149,12 +1881,61 @@ private final class RecordingTelegramBridgeSender: TelegramBridgeSending {
     func answerCallbackQuery(token: String, callbackQueryID: String, text: String?) async throws {}
 }
 
+private final class HangingTelegramBridgeSender: TelegramBridgeSending {
+    var updates: [TelegramBridgeSender.Update]
+
+    init(updates: [TelegramBridgeSender.Update]) {
+        self.updates = updates
+    }
+
+    func getUpdates(token: String, offset: Int?, limit: Int, timeout: Int) async throws -> [TelegramBridgeSender.Update] {
+        let next = updates
+        updates = []
+        return next
+    }
+
+    func latestChatID(token: String) async throws -> String {
+        throw TelegramBridgeGearError.configInvalid("No Telegram updates with a chat ID were found. Send a message to this bot, then try again.")
+    }
+
+    func latestUserID(token: String) async throws -> String {
+        throw TelegramBridgeGearError.configInvalid("No Telegram updates with a sender user ID were found. Send a direct message to this bot, then try again.")
+    }
+
+    func sendMessage(
+        token: String,
+        target: TelegramBridgePushTargetConfig,
+        text: String,
+        parseMode: String?,
+        disableWebPreview: Bool?,
+        replyMarkup: TelegramBridgeReplyMarkup?
+    ) async throws -> TelegramBridgeSender.Result {
+        try await Task.sleep(nanoseconds: 60_000_000_000)
+        return .failure(status: "failed", code: "unexpected", message: "send should have timed out", retryAfterMs: nil)
+    }
+
+    func sendLocalFile(
+        token: String,
+        target: TelegramBridgePushTargetConfig,
+        fileURL: URL,
+        caption: String?
+    ) async throws -> TelegramBridgeSender.Result {
+        try await Task.sleep(nanoseconds: 60_000_000_000)
+        return .failure(status: "failed", code: "unexpected", message: "send should have timed out", retryAfterMs: nil)
+    }
+
+    func setMyCommands(token: String, commands: [TelegramBridgeBotCommand]) async throws {}
+
+    func answerCallbackQuery(token: String, callbackQueryID: String, text: String?) async throws {}
+}
+
 private func telegramTextUpdate(
     updateID: Int,
     messageID: Int,
     chatID: String,
     fromUserID: String,
-    text: String
+    text: String,
+    chatType: String = "private"
 ) throws -> TelegramBridgeSender.Update {
     let payload: [String: Any] = [
         "update_id": updateID,
@@ -1166,7 +1947,7 @@ private func telegramTextUpdate(
             ],
             "chat": [
                 "id": chatID,
-                "type": "private"
+                "type": chatType
             ],
             "text": text
         ]

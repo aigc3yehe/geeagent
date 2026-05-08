@@ -21,6 +21,7 @@ final class WorkbenchStore {
         let id: String
         let conversationID: ConversationThread.ID
         let content: String
+        let attachments: [WorkspaceInputAttachment]
         let createdAt: Date
         let previousMessageIDs: Set<ConversationMessage.ID>
 
@@ -37,6 +38,10 @@ final class WorkbenchStore {
     private var conversationTitleOverrides: [ConversationThread.ID: String] = [:]
     private var pendingChatTurn: PendingChatTurn?
     private var scheduledHostActionBatches: Set<String> = []
+    private var inFlightHostActionIDs: Set<String> = []
+    private var completedHostActionCompletions: [String: WorkbenchHostActionCompletion] = [:]
+    private var activeChatRequestID: String?
+    private var cancelledChatRequestIDs: Set<String> = []
     private var scheduledExternalInvocationIDs: Set<String> = []
     private var liveSnapshotPollingTask: Task<Void, Never>?
     private var externalInvocationPollingTask: Task<Void, Never>?
@@ -55,10 +60,12 @@ final class WorkbenchStore {
         }
     }
     var lastErrorMessage: String?
+    var chatErrorMessage: String?
     var isCreatingConversation = false
     var isActivatingConversation = false
     var isDeletingConversation = false
     var isSendingMessage = false
+    var isStoppingMessage = false
     var isPerformingTaskAction = false
     var isDeletingTerminalPermissionRule = false
     var isAddingSystemSkillSource = false
@@ -286,22 +293,66 @@ final class WorkbenchStore {
                     role: .user,
                     kind: .chat,
                     content: pendingChatTurn.content,
-                    timestampLabel: "Sending..."
+                    timestampLabel: "Sending...",
+                    attachments: pendingChatTurn.attachments.map(conversationAttachment),
+                    detailItems: pendingChatTurn.attachments.map { attachment in
+                        ConversationMessageDetailItem(
+                            label: "Attachment",
+                            value: "\(attachment.kind.rawValue) · \(attachment.displayName)"
+                        )
+                    }
                 )
             )
         }
 
-        if !hasRuntimeUser,
+        let pendingTurnUserIndex = updated.messages.lastIndex { message in
+            if message.id == pendingChatTurn.userMessageID {
+                return true
+            }
+            return message.id != pendingChatTurn.userMessageID
+                && !pendingChatTurn.previousMessageIDs.contains(message.id)
+                && message.role == .user
+                && message.kind == .chat
+                && message.content == pendingChatTurn.content
+        }
+        let messagesAfterPendingUser: ArraySlice<ConversationMessage>
+        if let pendingTurnUserIndex {
+            messagesAfterPendingUser = updated.messages[updated.messages.index(after: pendingTurnUserIndex)...]
+        } else {
+            messagesAfterPendingUser = updated.messages[updated.messages.endIndex...]
+        }
+        let hasAssistantReplyAfterPendingUser = messagesAfterPendingUser.contains { message in
+            message.role == .assistant
+                && message.kind == .chat
+                && !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+
+        if !hasAssistantReplyAfterPendingUser,
            !updated.messages.contains(where: { $0.id == pendingChatTurn.thinkingMessageID }) {
+            let hasToolActivityAfterPendingUser = messagesAfterPendingUser.contains { message in
+                message.kind == .action || message.kind == .approval
+            }
+            let statusLabel: String
+            let content: String
+            if !hasRuntimeUser {
+                statusLabel = "waiting for first event"
+                content = "Request sent. Waiting for the runtime to return the first agent event."
+            } else if hasToolActivityAfterPendingUser {
+                statusLabel = "waiting for reply"
+                content = "Tool activity finished. Waiting for the assistant to write the reply."
+            } else {
+                statusLabel = "thinking"
+                content = "GeeAgent is thinking about the reply."
+            }
             updated.messages.append(
                 ConversationMessage(
                     id: pendingChatTurn.thinkingMessageID,
                     role: .assistant,
                     kind: .thinking,
                     headerTitle: "Thinking",
-                    content: "Request sent. Waiting for the runtime to return the first agent event.",
+                    content: content,
                     timestampLabel: "Now",
-                    statusLabel: "waiting for first event",
+                    statusLabel: statusLabel,
                     systemImage: "brain.head.profile",
                     tone: .info
                 )
@@ -311,6 +362,89 @@ final class WorkbenchStore {
         updated.previewText = pendingChatTurn.content
         updated.lastActivityLabel = "Now"
         return updated
+    }
+
+    func shouldShowChatActivityFallback(for conversation: ConversationThread) -> Bool {
+        guard isSendingMessage else {
+            return false
+        }
+        return selectedConversationID == conversation.id
+    }
+
+    func chatActivityFallbackLabel(for conversation: ConversationThread) -> String {
+        guard isSendingMessage else {
+            return ""
+        }
+        guard let lastVisibleMessage = conversation.visibleMessages.last else {
+            return "Request sent. GeeAgent is starting the run..."
+        }
+
+        switch lastVisibleMessage.kind {
+        case .action:
+            return "Tool activity is running. Waiting for GeeAgent to continue..."
+        case .approval:
+            return "Waiting for approval before GeeAgent can continue..."
+        case .thinking:
+            return "GeeAgent is thinking..."
+        case .chat:
+            switch lastVisibleMessage.role {
+            case .user:
+                return "GeeAgent is thinking..."
+            case .assistant:
+                return "GeeAgent is continuing the reply..."
+            case .system:
+                return "Request sent. Waiting for GeeAgent..."
+            }
+        }
+    }
+
+    private func conversationAttachment(_ attachment: WorkspaceInputAttachment) -> ConversationMessageAttachment {
+        ConversationMessageAttachment(
+            id: attachment.attachmentId,
+            kind: conversationAttachmentKind(attachment.kind),
+            displayName: attachment.displayName,
+            originalPath: attachment.originalPath,
+            resolvedPath: attachment.resolvedPath,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+            status: conversationAttachmentStatus(attachment.status),
+            source: attachment.source.rawValue,
+            createdAt: attachment.createdAt,
+            accessScope: attachment.access.scope,
+            accessMode: attachment.access.mode,
+            accessRoot: attachment.access.root,
+            accessExpiresAt: attachment.access.expiresAt,
+            imageWidth: attachment.image?.width,
+            imageHeight: attachment.image?.height,
+            maxBytes: attachment.limits?.maxBytes,
+            maxEntries: attachment.limits?.maxEntries,
+            maxDepth: attachment.limits?.maxDepth,
+            errorCode: attachment.error?.code,
+            errorMessage: attachment.error?.message,
+            fallbackAttempted: attachment.fallbackAttempted
+        )
+    }
+
+    private func conversationAttachmentKind(_ kind: WorkspaceInputAttachment.Kind) -> ConversationMessageAttachment.Kind {
+        switch kind {
+        case .image:
+            return .image
+        case .file:
+            return .file
+        case .directory:
+            return .directory
+        }
+    }
+
+    private func conversationAttachmentStatus(_ status: WorkspaceInputAttachment.Status) -> ConversationMessageAttachment.Status {
+        switch status {
+        case .ready:
+            return .ready
+        case .degraded:
+            return .degraded
+        case .failed:
+            return .failed
+        }
     }
 
     var selectedTask: WorkbenchTaskRecord? {
@@ -449,8 +583,10 @@ final class WorkbenchStore {
         lastErrorMessage = nil
         let runtimeClient = self.runtimeClient
         let currentSnapshot = snapshot
+        let previousProfile = availableAgentProfiles.first { $0.id == profile.id }
         let nextSnapshot = try await runtimeClient.reloadAgentProfile(profile.id, in: currentSnapshot)
         snapshot = nextSnapshot
+        reconcileReloadedAppearancePreference(profileID: profile.id, previousProfile: previousProfile)
         selectedAgentProfileID = profile.id
     }
 
@@ -753,34 +889,46 @@ final class WorkbenchStore {
     }
 
     private func applyHostActionIntents(_ intents: [WorkbenchHostActionIntent]) {
-        guard !intents.isEmpty else {
+        let runnableIntents = intents.filter {
+            completedHostActionCompletions[$0.id] == nil &&
+                !inFlightHostActionIDs.contains($0.id)
+        }
+        guard !runnableIntents.isEmpty else {
             return
         }
-        let batchID = intents.map(\.id).joined(separator: "|")
+        let batchID = runnableIntents.map(\.id).joined(separator: "|")
         guard !scheduledHostActionBatches.contains(batchID) else {
             return
         }
         scheduledHostActionBatches.insert(batchID)
+        runnableIntents.forEach { inFlightHostActionIDs.insert($0.id) }
 
         let currentSnapshot = snapshot
-        Task { [weak self, intents, currentSnapshot] in
+        Task { [weak self, runnableIntents, currentSnapshot] in
             do {
                 guard let self else { return }
                 let nextSnapshot = try await self.completeHostActionIntents(
-                    intents,
+                    runnableIntents,
                     in: currentSnapshot
                 )
                 await MainActor.run {
+                    runnableIntents.forEach { self.inFlightHostActionIDs.remove($0.id) }
                     self.snapshot = nextSnapshot
                     self.quickInputLatestResult = nextSnapshot.lastOutcome
                     self.applyHostActionIntents(nextSnapshot.hostActionIntents)
                 }
             } catch {
                 await MainActor.run {
+                    runnableIntents.forEach { self?.inFlightHostActionIDs.remove($0.id) }
                     self?.lastErrorMessage = error.localizedDescription
                 }
             }
         }
+    }
+
+    private func resetCompletedHostActionsForFreshRuntimeTurn() {
+        scheduledHostActionBatches.removeAll()
+        completedHostActionCompletions.removeAll()
     }
 
     private func completeHostActionIntents(
@@ -820,6 +968,10 @@ final class WorkbenchStore {
     ) async -> [WorkbenchHostActionCompletion] {
         var completions: [WorkbenchHostActionCompletion] = []
         for intent in intents {
+            if let existing = completedHostActionCompletions[intent.id] {
+                completions.append(existing)
+                continue
+            }
             let invocation = ToolInvocation(
                 toolID: intent.toolID,
                 arguments: intent.arguments
@@ -827,19 +979,21 @@ final class WorkbenchStore {
             do {
                 let rawOutcome = try await runtimeClient.invokeTool(invocation)
                 let outcome = await GeeHostToolRouter.resolveCompletedIntent(rawOutcome) ?? rawOutcome
-                completions.append(Self.hostActionCompletion(for: intent, outcome: outcome))
+                let completion = Self.hostActionCompletion(for: intent, outcome: outcome)
+                completedHostActionCompletions[intent.id] = completion
+                completions.append(completion)
                 applyToolOutcome(outcome, from: invocation)
             } catch {
-                completions.append(
-                    WorkbenchHostActionCompletion(
-                        hostActionID: intent.id,
-                        toolID: intent.toolID,
-                        status: "failed",
-                        summary: nil,
-                        error: error.localizedDescription,
-                        resultJSON: nil
-                    )
+                let completion = WorkbenchHostActionCompletion(
+                    hostActionID: intent.id,
+                    toolID: intent.toolID,
+                    status: "failed",
+                    summary: nil,
+                    error: error.localizedDescription,
+                    resultJSON: nil
                 )
+                completedHostActionCompletions[intent.id] = completion
+                completions.append(completion)
                 lastErrorMessage = error.localizedDescription
             }
         }
@@ -1456,20 +1610,38 @@ final class WorkbenchStore {
         isSendingMessage = true
         selectedSection = .chat
         lastErrorMessage = nil
+        chatErrorMessage = nil
+        resetCompletedHostActionsForFreshRuntimeTurn()
+        let requestID = beginActiveChatRequest()
         let runtimeClient = self.runtimeClient
         let currentSnapshot = snapshot
         startLiveSnapshotPolling()
 
-        Task { [weak self, runtimeClient, currentSnapshot, trimmed] in
+        Task { [weak self, runtimeClient, currentSnapshot, trimmed, requestID] in
             do {
+                let shouldStart = await MainActor.run {
+                    guard let self else { return false }
+                    if self.isCancelledChatRequest(requestID) {
+                        self.forgetCancelledChatRequest(requestID)
+                        return false
+                    }
+                    return true
+                }
+                guard shouldStart else { return }
+
                 let nextSnapshot = try await runtimeClient.submitQuickPrompt(
                     trimmed,
                     in: currentSnapshot
                 )
                 await MainActor.run {
                     guard let self else { return }
+                    if self.consumeCancelledChatRequest(requestID) {
+                        return
+                    }
+                    self.finishActiveChatRequest(requestID)
                     self.isSubmittingQuickInput = false
                     self.isSendingMessage = false
+                    self.chatErrorMessage = nil
                     self.stopLiveSnapshotPolling()
                     self.snapshot = nextSnapshot
                     self.applyHostActionIntents(nextSnapshot.hostActionIntents)
@@ -1483,6 +1655,11 @@ final class WorkbenchStore {
                 let recoverySnapshot = runtimeClient.loadSnapshot()
                 await MainActor.run {
                     guard let self else { return }
+                    if self.consumeCancelledChatRequest(requestID) {
+                        return
+                    }
+                    self.finishActiveChatRequest(requestID)
+                    self.chatErrorMessage = error.localizedDescription
                     self.lastErrorMessage = error.localizedDescription
                     self.snapshot = recoverySnapshot
                     self.isSubmittingQuickInput = false
@@ -1501,6 +1678,7 @@ final class WorkbenchStore {
     }
 
     func submitTelegramChannelMessage(_ payload: TelegramChannelMessagePayload) async throws -> String? {
+        resetCompletedHostActionsForFreshRuntimeTurn()
         let currentSnapshot = snapshot
         var nextSnapshot = try await runtimeClient.submitChannelMessage(payload, in: currentSnapshot)
         if !nextSnapshot.hostActionIntents.isEmpty {
@@ -1586,14 +1764,27 @@ final class WorkbenchStore {
         }
     }
 
-    func sendMessage(_ message: String, openSection: Bool = true) {
+    func sendMessage(
+        _ message: String,
+        attachments: [WorkspaceInputAttachment] = [],
+        openSection: Bool = true
+    ) {
         let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedMessage.isEmpty, canSendMessages else {
+        let resolvedMessage = trimmedMessage.isEmpty && !attachments.isEmpty
+            ? "Please review the attached item(s)."
+            : trimmedMessage
+        guard !resolvedMessage.isEmpty, canSendMessages else {
             return
         }
 
         if let conversationID = selectedConversation?.id {
-            sendMessage(trimmedMessage, in: snapshot, conversationID: conversationID, openSection: openSection)
+            sendMessage(
+                resolvedMessage,
+                attachments: attachments,
+                in: snapshot,
+                conversationID: conversationID,
+                openSection: openSection
+            )
             return
         }
 
@@ -1604,12 +1795,15 @@ final class WorkbenchStore {
         isCreatingConversation = true
         isSendingMessage = true
         lastErrorMessage = nil
+        chatErrorMessage = nil
+        resetCompletedHostActionsForFreshRuntimeTurn()
+        let requestID = beginActiveChatRequest()
         let runtimeClient = self.runtimeClient
         let currentSnapshot = snapshot
         let allowAutoRouting = autoConversationRoutingEnabled
         startLiveSnapshotPolling()
 
-        Task { [weak self, runtimeClient, currentSnapshot, allowAutoRouting] in
+        Task { [weak self, runtimeClient, currentSnapshot, allowAutoRouting, attachments, requestID] in
             do {
                 let createdSnapshot = try await runtimeClient.createConversation(in: currentSnapshot)
                 guard let conversationID = createdSnapshot.conversations.first(where: \.isActive)?.id ?? createdSnapshot.conversations.first?.id else {
@@ -1619,23 +1813,45 @@ final class WorkbenchStore {
                     guard let self else { return }
                     self.snapshot = createdSnapshot
                     self.selectedConversationID = conversationID
-                    self.beginPendingChatTurn(message: trimmedMessage, conversationID: conversationID)
+                    self.beginPendingChatTurn(
+                        message: resolvedMessage,
+                        attachments: attachments,
+                        conversationID: conversationID
+                    )
                     if openSection {
                         self.selectedSection = .chat
                     }
                     self.isCreatingConversation = false
                 }
+                let shouldSend = await MainActor.run {
+                    guard let self else { return false }
+                    if self.isCancelledChatRequest(requestID) {
+                        self.clearPendingChatTurn(conversationID: conversationID)
+                        self.forgetCancelledChatRequest(requestID)
+                        return false
+                    }
+                    return true
+                }
+                guard shouldSend else { return }
+
                 let nextSnapshot = try await runtimeClient.sendMessage(
-                    trimmedMessage,
+                    resolvedMessage,
+                    attachments: attachments,
                     in: createdSnapshot,
                     conversationID: conversationID,
                     allowAutoRouting: allowAutoRouting
                 )
                 await MainActor.run {
                     guard let self else { return }
+                    if self.consumeCancelledChatRequest(requestID) {
+                        self.clearPendingChatTurn(conversationID: conversationID)
+                        return
+                    }
+                    self.finishActiveChatRequest(requestID)
                     self.clearPendingChatTurn(conversationID: conversationID)
                     self.isCreatingConversation = false
                     self.isSendingMessage = false
+                    self.chatErrorMessage = nil
                     self.stopLiveSnapshotPolling()
                     self.snapshot = nextSnapshot
                     self.applyHostActionIntents(nextSnapshot.hostActionIntents)
@@ -1647,12 +1863,65 @@ final class WorkbenchStore {
                 let recoverySnapshot = runtimeClient.loadSnapshot()
                 await MainActor.run {
                     guard let self else { return }
+                    if self.consumeCancelledChatRequest(requestID) {
+                        self.clearPendingChatTurn()
+                        return
+                    }
+                    self.finishActiveChatRequest(requestID)
                     self.clearPendingChatTurn()
+                    self.chatErrorMessage = error.localizedDescription
                     self.lastErrorMessage = error.localizedDescription
                     self.snapshot = recoverySnapshot
                     self.isCreatingConversation = false
                     self.isSendingMessage = false
                     self.stopLiveSnapshotPolling()
+                }
+            }
+        }
+    }
+
+    func stopActiveChatRun() {
+        guard isSendingMessage, !isStoppingMessage else {
+            return
+        }
+
+        isStoppingMessage = true
+        chatErrorMessage = nil
+        lastErrorMessage = nil
+        let requestID = activeChatRequestID
+        if let requestID {
+            cancelledChatRequestIDs.insert(requestID)
+        }
+        let runtimeClient = self.runtimeClient
+        let currentSnapshot = snapshot
+        stopLiveSnapshotPolling()
+
+        Task { [weak self, runtimeClient, currentSnapshot] in
+            do {
+                let nextSnapshot = try await runtimeClient.cancelActiveRun(in: currentSnapshot)
+                await MainActor.run {
+                    guard let self else { return }
+                    self.clearPendingChatTurn()
+                    self.finishStoppedChatRequest(requestID)
+                    self.snapshot = nextSnapshot
+                    self.isSendingMessage = false
+                    self.isSubmittingQuickInput = false
+                    self.isCreatingConversation = false
+                    self.isStoppingMessage = false
+                    self.quickInputLatestResult = nextSnapshot.lastOutcome
+                    self.applyHostActionIntents(nextSnapshot.hostActionIntents)
+                }
+            } catch {
+                await MainActor.run {
+                    guard let self else { return }
+                    self.clearPendingChatTurn()
+                    self.finishStoppedChatRequest(requestID)
+                    self.isSendingMessage = false
+                    self.isSubmittingQuickInput = false
+                    self.isCreatingConversation = false
+                    self.isStoppingMessage = false
+                    self.chatErrorMessage = "GeeAgent could not stop the run cleanly. You can retry from a new message."
+                    self.lastErrorMessage = error.localizedDescription
                 }
             }
         }
@@ -1788,6 +2057,7 @@ final class WorkbenchStore {
 
     func dismissError() {
         lastErrorMessage = nil
+        chatErrorMessage = nil
     }
 
     func copyMessageContent(_ content: String) {
@@ -2105,9 +2375,7 @@ final class WorkbenchStore {
         }
 
         playLive2DMotion(motion)
-        if let posePath = activeLive2DPosePath {
-            schedulePoseRestore(to: posePath, after: motion.durationSeconds ?? (motion.isLoop ? 2.4 : 1.6))
-        }
+        schedulePoseRestore(to: activeLive2DPosePath, after: motion.durationSeconds ?? (motion.isLoop ? 2.4 : 1.6))
     }
 
     func playLive2DMotion(_ motion: Live2DMotionRecord) {
@@ -2116,6 +2384,14 @@ final class WorkbenchStore {
         }
 
         live2DMotionPlaybackRequest = Live2DMotionPlaybackRequest(bundlePath: bundlePath, motion: motion)
+    }
+
+    private func stopLive2DMotion() {
+        guard case let .live2D(bundlePath) = effectiveActiveAppearance, !bundlePath.isEmpty else {
+            return
+        }
+
+        live2DMotionPlaybackRequest = .stop(bundlePath: bundlePath)
     }
 
     /// True when the active persona currently has any local appearance override — useful for
@@ -2166,6 +2442,90 @@ final class WorkbenchStore {
             return .abstract
         }
         return profile.appearance
+    }
+
+    private func reconcileReloadedAppearancePreference(
+        profileID: AgentProfileRecord.ID,
+        previousProfile: AgentProfileRecord?
+    ) {
+        guard var preference = profileAppearancePreferences[profileID],
+              let nextProfile = availableAgentProfiles.first(where: { $0.id == profileID })
+        else {
+            return
+        }
+
+        var didChange = false
+        didChange = reconcileReloadedAppearancePath(
+            &preference.live2DBundlePath,
+            for: .live2D,
+            activeKind: preference.kind,
+            previousProfile: previousProfile,
+            nextProfile: nextProfile
+        ) || didChange
+        didChange = reconcileReloadedAppearancePath(
+            &preference.videoPath,
+            for: .video,
+            activeKind: preference.kind,
+            previousProfile: previousProfile,
+            nextProfile: nextProfile
+        ) || didChange
+        didChange = reconcileReloadedAppearancePath(
+            &preference.staticImagePath,
+            for: .staticImage,
+            activeKind: preference.kind,
+            previousProfile: previousProfile,
+            nextProfile: nextProfile
+        ) || didChange
+
+        if didChange {
+            profileAppearancePreferences[profileID] = preference
+        }
+    }
+
+    private func reconcileReloadedAppearancePath(
+        _ path: inout String?,
+        for kind: AgentAppearanceKind,
+        activeKind: AgentAppearanceKind,
+        previousProfile: AgentProfileRecord?,
+        nextProfile: AgentProfileRecord
+    ) -> Bool {
+        let currentPath = path?.nilIfBlank
+        let previousDefault = previousProfile.flatMap { defaultAppearancePath(for: kind, in: $0) }
+        let nextDefault = defaultAppearancePath(for: kind, in: nextProfile)
+
+        let shouldRefresh = currentPath == nil && activeKind == kind
+            || currentPath.map { pathsEqual($0, previousDefault) } == true
+            || currentPath.map { !FileManager.default.fileExists(atPath: $0) } == true
+
+        guard shouldRefresh else { return false }
+        path = nextDefault
+        return currentPath != nextDefault
+    }
+
+    private func defaultAppearancePath(
+        for kind: AgentAppearanceKind,
+        in profile: AgentProfileRecord
+    ) -> String? {
+        if let optionPath = profile.visualOptions.path(for: kind) {
+            return optionPath
+        }
+
+        switch (kind, profile.appearance) {
+        case (.live2D, .live2D(let path)),
+             (.video, .video(let path)),
+             (.staticImage, .staticImage(let path)):
+            return path.nilIfBlank
+        case (.abstract, _):
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    private func pathsEqual(_ left: String, _ right: String?) -> Bool {
+        guard let right else { return false }
+        return URL(fileURLWithPath: left).standardizedFileURL.path
+            == URL(fileURLWithPath: right).standardizedFileURL.path
     }
 
     private func persistProfileAppearancePreferences() {
@@ -2233,12 +2593,19 @@ final class WorkbenchStore {
         }
     }
 
-    private func schedulePoseRestore(to relativePath: String, after seconds: Double) {
+    private func schedulePoseRestore(to relativePath: String?, after seconds: Double) {
         live2DPoseRestoreTask?.cancel()
         live2DPoseRestoreTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(max(0.2, seconds)))
             guard let self, !Task.isCancelled else { return }
-            guard let pose = self.availableLive2DPoses.first(where: { $0.relativePath == relativePath }) else { return }
+            guard let relativePath else {
+                self.stopLive2DMotion()
+                return
+            }
+            guard let pose = self.availableLive2DPoses.first(where: { $0.relativePath == relativePath }) else {
+                self.stopLive2DMotion()
+                return
+            }
             self.playLive2DMotion(pose)
         }
     }
@@ -2300,13 +2667,17 @@ final class WorkbenchStore {
 
     private func sendMessage(
         _ message: String,
+        attachments: [WorkspaceInputAttachment],
         in snapshot: WorkbenchSnapshot,
         conversationID: ConversationThread.ID,
         openSection: Bool
     ) {
         isSendingMessage = true
         lastErrorMessage = nil
-        beginPendingChatTurn(message: message, conversationID: conversationID)
+        chatErrorMessage = nil
+        let requestID = beginActiveChatRequest()
+        beginPendingChatTurn(message: message, attachments: attachments, conversationID: conversationID)
+        resetCompletedHostActionsForFreshRuntimeTurn()
         if openSection {
             selectedSection = .chat
         }
@@ -2314,18 +2685,36 @@ final class WorkbenchStore {
         let allowAutoRouting = autoConversationRoutingEnabled
         startLiveSnapshotPolling()
 
-        Task { [weak self, runtimeClient, snapshot, allowAutoRouting] in
+        Task { [weak self, runtimeClient, snapshot, allowAutoRouting, attachments, requestID] in
             do {
+                let shouldStart = await MainActor.run {
+                    guard let self else { return false }
+                    if self.isCancelledChatRequest(requestID) {
+                        self.clearPendingChatTurn(conversationID: conversationID)
+                        self.forgetCancelledChatRequest(requestID)
+                        return false
+                    }
+                    return true
+                }
+                guard shouldStart else { return }
+
                 let nextSnapshot = try await runtimeClient.sendMessage(
                     message,
+                    attachments: attachments,
                     in: snapshot,
                     conversationID: conversationID,
                     allowAutoRouting: allowAutoRouting
                 )
                 await MainActor.run {
                     guard let self else { return }
+                    if self.consumeCancelledChatRequest(requestID) {
+                        self.clearPendingChatTurn(conversationID: conversationID)
+                        return
+                    }
+                    self.finishActiveChatRequest(requestID)
                     self.clearPendingChatTurn(conversationID: conversationID)
                     self.isSendingMessage = false
+                    self.chatErrorMessage = nil
                     self.stopLiveSnapshotPolling()
                     self.snapshot = nextSnapshot
                     self.applyHostActionIntents(nextSnapshot.hostActionIntents)
@@ -2337,7 +2726,13 @@ final class WorkbenchStore {
                 let recoverySnapshot = runtimeClient.loadSnapshot()
                 await MainActor.run {
                     guard let self else { return }
+                    if self.consumeCancelledChatRequest(requestID) {
+                        self.clearPendingChatTurn(conversationID: conversationID)
+                        return
+                    }
+                    self.finishActiveChatRequest(requestID)
                     self.clearPendingChatTurn(conversationID: conversationID)
+                    self.chatErrorMessage = error.localizedDescription
                     self.lastErrorMessage = error.localizedDescription
                     self.snapshot = recoverySnapshot
                     self.isSendingMessage = false
@@ -2399,21 +2794,71 @@ final class WorkbenchStore {
         }
     }
 
-    private func beginPendingChatTurn(message: String, conversationID: ConversationThread.ID) {
+    private func beginActiveChatRequest() -> String {
+        let requestID = UUID().uuidString
+        activeChatRequestID = requestID
+        return requestID
+    }
+
+    private func finishActiveChatRequest(_ requestID: String) {
+        if activeChatRequestID == requestID {
+            activeChatRequestID = nil
+        }
+        cancelledChatRequestIDs.remove(requestID)
+    }
+
+    private func finishStoppedChatRequest(_ requestID: String?) {
+        if let requestID {
+            if activeChatRequestID == requestID {
+                activeChatRequestID = nil
+            }
+        } else {
+            activeChatRequestID = nil
+        }
+    }
+
+    private func isCancelledChatRequest(_ requestID: String) -> Bool {
+        cancelledChatRequestIDs.contains(requestID) ||
+            (isStoppingMessage && activeChatRequestID == requestID)
+    }
+
+    private func forgetCancelledChatRequest(_ requestID: String) {
+        cancelledChatRequestIDs.remove(requestID)
+        if activeChatRequestID == requestID {
+            activeChatRequestID = nil
+        }
+    }
+
+    private func consumeCancelledChatRequest(_ requestID: String) -> Bool {
+        if cancelledChatRequestIDs.remove(requestID) != nil {
+            return true
+        }
+        return isStoppingMessage && activeChatRequestID == requestID
+    }
+
+    @discardableResult
+    private func beginPendingChatTurn(
+        message: String,
+        attachments: [WorkspaceInputAttachment],
+        conversationID: ConversationThread.ID
+    ) -> String {
         let previousMessageIDs = Set(
             conversations
                 .first(where: { $0.id == conversationID })?
                 .visibleMessages
                 .map(\.id) ?? []
         )
+        let pendingID = UUID().uuidString
         pendingChatTurn = PendingChatTurn(
-            id: UUID().uuidString,
+            id: pendingID,
             conversationID: conversationID,
             content: message,
+            attachments: attachments,
             createdAt: Date(),
             previousMessageIDs: previousMessageIDs
         )
         selectedConversationID = conversationID
+        return pendingID
     }
 
     private func clearPendingChatTurn(conversationID: ConversationThread.ID? = nil) {

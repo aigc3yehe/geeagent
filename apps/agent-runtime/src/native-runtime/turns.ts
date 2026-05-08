@@ -1,4 +1,5 @@
 import {
+  activeConversation,
   createConversation,
   deleteConversation,
   QUICK_CONVERSATION_TAG,
@@ -16,6 +17,7 @@ import type {
   RuntimeChannelMessageRecord,
   RuntimeHostActionRunRecord,
   RuntimeHostActionRunSource,
+  RuntimeInputAttachment,
   RuntimeSnapshot,
   RuntimeStore,
 } from "./store/types.js";
@@ -83,6 +85,7 @@ import {
   stringField,
   summarizePrompt,
   toolStepCount,
+  userFacingFailureReason,
 } from "./turns/state.js";
 import type { PreparedTurnContext, TurnReplayCursor } from "./turns/types.js";
 import { requiresGeeGearBridgeFirst } from "./turns/gear-intents.js";
@@ -99,8 +102,14 @@ import {
   terminalRunPlanBlocker,
   type RuntimeStageAdvanceDecision,
 } from "./turns/stage-advancer.js";
+import {
+  classifyChatTurnPolicy,
+  isPlainConversationalTurn,
+  sdkToolOptionsForTurn,
+} from "./turns/turn-policy.js";
 
 const GEAR_COMPLETION_SDK_IDLE_TIMEOUT_MS = 75_000;
+const SHORT_ATTACHMENT_CONTINUATION_MAX_CHARS = 80;
 const TELEGRAM_NEW_CONVERSATION_REPLY =
   "Started a new Telegram conversation. Previous Telegram context has been cleared.";
 
@@ -113,14 +122,16 @@ type HostActionCompletionContext = {
 
 export async function submitWorkspaceMessage(
   configDir: string,
-  message: string,
+  message: string | unknown,
 ): Promise<RuntimeSnapshot> {
-  const trimmed = message.trim();
+  const input = parseWorkspaceMessageInput(message);
+  const trimmed = input.text.trim();
   if (!trimmed) {
     throw new Error("message cannot be empty");
   }
 
   const store = await loadRuntimeStore(configDir);
+  const attachments = workspaceAttachmentsForTurn(store, trimmed, input.attachments);
   const route: TurnRoute = {
     mode: "workspace_message",
     source: "workspace_chat",
@@ -130,8 +141,71 @@ export async function submitWorkspaceMessage(
     trimmed,
     requiresGeeGearBridgeFirst(trimmed) ? "gear_first" : "default",
   );
-  const prepared = prepareTurnContext(store, route, trimmed, planningDecision.mode);
-  await applyClaudeSdkTurn(store, configDir, route, prepared, trimmed, planningDecision);
+  const prepared = prepareTurnContext(
+    store,
+    route,
+    trimmed,
+    planningDecision.mode,
+    attachments,
+  );
+  await applyClaudeSdkTurn(
+    store,
+    configDir,
+    route,
+    prepared,
+    trimmed,
+    planningDecision,
+    attachments,
+  );
+  await persistRuntimeStore(configDir, store);
+  return snapshotFromStore(store, configDir);
+}
+
+export async function cancelActiveRun(
+  configDir: string,
+): Promise<RuntimeSnapshot> {
+  const store = await loadRuntimeStore(configDir);
+  const state = isRecord(store.last_run_state) ? store.last_run_state : null;
+  const conversationId = stringField(state, "conversation_id") || store.active_conversation_id;
+  const taskId = stringField(state, "task_id") || null;
+  const moduleRunId = stringField(state, "module_run_id") || null;
+  const runId = stringField(state, "run_id") || null;
+  const sessionId = executionSessionIdForConversation(conversationId);
+  const summary =
+    "Stopped by the user. GeeAgent interrupted the active run and did not mark the request complete.";
+
+  closeSdkRuntimeSession(sessionId);
+  store.host_action_intents = [];
+  appendSessionStateForSession(store, sessionId, summary, runId);
+  appendAssistantMessageForActiveConversation(
+    store,
+    sessionId,
+    "Stopped. This run was interrupted before it completed, and you can start a new message now.",
+  );
+  markTaskCancelled(store, taskId, summary);
+  markModuleRunCancelled(store, moduleRunId, summary);
+  store.quick_reply = "Stopped. You can start a new message now.";
+  store.chat_runtime = claudeSdkChatRuntimeRecord();
+  store.last_run_state = {
+    ...runtimeRunState(
+      conversationId,
+      "cancelled",
+      "user_cancelled",
+      summary,
+      false,
+      taskId,
+      moduleRunId,
+    ),
+    ...(runId ? { run_id: runId } : {}),
+    fallback_attempted: false,
+  };
+  store.last_request_outcome = {
+    source: "workspace_chat",
+    kind: "chat_reply",
+    detail: store.quick_reply,
+    task_id: taskId,
+    module_run_id: moduleRunId,
+  };
   await persistRuntimeStore(configDir, store);
   return snapshotFromStore(store, configDir);
 }
@@ -163,14 +237,16 @@ export async function submitQuickPrompt(
 
 export async function submitRoutedWorkspaceMessage(
   configDir: string,
-  message: string,
+  message: string | unknown,
 ): Promise<RuntimeSnapshot> {
-  const trimmed = message.trim();
+  const input = parseWorkspaceMessageInput(message);
+  const trimmed = input.text.trim();
   if (!trimmed) {
     throw new Error("message cannot be empty");
   }
 
   const store = await loadRuntimeStore(configDir);
+  const attachments = workspaceAttachmentsForTurn(store, trimmed, input.attachments);
   const route: TurnRoute = {
     mode: "workspace_message",
     source: "workspace_chat",
@@ -181,10 +257,270 @@ export async function submitRoutedWorkspaceMessage(
     trimmed,
     requiresGeeGearBridgeFirst(trimmed) ? "gear_first" : "default",
   );
-  const prepared = prepareTurnContext(store, route, trimmed, planningDecision.mode);
-  await applyClaudeSdkTurn(store, configDir, route, prepared, trimmed, planningDecision);
+  const prepared = prepareTurnContext(
+    store,
+    route,
+    trimmed,
+    planningDecision.mode,
+    attachments,
+  );
+  await applyClaudeSdkTurn(
+    store,
+    configDir,
+    route,
+    prepared,
+    trimmed,
+    planningDecision,
+    attachments,
+  );
   await persistRuntimeStore(configDir, store);
   return snapshotFromStore(store, configDir);
+}
+
+type WorkspaceMessageInput = {
+  text: string;
+  attachments: RuntimeInputAttachment[];
+};
+
+function parseWorkspaceMessageInput(input: string | unknown): WorkspaceMessageInput {
+  if (typeof input !== "string") {
+    return normalizeWorkspaceMessageInput(input);
+  }
+  const parsed = parseWorkspaceMessageEnvelope(input);
+  if (parsed) {
+    return normalizeWorkspaceMessageInput(parsed);
+  }
+  return { text: input, attachments: [] };
+}
+
+function parseWorkspaceMessageEnvelope(input: string): unknown | null {
+  const trimmed = input.trim();
+  if (!trimmed.startsWith("{")) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!isWorkspaceMessageEnvelope(parsed)) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function isWorkspaceMessageEnvelope(input: unknown): boolean {
+  if (!isRecord(input)) {
+    return false;
+  }
+  return (
+    input.input_type === "workspace_message" ||
+    (typeof input.text === "string" && Array.isArray(input.attachments))
+  );
+}
+
+function normalizeWorkspaceMessageInput(input: unknown): WorkspaceMessageInput {
+  if (!isRecord(input)) {
+    throw new Error("workspace message input must be text or an object");
+  }
+  const text = stringField(input, "text") ?? stringField(input, "message") ?? "";
+  return {
+    text,
+    attachments: normalizeRuntimeInputAttachments(input.attachments),
+  };
+}
+
+function normalizeRuntimeInputAttachments(input: unknown): RuntimeInputAttachment[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  return input.map((attachment, index) => normalizeRuntimeInputAttachment(attachment, index));
+}
+
+function normalizeRuntimeInputAttachment(
+  input: unknown,
+  index: number,
+): RuntimeInputAttachment {
+  if (!isRecord(input)) {
+    throw new Error(`workspace attachment ${index + 1} must be an object`);
+  }
+  const attachmentId = stringField(input, "attachment_id") ?? stringField(input, "attachmentId");
+  const kind = stringField(input, "kind");
+  const displayName = stringField(input, "display_name") ?? stringField(input, "displayName");
+  if (!attachmentId) {
+    throw new Error(`workspace attachment ${index + 1} requires attachment_id`);
+  }
+  if (kind !== "image" && kind !== "file" && kind !== "directory") {
+    throw new Error(`workspace attachment ${attachmentId} has unsupported kind`);
+  }
+  const status = normalizeAttachmentStatus(stringField(input, "status"));
+  const access = isRecord(input.access) ? input.access : {};
+  const originalPath = stringField(input, "original_path") ?? stringField(input, "originalPath");
+  const resolvedPath = stringField(input, "resolved_path") ?? stringField(input, "resolvedPath");
+  const mimeType = stringField(input, "mime_type") ?? stringField(input, "mimeType");
+  const sizeBytes = numberField(input, "size_bytes") ?? numberField(input, "sizeBytes");
+  return {
+    attachment_id: attachmentId,
+    kind,
+    source: normalizeAttachmentSource(stringField(input, "source")),
+    display_name: displayName ?? attachmentId,
+    ...(originalPath ? { original_path: originalPath } : {}),
+    ...(resolvedPath ? { resolved_path: resolvedPath } : {}),
+    ...(mimeType ? { mime_type: mimeType } : {}),
+    ...(sizeBytes !== undefined ? { size_bytes: sizeBytes } : {}),
+    created_at: stringField(input, "created_at") ?? stringField(input, "createdAt") ?? currentTimestamp(),
+    status,
+    access: {
+      scope: "run",
+      mode: "read",
+      ...(stringField(access, "root") ? { root: stringField(access, "root") ?? undefined } : {}),
+      ...(stringField(access, "expires_at") || stringField(access, "expiresAt")
+        ? { expires_at: stringField(access, "expires_at") ?? stringField(access, "expiresAt") ?? undefined }
+        : {}),
+    },
+    ...normalizeAttachmentImage(input.image),
+    ...normalizeAttachmentLimits(input.limits),
+    ...normalizeAttachmentError(input.error),
+    fallback_attempted: false,
+  };
+}
+
+function normalizeAttachmentSource(
+  source: string | null,
+): RuntimeInputAttachment["source"] {
+  return source === "channel_ingress" || source === "codex_bridge"
+    ? source
+    : "workspace_chat";
+}
+
+function normalizeAttachmentStatus(
+  status: string | null,
+): RuntimeInputAttachment["status"] {
+  return status === "degraded" || status === "failed" ? status : "ready";
+}
+
+function normalizeAttachmentImage(
+  input: unknown,
+): Pick<RuntimeInputAttachment, "image"> {
+  if (!isRecord(input)) {
+    return {};
+  }
+  const image: NonNullable<RuntimeInputAttachment["image"]> = {};
+  const width = numberField(input, "width");
+  const height = numberField(input, "height");
+  const storedBase64Ref =
+    stringField(input, "stored_base64_ref") ?? stringField(input, "storedBase64Ref");
+  if (width !== undefined) {
+    image.width = width;
+  }
+  if (height !== undefined) {
+    image.height = height;
+  }
+  if (storedBase64Ref) {
+    image.stored_base64_ref = storedBase64Ref;
+  }
+  if (typeof input.resized === "boolean") {
+    image.resized = input.resized;
+  }
+  return Object.keys(image).length > 0 ? { image } : {};
+}
+
+function normalizeAttachmentLimits(
+  input: unknown,
+): Pick<RuntimeInputAttachment, "limits"> {
+  if (!isRecord(input)) {
+    return {};
+  }
+  const limits: NonNullable<RuntimeInputAttachment["limits"]> = {};
+  const maxBytes = numberField(input, "max_bytes") ?? numberField(input, "maxBytes");
+  const maxEntries = numberField(input, "max_entries") ?? numberField(input, "maxEntries");
+  const maxDepth = numberField(input, "max_depth") ?? numberField(input, "maxDepth");
+  if (maxBytes !== undefined) {
+    limits.max_bytes = maxBytes;
+  }
+  if (maxEntries !== undefined) {
+    limits.max_entries = maxEntries;
+  }
+  if (maxDepth !== undefined) {
+    limits.max_depth = maxDepth;
+  }
+  return Object.keys(limits).length > 0 ? { limits } : {};
+}
+
+function normalizeAttachmentError(
+  input: unknown,
+): Pick<RuntimeInputAttachment, "error"> {
+  if (!isRecord(input)) {
+    return {};
+  }
+  const code = stringField(input, "code");
+  const message = stringField(input, "message");
+  return code && message ? { error: { code, message } } : {};
+}
+
+function workspaceAttachmentsForTurn(
+  store: RuntimeStore,
+  text: string,
+  attachments: RuntimeInputAttachment[],
+): RuntimeInputAttachment[] {
+  if (attachments.length > 0) {
+    return attachments;
+  }
+  return recentReadyImageAttachmentsForShortContinuation(store, text);
+}
+
+function recentReadyImageAttachmentsForShortContinuation(
+  store: RuntimeStore,
+  text: string,
+): RuntimeInputAttachment[] {
+  if (!isShortAttachmentContinuation(text)) {
+    return [];
+  }
+
+  const conversation = activeConversation(store);
+  for (let index = conversation.messages.length - 1; index >= 0; index -= 1) {
+    const message = conversation.messages[index];
+    if (message.role !== "user" || !Array.isArray(message.attachments)) {
+      continue;
+    }
+    const imageAttachments = message.attachments.filter(isReadyImageAttachment);
+    if (imageAttachments.length === 0) {
+      continue;
+    }
+    const laterMessages = conversation.messages.slice(index + 1);
+    const hasSuccessfulAssistantReply = laterMessages.some((candidate) =>
+      candidate.role === "assistant" &&
+      candidate.content.trim().length > 0 &&
+      !isRecoverableAttachmentFailureMessage(candidate.content)
+    );
+    return hasSuccessfulAssistantReply ? [] : imageAttachments.slice(0, 4);
+  }
+  return [];
+}
+
+function isShortAttachmentContinuation(text: string): boolean {
+  const trimmed = text.trim();
+  if ([...trimmed].length > SHORT_ATTACHMENT_CONTINUATION_MAX_CHARS) {
+    return false;
+  }
+  if (isPlainConversationalTurn(trimmed, [])) {
+    return false;
+  }
+  return (
+    /\b(again|retry|rerun|try again|continue|go on|same|previous|attachment|image|screenshot|folder|directory|file)\b/i.test(
+      trimmed,
+    )
+  );
+}
+
+function isReadyImageAttachment(attachment: RuntimeInputAttachment): boolean {
+  return attachment.kind === "image" && attachment.status === "ready";
+}
+
+function isRecoverableAttachmentFailureMessage(content: string): boolean {
+  return /current chat model cannot read images|does not support image input|stopped|interrupted|couldn[’']?t finish|could not complete|did not complete/i.test(
+    content,
+  );
 }
 
 export async function submitChannelMessage(
@@ -500,6 +836,7 @@ function channelIngressRecord(payload: ChannelMessageInput): Record<string, unkn
     chat_id: payload.message.chatId,
     message_id: payload.message.messageId,
     from_user_id: payload.message.fromUserId,
+    attachments: payload.message.attachments,
     security_decision: payload.security.decision,
     security_policy_id: payload.security.policyId ?? null,
     projection_surface: payload.projection.surface,
@@ -521,6 +858,7 @@ function recordChannelMessage(
     idempotency_key: payload.message.idempotencyKey,
     run_id: runId,
     status: "accepted",
+    attachments: payload.message.attachments,
     created_at: now,
     updated_at: now,
     fallback_attempted: false,
@@ -590,7 +928,7 @@ export async function completeHostActionTurn(
   appendSessionStateForSession(
     store,
     runtimeSessionId,
-    "native Gear actions completed; returning structured host results to the SDK runtime so the agent can write the user-facing reply",
+    "native Gear actions completed; returning structured host results to the active agent run so the agent can write the user-facing reply",
     completionContext?.runId,
   );
 
@@ -683,7 +1021,7 @@ async function applyResumedSdkHostActionTurn(
     appendSessionStateForSession(
       store,
       runtimeSessionId,
-      "the agent inspected the Gear result and requested another native Gear host action inside the same SDK run",
+      "the agent inspected the Gear result and requested another native Gear host action inside the same agent run",
     );
     appendDirectiveHostActionInvocations(
       store,
@@ -745,15 +1083,15 @@ async function applyResumedSdkHostActionTurn(
 
   const assistantReply = assistantReplyFromTurn(
     sdkTurn,
-    "The SDK runtime ended without a final assistant reply.",
+    "The agent runtime ended without a final assistant reply.",
   );
   appendAssistantMessageForActiveConversation(store, runtimeSessionId, assistantReply);
   appendSessionStateForSession(
     store,
     runtimeSessionId,
     completionFailureReason
-      ? "the SDK runtime failed while continuing after Gear host results; GeeAgent recorded the structured Gear result and preserved the runtime failure for retry"
-      : "the SDK runtime continued after Gear host results and completed the active user turn",
+      ? "the agent runtime failed while continuing after Gear host results; GeeAgent recorded the structured Gear result and preserved the runtime failure for retry"
+      : "the agent runtime continued after Gear host results and completed the active user turn",
   );
 
   const quickReply = sdkTurn.failed_reason
@@ -801,7 +1139,7 @@ async function applyUnresumableHostActionCompletions(
     : lastRunStopReason(store) === "static_gear_fallback_running";
   const failureReason = legacyFallback
     ? "A legacy native Gear fallback completion was received, but fallback task execution is now prohibited. GeeAgent recorded the structured result and marked the turn failed instead of presenting it as complete."
-    : "The same-run SDK runtime session is no longer alive, so GeeAgent cannot safely continue this Gear host-action turn.";
+    : "The same-run agent runtime session is no longer alive, so GeeAgent cannot safely continue this Gear host-action turn.";
   const assistantReply = unresumableHostActionReply(
     lastUserMessageContent(store) ?? "",
     completions,
@@ -816,7 +1154,7 @@ async function applyUnresumableHostActionCompletions(
       runtimeSessionId,
       runPlan,
       "blocked",
-      `Stage blocked because Gear host action results could not continue inside the active SDK run: ${failureReason}`,
+      `Stage blocked because Gear host action results could not continue inside the active agent run: ${failureReason}`,
     );
   }
 
@@ -826,7 +1164,7 @@ async function applyUnresumableHostActionCompletions(
     runtimeSessionId,
     legacyFallback
       ? "a legacy native Gear fallback completion arrived; GeeAgent recorded structured results and exposed the prohibited fallback as a failed turn"
-      : "the native Gear host action completed, but the same SDK run could not be resumed; GeeAgent did not start a detached completion turn",
+      : "the native Gear host action completed, but the same agent run could not be resumed; GeeAgent did not start a detached completion turn",
   );
 
   const quickReply = claudeSdkFailedQuickReply(failureReason);
@@ -953,24 +1291,24 @@ function modelOnlyStageCompletionSummary(
 ): string | null {
   if (stageID === "stage_research_technologies") {
     return hasSucceededNonGeeToolResult(sdkTurn)
-      ? `Stage completed: ${title}. Research evidence was collected through approved SDK tool results.`
+      ? `Stage completed: ${title}. Research evidence was collected through approved runtime tool results.`
       : null;
   }
   if (stageID === "stage_synthesize_explanation") {
     return hasAssistantReplyText(sdkTurn)
-      ? `Stage completed: ${title}. The active SDK run produced the user-facing explanation.`
+      ? `Stage completed: ${title}. The active agent run produced the user-facing explanation.`
       : null;
   }
   if (stageID === "stage_verify") {
     return hasAssistantReplyText(sdkTurn)
-      ? `Stage completed: ${title}. Final verification was satisfied by the active SDK reply.`
+      ? `Stage completed: ${title}. Final verification was satisfied by the active agent reply.`
       : null;
   }
   if (hasSucceededNonGeeToolResult(sdkTurn)) {
-    return `Stage completed: ${title}. The active SDK run produced structured tool evidence.`;
+    return `Stage completed: ${title}. The active agent run produced structured tool evidence.`;
   }
   if (hasAssistantReplyText(sdkTurn)) {
-    return `Stage completed: ${title}. The active SDK run produced a final response.`;
+    return `Stage completed: ${title}. The active agent run produced a final response.`;
   }
   return null;
 }
@@ -999,14 +1337,58 @@ function markMissingAssistantReplyAsFailure(
     return;
   }
   sdkTurn.failed_reason =
-    `The SDK runtime finished ${context}. GeeAgent marked the turn failed instead of presenting a fake completion.`;
+    `The agent runtime finished ${context}. GeeAgent marked the turn failed instead of presenting a fake completion.`;
 }
 
 function hasAssistantReplyText(sdkTurn: SdkTurnResult): boolean {
+  if (sdkTurn.assistant_text_stale_after_tool && !sdkTurn.final_result?.trim()) {
+    return false;
+  }
   if (sdkTurn.assistant_chunks.some((chunk) => chunk.trim().length > 0)) {
     return true;
   }
   return Boolean(sdkTurn.final_result?.trim());
+}
+
+function markTaskCancelled(
+  store: RuntimeStore,
+  taskId: string | null,
+  summary: string,
+): void {
+  if (!taskId) {
+    return;
+  }
+  const task = store.tasks.find((candidate) =>
+    isRecord(candidate) && candidate.task_id === taskId
+  );
+  if (!isRecord(task)) {
+    return;
+  }
+  task.status = "failed";
+  task.current_stage = "cancelled_by_user";
+  task.summary = summary;
+  task.progress_percent = 100;
+  task.approval_request_id = null;
+}
+
+function markModuleRunCancelled(
+  store: RuntimeStore,
+  moduleRunId: string | null,
+  summary: string,
+): void {
+  if (!moduleRunId) {
+    return;
+  }
+  const moduleRun = store.module_runs.find((candidate) =>
+    isRecord(candidate) &&
+    isRecord(candidate.module_run) &&
+    candidate.module_run.module_run_id === moduleRunId
+  );
+  if (!isRecord(moduleRun) || !isRecord(moduleRun.module_run)) {
+    return;
+  }
+  moduleRun.module_run.status = "failed";
+  moduleRun.module_run.summary = summary;
 }
 
 async function applyClaudeSdkTurn(
@@ -1016,6 +1398,7 @@ async function applyClaudeSdkTurn(
   prepared: PreparedTurnContext,
   text: string,
   planningDecision?: RuntimePlanningDecision,
+  attachments: RuntimeInputAttachment[] = [],
 ): Promise<void> {
   store.host_action_intents = [];
   if (route.mode === "quick_prompt" && !prepared.shouldReuseActiveConversation) {
@@ -1024,12 +1407,12 @@ async function applyClaudeSdkTurn(
 
   const readiness = await loadChatReadiness(configDir);
   if (readiness.status !== "live") {
-    recordRuntimeUnavailableTurn(store, route, text, readiness);
+    recordRuntimeUnavailableTurn(store, route, text, readiness, attachments);
     return;
   }
 
   const runtimeSessionId = executionSessionIdForConversation(store.active_conversation_id);
-  const cursor = beginTurnReplay(store, route.surface, text);
+  const cursor = beginTurnReplay(store, route.surface, text, attachments);
   const decision =
     planningDecision ??
     selectRuntimePlanningMode(
@@ -1040,6 +1423,7 @@ async function applyClaudeSdkTurn(
   const runPlan = decision.should_create_run_plan
     ? buildRuntimeRunPlan(text, decision.boundary_mode)
     : null;
+  const sdkToolOptions = sdkToolOptionsForTurn(text, attachments);
   if (runPlan) {
     appendRunPlanForSession(store, cursor.sessionId, runPlan);
     appendCapabilityFocusForSession(store, cursor.sessionId, runPlan);
@@ -1048,19 +1432,22 @@ async function applyClaudeSdkTurn(
   appendSessionStateForSession(
     store,
     cursor.sessionId,
-    "delegating this turn into the SDK loop through the Xenodia gateway so the agent can reason and use tools inside one real run",
+    "starting this turn in the active agent runtime so the agent can reason and use tools inside one real run",
   );
   store.quick_reply = "GeeAgent is working on this request.";
   store.chat_runtime = claudeSdkChatRuntimeRecord();
-  store.last_run_state = runtimeRunState(
-    store.active_conversation_id,
-    "running",
-    "sdk_runtime_running",
-    "GeeAgent is running the active turn and will stream tool activity into this conversation.",
-    false,
-    null,
-    null,
-  );
+  store.last_run_state = {
+    ...runtimeRunState(
+      store.active_conversation_id,
+      "running",
+      "sdk_runtime_running",
+      "GeeAgent is running the active turn and will stream tool activity into this conversation.",
+      false,
+      null,
+      null,
+    ),
+    run_id: cursor.runId,
+  };
   store.last_request_outcome = {
     source: route.source,
     kind: "chat_reply",
@@ -1080,6 +1467,7 @@ async function applyClaudeSdkTurn(
       composeClaudeSdkTurnPrompt(route, prepared, text),
       [],
       {
+        ...sdkToolOptions,
         onToolEvent: (event) => appendLiveSdkToolEvent(store, configDir, cursor, event),
         onAssistantText: (delta) =>
           appendLiveAssistantDelta(
@@ -1088,8 +1476,9 @@ async function applyClaudeSdkTurn(
             cursor.sessionId,
             delta,
             cursor.assistantMessageId,
-          ),
+        ),
         toolBoundaryMode: gearBridgeFirst ? "gear_first" : "default",
+        inputAttachments: attachments,
         runPlan,
       },
     );
@@ -1179,10 +1568,11 @@ function recordRuntimeUnavailableTurn(
   route: TurnRoute,
   text: string,
   readiness: ChatReadiness,
+  attachments: RuntimeInputAttachment[] = [],
 ): void {
-  const cursor = beginTurnReplay(store, route.surface, text);
+  const cursor = beginTurnReplay(store, route.surface, text, attachments);
   const detail = [
-    "the SDK runtime is not live, so GeeAgent stopped before executing tools or Gear actions",
+    "the chat runtime is not ready, so GeeAgent stopped before executing tools or Gear actions",
     `(${readiness.status}: ${readiness.detail})`,
   ].join(" ");
   appendSessionStateForSession(
@@ -1191,7 +1581,7 @@ function recordRuntimeUnavailableTurn(
     detail,
   );
   const assistantReply = claudeSdkFailureAssistantReply(
-    `The SDK runtime is not live. ${readiness.detail}`,
+    `Chat runtime is not ready. ${readiness.detail}`,
   );
   appendAssistantMessageForActiveConversation(
     store,
@@ -1199,7 +1589,7 @@ function recordRuntimeUnavailableTurn(
     assistantReply,
     cursor.assistantMessageId,
   );
-  finalizeTurnReplay(store, cursor, "blocked because the SDK runtime is not live");
+  finalizeTurnReplay(store, cursor, "blocked because the chat runtime is not ready");
   store.host_action_intents = [];
   store.quick_reply = claudeSdkFailedQuickReply(readiness.detail);
   store.chat_runtime = {
@@ -1207,15 +1597,18 @@ function recordRuntimeUnavailableTurn(
     active_provider: readiness.active_provider ?? null,
     detail: readiness.detail,
   };
-  store.last_run_state = runtimeRunState(
-    store.active_conversation_id,
-    "failed",
-    "sdk_runtime_not_live",
-    detail,
-    false,
-    null,
-    null,
-  );
+  store.last_run_state = {
+    ...runtimeRunState(
+      store.active_conversation_id,
+      "failed",
+      "sdk_runtime_not_live",
+      detail,
+      false,
+      null,
+      null,
+    ),
+    run_id: cursor.runId,
+  };
   store.last_request_outcome = {
     source: route.source,
     kind: "chat_reply",
@@ -1260,12 +1653,12 @@ function installClaudeSdkHostActions(
   appendSessionStateForSession(
     store,
     cursor.sessionId,
-    "the agent requested native Gear host action(s); GeeAgent paused the same SDK run until the macOS host returns structured results",
+    "the agent requested native Gear host action(s); GeeAgent paused the same agent run until the macOS host returns structured results",
   );
   finalizeTurnReplay(
     store,
     cursor,
-    "the SDK runtime is waiting on native Gear host action results before continuing this same user turn",
+    "the agent runtime is waiting on native Gear host action results before continuing this same user turn",
   );
   markHostActionsPending(store, route, hostActions);
 }
@@ -1486,7 +1879,7 @@ function unresumableHostActionReply(
     .filter((summary): summary is string => Boolean(summary));
   const header = legacyFallback
       ? "A legacy native Gear fallback completion arrived, but fallback execution is now prohibited, so GeeAgent marked this turn failed. The structured result was recorded in the tool steps."
-      : "The Gear action completed, but the same SDK run could not be resumed. GeeAgent did not start a detached completion turn; the structured result was recorded in the tool steps.";
+      : "The Gear action completed, but the same agent run could not be resumed. GeeAgent did not start a detached completion turn; the structured result was recorded in the tool steps.";
 
   if (summaries.length > 0) {
     return `${header}\n\n${summaries.join("\n")}`;
@@ -1545,11 +1938,13 @@ async function applyTransientClaudeSdkQuickTurn(
     workspaceMessages: [],
     stageCapsuleMessages: [],
     shouldReuseActiveConversation: true,
+    inputAttachments: [],
   };
   const runtimeSessionId = transientRuntimeSessionId(text);
   let sdkTurn: SdkTurnResult;
   try {
     const gearBridgeFirst = requiresGeeGearBridgeFirst(text);
+    const sdkToolOptions = sdkToolOptionsForTurn(text, []);
     sdkTurn = await runSdkRuntimeTurn(
       configDir,
       runtimeSessionId,
@@ -1558,6 +1953,7 @@ async function applyTransientClaudeSdkQuickTurn(
       composeClaudeSdkTurnPrompt(route, transientPrepared, text),
       [],
       {
+        ...sdkToolOptions,
         toolBoundaryMode: gearBridgeFirst ? "gear_first" : "default",
       },
     );
@@ -1588,7 +1984,7 @@ async function applyTransientClaudeSdkQuickTurn(
   }
   const assistantReply = assistantReplyFromTurn(
     sdkTurn,
-    "The SDK runtime ended without a final assistant reply.",
+    "The agent runtime ended without a final assistant reply.",
   );
   const quickReply = sdkTurn.failed_reason
     ? claudeSdkFailedQuickReply(sdkTurn.failed_reason)
@@ -1621,7 +2017,7 @@ function recordClaudeSdkTurn(
   appendSessionStateForSession(
     store,
     cursor.sessionId,
-    "delegating this turn into the SDK loop through the Xenodia gateway so the agent can reason and use tools inside one real run",
+    "starting this turn in the active agent runtime so the agent can reason and use tools inside one real run",
   );
 
   appendToolEvents(store, cursor.sessionId, cursor.userMessageId, sdkTurn.tool_events);
@@ -1630,13 +2026,13 @@ function recordClaudeSdkTurn(
     appendSessionStateForSession(
       store,
       cursor.sessionId,
-      `the host auto-approved ${sdkTurn.auto_approved_tools} SDK tool request(s) during this runtime run`,
+      `the host auto-approved ${sdkTurn.auto_approved_tools} runtime tool request(s) during this run`,
     );
   }
 
   const assistantReply = assistantReplyFromTurn(
     sdkTurn,
-    "The SDK runtime ended without a final assistant reply.",
+    "The agent runtime ended without a final assistant reply.",
   );
   appendAssistantMessageForActiveConversation(
     store,
@@ -1649,8 +2045,8 @@ function recordClaudeSdkTurn(
     store,
     cursor,
     sdkTurn.failed_reason
-      ? "the SDK runtime surfaced a real runtime failure and GeeAgent committed that failed turn back into the active conversation"
-      : "the SDK runtime completed the active turn and committed the resulting tool trace back into GeeAgent",
+      ? "the agent runtime surfaced a real runtime failure and GeeAgent committed that failed turn back into the active conversation"
+      : "the agent runtime completed the active turn and committed the resulting tool trace back into GeeAgent",
     stageCapsule,
   );
   return assistantReply;
@@ -1667,7 +2063,7 @@ function recordLiveClaudeSdkTurnCompletion(
     appendSessionStateForSession(
       store,
       cursor.sessionId,
-      `the host auto-approved ${sdkTurn.auto_approved_tools} SDK tool request(s) during this runtime run`,
+      `the host auto-approved ${sdkTurn.auto_approved_tools} runtime tool request(s) during this run`,
     );
   }
 
@@ -1679,13 +2075,13 @@ function recordLiveClaudeSdkTurnCompletion(
       sdkTurn.failed_reason ? "blocked" : "completed",
       sdkTurn.failed_reason
         ? `Stage blocked by runtime failure: ${sdkTurn.failed_reason}`
-        : "Stage completed by the active SDK run.",
+        : "Stage completed by the active agent run.",
     );
   }
 
   const assistantReply = assistantReplyFromTurn(
     sdkTurn,
-    "The SDK runtime ended without a final assistant reply.",
+    "The agent runtime ended without a final assistant reply.",
   );
   appendAssistantMessageForActiveConversation(
     store,
@@ -1704,8 +2100,8 @@ function recordLiveClaudeSdkTurnCompletion(
     store,
     cursor,
     sdkTurn.failed_reason
-      ? "the SDK runtime surfaced a real runtime failure and GeeAgent committed that failed turn back into the active conversation"
-      : "the SDK runtime completed the active turn and committed the resulting tool trace back into GeeAgent",
+      ? "the agent runtime surfaced a real runtime failure and GeeAgent committed that failed turn back into the active conversation"
+      : "the agent runtime completed the active turn and committed the resulting tool trace back into GeeAgent",
     stageCapsule,
   );
   return assistantReply;
@@ -1807,7 +2203,11 @@ export const __turnTestHooks = {
   prepareTurnContext,
   recordHostActionRuns,
   routeQuickPromptToBestConversation,
+  classifyChatTurnPolicy,
+  sdkToolOptionsForTurn,
   stageSummaryCapsuleForTurn,
   successfulToolResultSummaries,
+  userFacingFailureReason,
   userMessageContentForCursor,
+  workspaceAttachmentsForTurn,
 };

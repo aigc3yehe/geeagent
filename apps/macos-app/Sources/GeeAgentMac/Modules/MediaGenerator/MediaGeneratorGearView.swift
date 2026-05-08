@@ -1396,12 +1396,16 @@ private struct MediaGeneratorReferenceThumb: View {
                     .buttonStyle(.plain)
                     .padding(4)
                     if reference.previewURL != nil {
-                        Image(systemName: "arrow.up.left.and.arrow.down.right")
-                            .font(.system(size: 10, weight: .bold))
-                            .padding(4)
-                            .background(.black.opacity(0.50), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-                            .padding(4)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        Button(action: onPreview) {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                .font(.system(size: 10, weight: .bold))
+                                .frame(width: 20, height: 20)
+                                .background(.black.opacity(0.58), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Open reference preview")
+                        .padding(4)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))

@@ -1,6 +1,10 @@
 import { activeConversation } from "../store/conversations.js";
 import { currentTimestamp } from "../store/defaults.js";
-import type { RuntimeConversation, RuntimeStore } from "../store/types.js";
+import type {
+  RuntimeConversation,
+  RuntimeInputAttachment,
+  RuntimeStore,
+} from "../store/types.js";
 import { runtimeProjectPath } from "../paths.js";
 import type { SdkToolArtifactRef, SdkToolEvent, TurnRoute } from "../sdk-turn-runner.js";
 import { isRecord, stringField, summarizePrompt } from "./state.js";
@@ -13,11 +17,13 @@ export function beginTurnReplay(
   store: RuntimeStore,
   surface: TurnRoute["surface"],
   userContent: string,
+  attachments: RuntimeInputAttachment[] = [],
 ): TurnReplayCursor {
   const [sessionId, userMessageId, runId] = appendUserMessageForActiveConversation(
     store,
     surface,
     userContent,
+    attachments,
   );
   const assistantMessageId = nextAssistantMessageIdForActiveConversation(store);
   appendSessionStateForSession(store, sessionId, turnSetupSummary(surface));
@@ -28,6 +34,7 @@ function appendUserMessageForActiveConversation(
   store: RuntimeStore,
   surface: TurnRoute["surface"],
   content: string,
+  attachments: RuntimeInputAttachment[],
 ): [string, string, string] {
   const sessionId = ensureExecutionSessionForActiveConversation(store, surface);
   const runId = nextRunIdForSession(store, sessionId);
@@ -38,13 +45,20 @@ function appendUserMessageForActiveConversation(
     role: "user",
     content,
     timestamp: currentTimestamp(),
+    ...(attachments.length > 0 ? { attachments } : {}),
   });
   conversation.status = "active";
-  appendTranscriptEvent(store, sessionId, {
-    kind: "user_message",
-    message_id: messageId,
-    content,
-  }, runId);
+  appendTranscriptEvent(
+    store,
+    sessionId,
+    {
+      kind: "user_message",
+      message_id: messageId,
+      content,
+      ...(attachments.length > 0 ? { attachments } : {}),
+    },
+    runId,
+  );
   return [sessionId, messageId, runId];
 }
 
@@ -55,14 +69,25 @@ export function appendAssistantMessageForActiveConversation(
   messageId?: string,
 ): string {
   const conversation = activeConversation(store);
-  const resolvedMessageId = messageId ?? assistantMessageId(conversation);
+  const resolvedMessageId =
+    messageId ??
+    latestOpenAssistantDeltaMessageId(store, sessionId) ??
+    assistantMessageId(conversation);
   const trimmed = content.trim();
-  conversation.messages.push({
-    message_id: resolvedMessageId,
-    role: "assistant",
-    content: trimmed,
-    timestamp: currentTimestamp(),
-  });
+  const existing = conversation.messages.find(
+    (message) => message.message_id === resolvedMessageId && message.role === "assistant",
+  );
+  if (existing) {
+    existing.content = trimmed;
+    existing.timestamp = currentTimestamp();
+  } else {
+    conversation.messages.push({
+      message_id: resolvedMessageId,
+      role: "assistant",
+      content: trimmed,
+      timestamp: currentTimestamp(),
+    });
+  }
   conversation.status = "active";
   appendTranscriptEvent(store, sessionId, {
     kind: "assistant_message",
@@ -70,6 +95,28 @@ export function appendAssistantMessageForActiveConversation(
     content: trimmed,
   });
   return resolvedMessageId;
+}
+
+function latestOpenAssistantDeltaMessageId(
+  store: RuntimeStore,
+  sessionId: string,
+): string | null {
+  for (let index = store.transcript_events.length - 1; index >= 0; index -= 1) {
+    const event = store.transcript_events[index];
+    if (!isRecord(event) || stringField(event, "session_id") !== sessionId) {
+      continue;
+    }
+    const payload = isRecord(event.payload) ? event.payload : null;
+    if (!payload) {
+      continue;
+    }
+    const kind = stringField(payload, "kind");
+    if (kind === "assistant_message_delta") {
+      return stringField(payload, "message_id");
+    }
+    return null;
+  }
+  return null;
 }
 
 export function appendAssistantDeltaForActiveConversation(
@@ -83,6 +130,21 @@ export function appendAssistantDeltaForActiveConversation(
   }
   const conversation = activeConversation(store);
   const resolvedMessageId = messageId ?? assistantMessageId(conversation);
+  const existing = conversation.messages.find(
+    (message) => message.message_id === resolvedMessageId && message.role === "assistant",
+  );
+  if (existing) {
+    existing.content = `${existing.content ?? ""}${delta}`;
+    existing.timestamp = currentTimestamp();
+  } else {
+    conversation.messages.push({
+      message_id: resolvedMessageId,
+      role: "assistant",
+      content: delta,
+      timestamp: currentTimestamp(),
+    });
+  }
+  conversation.status = "active";
   appendTranscriptEvent(store, sessionId, {
     kind: "assistant_message_delta",
     message_id: resolvedMessageId,

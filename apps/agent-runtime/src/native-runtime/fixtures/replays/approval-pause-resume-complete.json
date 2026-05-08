@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "run_id": "run_golden_approval_pause_resume",
+  "exported_at": "2026-05-07T00:00:00.000Z",
+  "event_count": 6,
+  "conversation_ids": ["conv_golden_phase3_approval"],
+  "execution_session_ids": ["session_golden_phase3_approval"],
+  "sdk_session_ids": ["sdk_golden_phase3_approval"],
+  "parent_run_ids": [],
+  "host_action_runs": [],
+  "approval_requests": [
+    {
+      "approval_request_id": "approval_golden_bash",
+      "run_id": "run_golden_approval_pause_resume",
+      "status": "approved",
+      "machine_context": {
+        "run_id": "run_golden_approval_pause_resume",
+        "runtime_session_id": "sdk_golden_phase3_approval",
+        "runtime_request_id": "gateway_req_golden_approval"
+      }
+    }
+  ],
+  "artifact_ids": [],
+  "artifact_refs": [],
+  "diagnostics": {
+    "duplicate_event_ids": [],
+    "missing_parent_event_ids": [],
+    "missing_sequence_numbers": [],
+    "out_of_order_event_ids": []
+  },
+  "events": [
+    {
+      "event_id": "evt_approval_001_user",
+      "session_id": "session_golden_phase3_approval",
+      "parent_event_id": null,
+      "run_id": "run_golden_approval_pause_resume",
+      "sequence": 1,
+      "payload": {
+        "kind": "user_message",
+        "content": "Run the approved shell check and report the result.",
+        "run_id": "run_golden_approval_pause_resume"
+      }
+    },
+    {
+      "event_id": "evt_approval_002_tool",
+      "session_id": "session_golden_phase3_approval",
+      "parent_event_id": "evt_approval_001_user",
+      "run_id": "run_golden_approval_pause_resume",
+      "sequence": 2,
+      "payload": {
+        "kind": "tool_invocation",
+        "invocation": {
+          "invocation_id": "toolu_approval_bash",
+          "tool_name": "Bash",
+          "status": "waiting_approval",
+          "input_summary": "printf phase3"
+        },
+        "run_id": "run_golden_approval_pause_resume"
+      }
+    },
+    {
+      "event_id": "evt_approval_003_waiting",
+      "session_id": "session_golden_phase3_approval",
+      "parent_event_id": "evt_approval_002_tool",
+      "run_id": "run_golden_approval_pause_resume",
+      "sequence": 3,
+      "payload": {
+        "kind": "session_state_changed",
+        "summary": "Approval requested for Bash execution.",
+        "approval_request_id": "approval_golden_bash",
+        "status": "approval_wait",
+        "run_id": "run_golden_approval_pause_resume"
+      }
+    },
+    {
+      "event_id": "evt_approval_004_resumed",
+      "session_id": "session_golden_phase3_approval",
+      "parent_event_id": "evt_approval_003_waiting",
+      "run_id": "run_golden_approval_pause_resume",
+      "sequence": 4,
+      "payload": {
+        "kind": "session_state_changed",
+        "summary": "Approval approved; resuming the same run.",
+        "approval_request_id": "approval_golden_bash",
+        "status": "approval_approved",
+        "run_id": "run_golden_approval_pause_resume"
+      }
+    },
+    {
+      "event_id": "evt_approval_005_result",
+      "session_id": "session_golden_phase3_approval",
+      "parent_event_id": "evt_approval_004_resumed",
+      "run_id": "run_golden_approval_pause_resume",
+      "sequence": 5,
+      "payload": {
+        "kind": "tool_result",
+        "invocation_id": "toolu_approval_bash",
+        "status": "succeeded",
+        "summary": "Bash command completed after approval.",
+        "run_id": "run_golden_approval_pause_resume"
+      }
+    },
+    {
+      "event_id": "evt_approval_006_assistant",
+      "session_id": "session_golden_phase3_approval",
+      "parent_event_id": "evt_approval_005_result",
+      "run_id": "run_golden_approval_pause_resume",
+      "sequence": 6,
+      "payload": {
+        "kind": "assistant_message",
+        "content": "The approved shell check completed successfully.",
+        "run_id": "run_golden_approval_pause_resume"
+      }
+    }
+  ]
+}
