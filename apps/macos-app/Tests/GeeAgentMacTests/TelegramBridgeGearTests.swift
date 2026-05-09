@@ -2050,6 +2050,95 @@ final class TelegramBridgeGearTests: XCTestCase {
     }
 
     @MainActor
+    func testCodexRemoteCallbackStartDoesNotWaitForCallbackAcknowledgement() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-config-store-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let fakeCodex = directory.appendingPathComponent("codex")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try "#!/bin/sh\nexit 0\n".write(to: fakeCodex, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeCodex.path)
+        let sender = RecordingTelegramBridgeSender(
+            updates: [
+                try telegramTextUpdate(
+                    updateID: 911,
+                    messageID: 21,
+                    chatID: "7973901539",
+                    fromUserID: "7973901539",
+                    text: "/newcodex start from button"
+                )
+            ],
+            sendResult: .success(telegramMessageID: "36", sentAt: "2026-05-06T07:28:59Z")
+        )
+        let database = TelegramBridgeFileDatabase(dataDirectoryURL: directory)
+        try database.saveConfig(
+            TelegramBridgeConfigFile(
+                accounts: [
+                    TelegramBridgeAccountConfig(
+                        id: "codex_remote_default",
+                        role: "codex_remote",
+                        botUsername: nil,
+                        transport: .init(mode: "polling"),
+                        security: .init(
+                            allowUserIds: ["7973901539"],
+                            allowChatIds: [],
+                            requirePairing: false,
+                            groupPolicy: "deny"
+                        ),
+                        push: nil,
+                        codex: .init(threadSource: "file_scan", sendMode: "cli_resume")
+                    )
+                ],
+                pushChannels: []
+            )
+        )
+        let tokenStore = TelegramBridgeTokenStore(storageURL: directory.appendingPathComponent("tokens.json"))
+        try tokenStore.saveToken("123456:secret", accountID: "codex_remote_default")
+        let runner = RecordingGearCommandRunner()
+        let codexRemote = TelegramCodexRemoteBridge(
+            codexHomeURL: directory.appendingPathComponent(".codex", isDirectory: true),
+            codexBinaryURL: fakeCodex,
+            telegramSessionRegistryURL: directory.appendingPathComponent("telegram-created-sessions.json"),
+            runner: runner,
+            timeoutSeconds: 5
+        )
+        let store = TelegramBridgeGearStore(
+            database: database,
+            tokenStore: tokenStore,
+            sender: sender,
+            codexRemote: codexRemote
+        )
+
+        await store.pollInboundOnce { _ -> String? in nil }
+        XCTAssertEqual(sender.sentMessages.count, 1)
+        XCTAssertTrue(telegramButtonsInMessage(sender.sentMessages[0]).contains { $0.callbackData == "confirm:newcodex" })
+
+        sender.suspendCallbackAnswers = true
+        sender.updates = [
+            try telegramCallbackUpdate(
+                updateID: 912,
+                callbackID: "callback-start",
+                messageID: 36,
+                chatID: "7973901539",
+                fromUserID: "7973901539",
+                data: "confirm:newcodex"
+            )
+        ]
+
+        await store.pollInboundOnce { _ -> String? in nil }
+        for _ in 0..<10 where sender.callbackAnswers.isEmpty {
+            await Task.yield()
+        }
+        sender.releaseSuspendedCallbackAnswers()
+
+        XCTAssertEqual(sender.callbackAnswers.map(\.callbackQueryID), ["callback-start"])
+        XCTAssertEqual(runner.calls.count, 1)
+        XCTAssertEqual(sender.sentMessages.count, 2)
+        XCTAssertTrue(sender.sentMessages[1].text.contains("Codex replied, but the new session id could not be captured"))
+    }
+
+    @MainActor
     func testCodexRemoteUnavailableAppServerModesFailWithoutCliFallback() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("telegram-codex-remote-\(UUID().uuidString)", isDirectory: true)
@@ -2348,10 +2437,18 @@ private final class RecordingTelegramBridgeSender: TelegramBridgeSending {
         var caption: String?
     }
 
+    struct CallbackAnswer {
+        var callbackQueryID: String
+        var text: String?
+    }
+
     var updates: [TelegramBridgeSender.Update]
     var sentMessages: [SentMessage] = []
     var sentLocalFiles: [SentLocalFile] = []
     var commandMenuUpdates: [[TelegramBridgeBotCommand]] = []
+    var callbackAnswers: [CallbackAnswer] = []
+    var suspendCallbackAnswers = false
+    private var suspendedCallbackAnswerContinuations: [CheckedContinuation<Void, Never>] = []
     var sendResult: TelegramBridgeSender.Result
 
     init(
@@ -2416,7 +2513,21 @@ private final class RecordingTelegramBridgeSender: TelegramBridgeSending {
         commandMenuUpdates.append(commands)
     }
 
-    func answerCallbackQuery(token: String, callbackQueryID: String, text: String?) async throws {}
+    func answerCallbackQuery(token: String, callbackQueryID: String, text: String?) async throws {
+        callbackAnswers.append(.init(callbackQueryID: callbackQueryID, text: text))
+        if suspendCallbackAnswers {
+            await withCheckedContinuation { continuation in
+                suspendedCallbackAnswerContinuations.append(continuation)
+            }
+        }
+    }
+
+    func releaseSuspendedCallbackAnswers() {
+        let continuations = suspendedCallbackAnswerContinuations
+        suspendedCallbackAnswerContinuations = []
+        suspendCallbackAnswers = false
+        continuations.forEach { $0.resume() }
+    }
 }
 
 private final class HangingTelegramBridgeSender: TelegramBridgeSending {
@@ -2543,6 +2654,43 @@ private func writeCodexRemoteHugeSessionMeta(
 
 private func telegramButtons(_ reply: TelegramCodexRemoteReply) -> [TelegramBridgeInlineKeyboardButton] {
     reply.replyMarkup?.inlineKeyboard.flatMap { $0 } ?? []
+}
+
+private func telegramButtonsInMessage(_ message: RecordingTelegramBridgeSender.SentMessage) -> [TelegramBridgeInlineKeyboardButton] {
+    message.replyMarkup?.inlineKeyboard.flatMap { $0 } ?? []
+}
+
+private func telegramCallbackUpdate(
+    updateID: Int,
+    callbackID: String,
+    messageID: Int,
+    chatID: String,
+    fromUserID: String,
+    data: String,
+    chatType: String = "private"
+) throws -> TelegramBridgeSender.Update {
+    let payload: [String: Any] = [
+        "update_id": updateID,
+        "callback_query": [
+            "id": callbackID,
+            "from": [
+                "id": fromUserID,
+                "username": "telegram_user"
+            ],
+            "message": [
+                "message_id": messageID,
+                "chat": [
+                    "id": chatID,
+                    "type": chatType
+                ],
+                "date": 1_778_000_000,
+                "text": "Confirm starting a new Codex session"
+            ],
+            "data": data
+        ]
+    ]
+    let data = try JSONSerialization.data(withJSONObject: payload)
+    return try JSONDecoder().decode(TelegramBridgeSender.Update.self, from: data)
 }
 
 private final class RecordingGearCommandRunner: GearCommandRunning, @unchecked Sendable {

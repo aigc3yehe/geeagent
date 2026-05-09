@@ -699,7 +699,7 @@ final class TelegramBridgeGearStore: ObservableObject {
                     }
                     let security = TelegramBridgeGateway.authorize(account: account, envelope: envelope)
                     if let callbackQueryID = update.callbackQuery?.id {
-                        try? await sender.answerCallbackQuery(
+                        acknowledgeCallbackQuery(
                             token: token,
                             callbackQueryID: callbackQueryID,
                             text: security.isAllowed ? nil : "Not authorized"
@@ -911,6 +911,16 @@ final class TelegramBridgeGearStore: ObservableObject {
     private func invalidateCommandMenuCache(accountID: String) {
         configuredCommandMenuSignaturesByAccount = configuredCommandMenuSignaturesByAccount.filter { key, _ in
             !key.hasPrefix("\(accountID):")
+        }
+    }
+
+    private func acknowledgeCallbackQuery(token: String, callbackQueryID: String, text: String?) {
+        Task { @MainActor [sender] in
+            try? await sender.answerCallbackQuery(
+                token: token,
+                callbackQueryID: callbackQueryID,
+                text: text
+            )
         }
     }
 
