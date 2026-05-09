@@ -7,16 +7,26 @@ type ParsedArgs = {
   command?: string;
   args: string[];
   configDir?: string;
+  parentPid?: number;
 };
 
 function parseArgs(rawArgs: string[]): ParsedArgs {
   const args: string[] = [];
   let configDir: string | undefined;
+  let parentPid: number | undefined;
 
   for (let index = 0; index < rawArgs.length; index += 1) {
     const value = rawArgs[index];
     if (value === "--config-dir") {
       configDir = rawArgs[index + 1];
+      index += 1;
+      continue;
+    }
+    if (value === "--parent-pid") {
+      const parsedPid = Number(rawArgs[index + 1]);
+      if (Number.isInteger(parsedPid) && parsedPid > 0) {
+        parentPid = parsedPid;
+      }
       index += 1;
       continue;
     }
@@ -27,12 +37,13 @@ function parseArgs(rawArgs: string[]): ParsedArgs {
     command: args[0],
     args: args.slice(1),
     configDir,
+    parentPid,
   };
 }
 
 function printUsage(): void {
   process.stderr.write(
-    "usage: native-runtime <command> [args] [--config-dir <path>]\n" +
+    "usage: native-runtime <command> [args] [--config-dir <path>] [--parent-pid <pid>]\n" +
       "commands: snapshot, list-agent-profiles, create-conversation, " +
       "set-active-conversation, delete-conversation, set-active-agent-profile, " +
       "install-agent-pack, reload-agent-profile, delete-agent-profile, " +
@@ -61,7 +72,14 @@ async function main(): Promise<void> {
     if (parsed.args.length > 0) {
       throw new Error("serve does not accept positional arguments");
     }
-    await runNativeRuntimeServer({ configDir: parsed.configDir });
+    try {
+      await runNativeRuntimeServer({
+        configDir: parsed.configDir,
+        parentPid: parsed.parentPid,
+      });
+    } finally {
+      await shutdownSdkRuntime();
+    }
     return;
   }
 

@@ -35,6 +35,7 @@ final class WorkbenchStore {
     }
 
     let runtimeClient: any WorkbenchRuntimeClient
+    let audioCapture = AudioCaptureCoordinator()
     private var conversationTitleOverrides: [ConversationThread.ID: String] = [:]
     private var pendingChatTurn: PendingChatTurn?
     private var scheduledHostActionBatches: Set<String> = []
@@ -76,6 +77,9 @@ final class WorkbenchStore {
     var isSavingChatRoutingSettings = false
     var isLoadingRuntimeRunInspector = false
     var chatRoutingSettings: ChatRoutingSettings?
+    var providerSecretSettings = ProviderSecretSettings.defaultSettings
+    var isLoadingProviderSecretSettings = false
+    var savingProviderSecretIDs: Set<String> = []
     var selectedRuntimeRunProjection: WorkbenchRuntimeRunProjection?
     var selectedRuntimeRunWait: WorkbenchRuntimeRunWaitClassification?
     var runtimeRunInspectorErrorMessage: String?
@@ -191,7 +195,77 @@ final class WorkbenchStore {
     func shutdownRuntime() {
         liveSnapshotPollingTask?.cancel()
         externalInvocationPollingTask?.cancel()
+        TelegramBridgeGearStore.shared.stopInboundService()
         (runtimeClient as? NativeWorkbenchRuntimeClient)?.shutdown()
+    }
+
+    func startEnabledGearBackgroundServices() {
+        startTelegramBridgeInboundServiceIfEnabled()
+    }
+
+    func setGearEnabled(_ isEnabled: Bool, gearID: String) {
+        GearHost.setEnabled(isEnabled, gearID: gearID)
+        if isEnabled {
+            startBackgroundServiceIfNeeded(for: gearID)
+        } else {
+            stopBackgroundServiceIfNeeded(for: gearID)
+            closeDisabledGearSurfaceIfNeeded(gearID: gearID)
+        }
+    }
+
+    private func startBackgroundServiceIfNeeded(for gearID: String) {
+        switch gearID {
+        case TelegramBridgeGearDescriptor.gearID:
+            startTelegramBridgeInboundServiceIfEnabled()
+        default:
+            break
+        }
+    }
+
+    private func stopBackgroundServiceIfNeeded(for gearID: String) {
+        switch gearID {
+        case TelegramBridgeGearDescriptor.gearID:
+            TelegramBridgeGearStore.shared.stopInboundService()
+        default:
+            break
+        }
+    }
+
+    private func closeDisabledGearSurfaceIfNeeded(gearID: String) {
+        if presentedStandaloneModuleID == gearID {
+            closeStandaloneModule()
+        }
+        if selectedExtension == .app(gearID) {
+            selectedExtension = firstSelectableExtensionSelection(excluding: gearID)
+        }
+    }
+
+    private func firstSelectableExtensionSelection(excluding gearID: String? = nil) -> WorkbenchExtensionSelection? {
+        firstSelectableInstalledApp(excluding: gearID).map { .app($0.id) }
+            ?? agentSkins.first.map { .skin($0.id) }
+    }
+
+    private func firstSelectableInstalledApp(excluding gearID: String? = nil) -> InstalledAppRecord? {
+        installedApps.first { app in
+            app.id != gearID && isSelectableInstalledApp(app)
+        }
+    }
+
+    private func isSelectableInstalledApp(_ app: InstalledAppRecord) -> Bool {
+        !app.isGearPackage || GearHost.isEnabled(gearID: app.id)
+    }
+
+    private func startTelegramBridgeInboundServiceIfEnabled() {
+        guard GearHost.isEnabled(gearID: TelegramBridgeGearDescriptor.gearID) else {
+            TelegramBridgeGearStore.shared.stopInboundService()
+            return
+        }
+        TelegramBridgeGearStore.shared.startInboundService { [weak self] payload in
+            guard let self else {
+                throw RuntimeProcessError.runtimeUnavailable("GeeAgent workbench store is unavailable for Telegram channel ingress.")
+            }
+            return try await self.submitTelegramChannelMessage(payload)
+        }
     }
 
     var homeSummary: WorkbenchHomeSummary {
@@ -481,8 +555,9 @@ final class WorkbenchStore {
     }
 
     var selectedInstalledApp: InstalledAppRecord? {
-        guard case let .app(id) = selectedExtension else { return installedApps.first }
-        return installedApps.first(where: { $0.id == id }) ?? installedApps.first
+        guard case let .app(id) = selectedExtension else { return firstSelectableInstalledApp() }
+        let app = installedApps.first(where: { $0.id == id })
+        return app.flatMap { isSelectableInstalledApp($0) ? $0 : nil } ?? firstSelectableInstalledApp()
     }
 
     var selectedAgentSkin: AgentSkinRecord? {
@@ -785,6 +860,86 @@ final class WorkbenchStore {
                 await MainActor.run {
                     self?.lastErrorMessage = error.localizedDescription
                     self?.isSavingChatRoutingSettings = false
+                }
+            }
+        }
+    }
+
+    func loadProviderSecretSettings() {
+        guard !isLoadingProviderSecretSettings else {
+            return
+        }
+
+        isLoadingProviderSecretSettings = true
+        lastErrorMessage = nil
+        let runtimeClient = self.runtimeClient
+
+        Task { [weak self, runtimeClient] in
+            do {
+                let settings = try await runtimeClient.loadProviderSecretSettings()
+                await MainActor.run {
+                    self?.providerSecretSettings = settings
+                    self?.isLoadingProviderSecretSettings = false
+                }
+            } catch {
+                await MainActor.run {
+                    self?.lastErrorMessage = error.localizedDescription
+                    self?.isLoadingProviderSecretSettings = false
+                }
+            }
+        }
+    }
+
+    func saveProviderAPIKey(providerID: String, apiKey: String) {
+        guard !savingProviderSecretIDs.contains(providerID) else {
+            return
+        }
+
+        savingProviderSecretIDs.insert(providerID)
+        lastErrorMessage = nil
+        let runtimeClient = self.runtimeClient
+
+        Task { [weak self, runtimeClient, providerID, apiKey] in
+            do {
+                let settings = try await runtimeClient.saveProviderAPIKey(
+                    providerID: providerID,
+                    apiKey: apiKey
+                )
+                await MainActor.run {
+                    guard let self else { return }
+                    self.providerSecretSettings = settings
+                    self.savingProviderSecretIDs.remove(providerID)
+                }
+            } catch {
+                await MainActor.run {
+                    self?.lastErrorMessage = error.localizedDescription
+                    self?.savingProviderSecretIDs.remove(providerID)
+                }
+            }
+        }
+    }
+
+    func clearProviderAPIKey(providerID: String) {
+        guard !savingProviderSecretIDs.contains(providerID) else {
+            return
+        }
+
+        savingProviderSecretIDs.insert(providerID)
+        lastErrorMessage = nil
+        let runtimeClient = self.runtimeClient
+
+        Task { [weak self, runtimeClient, providerID] in
+            do {
+                let settings = try await runtimeClient.clearProviderAPIKey(providerID: providerID)
+                await MainActor.run {
+                    guard let self else { return }
+                    self.providerSecretSettings = settings
+                    self.savingProviderSecretIDs.remove(providerID)
+                }
+            } catch {
+                await MainActor.run {
+                    self?.lastErrorMessage = error.localizedDescription
+                    self?.savingProviderSecretIDs.remove(providerID)
                 }
             }
         }
@@ -1695,6 +1850,7 @@ final class WorkbenchStore {
         for payload: TelegramChannelMessagePayload,
         in snapshot: WorkbenchSnapshot
     ) -> String? {
+        let currentMessageIsResetCommand = isTelegramNewConversationCommand(payload.message.text)
         let messages = snapshot.conversations
             .first(where: \.isActive)?
             .visibleMessages ?? []
@@ -1708,6 +1864,7 @@ final class WorkbenchStore {
                     message.role == .assistant &&
                         message.kind == .chat &&
                         !message.isSeedPlaceholder &&
+                        (currentMessageIsResetCommand || !isTelegramNewConversationReply(message.content)) &&
                         !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 }?
                 .content
@@ -1717,6 +1874,19 @@ final class WorkbenchStore {
         }
         let quickReply = snapshot.quickReply.trimmingCharacters(in: .whitespacesAndNewlines)
         return quickReply.isEmpty ? nil : quickReply
+    }
+
+    private func isTelegramNewConversationCommand(_ text: String) -> Bool {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .range(
+                of: #"^/new(?:@[A-Za-z0-9_]{1,64})?(?:\s|$)"#,
+                options: [.regularExpression, .caseInsensitive]
+            ) != nil
+    }
+
+    private func isTelegramNewConversationReply(_ text: String) -> Bool {
+        text.trimmingCharacters(in: .whitespacesAndNewlines) ==
+            "Started a new Telegram conversation. Previous Telegram context has been cleared."
     }
 
     var canCreateConversation: Bool {
@@ -2774,22 +2944,32 @@ final class WorkbenchStore {
         externalInvocationPollingTask?.cancel()
         let runtimeClient = self.runtimeClient
         externalInvocationPollingTask = Task { [weak self, runtimeClient] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 500_000_000)
                 if Task.isCancelled {
                     return
                 }
+                let currentSnapshot = await MainActor.run { [weak self] in
+                    self?.snapshot
+                }
+                guard let currentSnapshot else {
+                    return
+                }
                 let latestSnapshot = await Task.detached(priority: .utility) {
-                    runtimeClient.loadLiveSnapshot()
+                    runtimeClient.loadExternalInvocationSnapshot(from: currentSnapshot)
                 }.value
-                guard latestSnapshot.externalInvocations.contains(where: { $0.status == .pending }) else {
-                    continue
+                let hasPendingExternalInvocation = latestSnapshot.externalInvocations.contains { $0.status == .pending }
+                let externalInvocationsChanged = latestSnapshot.externalInvocations != currentSnapshot.externalInvocations
+                if externalInvocationsChanged || hasPendingExternalInvocation {
+                    await MainActor.run {
+                        guard let self else { return }
+                        self.snapshot = latestSnapshot
+                        if hasPendingExternalInvocation {
+                            self.applyExternalInvocations(latestSnapshot.externalInvocations)
+                        }
+                    }
                 }
-                await MainActor.run {
-                    guard let self else { return }
-                    self.snapshot = latestSnapshot
-                    self.applyExternalInvocations(latestSnapshot.externalInvocations)
-                }
+                try? await Task.sleep(nanoseconds: hasPendingExternalInvocation ? 1_000_000_000 : 5_000_000_000)
             }
         }
     }
@@ -2927,22 +3107,21 @@ final class WorkbenchStore {
 
         switch selectedExtension {
         case let .some(.app(id)):
-            if installedApps.contains(where: { $0.id == id }) {
+            if let app = installedApps.first(where: { $0.id == id }),
+               isSelectableInstalledApp(app) {
                 normalizedSelection = .app(id)
             } else {
-                normalizedSelection = installedApps.first.map { .app($0.id) }
-                    ?? agentSkins.first.map { .skin($0.id) }
+                normalizedSelection = firstSelectableExtensionSelection()
             }
         case let .some(.skin(id)):
             if agentSkins.contains(where: { $0.id == id }) {
                 normalizedSelection = .skin(id)
             } else {
                 normalizedSelection = agentSkins.first.map { .skin($0.id) }
-                    ?? installedApps.first.map { .app($0.id) }
+                    ?? firstSelectableInstalledApp().map { .app($0.id) }
             }
         case .none:
-            normalizedSelection = installedApps.first.map { .app($0.id) }
-                ?? agentSkins.first.map { .skin($0.id) }
+            normalizedSelection = firstSelectableExtensionSelection()
         }
 
         if selectedExtension != normalizedSelection {

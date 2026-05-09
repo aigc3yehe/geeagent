@@ -7,6 +7,7 @@ struct SettingsView: View {
     @State private var isConfirmingHighestAuthorization = false
     @State private var selectedProvider = ""
     @State private var modelName = ""
+    @State private var providerKeyDrafts: [String: String] = [:]
     @State private var skillSourceError: SettingsFeedbackMessage?
 
     var body: some View {
@@ -17,6 +18,12 @@ struct SettingsView: View {
                     .padding(.top)
 
                 providerRoutingPanel
+                    .padding(.horizontal)
+
+                providerKeysPanel
+                    .padding(.horizontal)
+
+                audioTranscriptionPanel
                     .padding(.horizontal)
 
                 conversationRoutingPanel
@@ -36,6 +43,7 @@ struct SettingsView: View {
             if store.chatRoutingSettings == nil {
                 store.loadChatRoutingSettings()
             }
+            store.loadProviderSecretSettings()
         }
         .onChange(of: store.chatRoutingSettings) { _, _ in
             syncRoutingDraft()
@@ -206,6 +214,178 @@ struct SettingsView: View {
         }
     }
 
+    private var audioTranscriptionPanel: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("Speech To Text", systemImage: "waveform.and.mic")
+                    .font(.geeDisplaySemibold(18))
+
+                Spacer()
+
+                Text(store.audioCapture.selectedProvider.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.blue)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.blue.opacity(0.12), in: Capsule())
+            }
+
+            Text("Choose the default STT service used by Chat voice input and the Audio Capture shortcut bar. Realtime transcription is used only when the selected service reports streaming support.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 12) {
+                GridRow {
+                    Text("Default STT Service")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Picker("Default STT service", selection: audioProviderBinding) {
+                        ForEach(SpeechTranscriptionProviderID.allCases) { provider in
+                            Text(provider.title).tag(provider)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 260, alignment: .leading)
+                }
+
+                GridRow {
+                    Text("Status")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(store.audioCapture.selectedProvider.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 0.8)
+        }
+    }
+
+    private var providerKeysPanel: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("Provider Keys", systemImage: "key")
+                    .font(.geeDisplaySemibold(18))
+
+                Spacer()
+
+                if store.isLoadingProviderSecretSettings {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Text("\(configuredProviderKeyCount) configured")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(configuredProviderKeyCount > 0 ? Color.green : Color.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            (configuredProviderKeyCount > 0 ? Color.green : Color.secondary).opacity(0.12),
+                            in: Capsule()
+                        )
+                }
+            }
+
+            Text("Keys are saved only in GeeAgent's local app settings file, not in system Keychain or environment variables. Existing values are never shown; paste a new key to replace one.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(spacing: 10) {
+                ForEach(providerKeyRows) { status in
+                    providerKeyRow(status)
+                }
+            }
+
+            HStack {
+                Text("Used by chat/provider routing and online speech providers such as ElevenLabs.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Button("Reload") {
+                    store.loadProviderSecretSettings()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(store.isLoadingProviderSecretSettings)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 0.8)
+        }
+    }
+
+    private func providerKeyRow(_ status: ProviderSecretStatus) -> some View {
+        let isSaving = store.savingProviderSecretIDs.contains(status.providerID)
+        let draft = providerKeyDrafts[status.providerID, default: ""]
+        return HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(status.title)
+                    .font(.subheadline.weight(.semibold))
+                Text(status.sourceTitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(width: 130, alignment: .leading)
+
+            SecureField("Paste API key", text: providerKeyBinding(status.providerID))
+                .textFieldStyle(.roundedBorder)
+                .disabled(isSaving)
+
+            Text(status.apiKeyConfigured ? "Ready" : "Missing")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(status.apiKeyConfigured ? Color.green : Color.orange)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    (status.apiKeyConfigured ? Color.green : Color.orange).opacity(0.12),
+                    in: Capsule()
+                )
+
+            if isSaving {
+                ProgressView()
+                    .controlSize(.small)
+            }
+
+            Button("Save") {
+                store.saveProviderAPIKey(providerID: status.providerID, apiKey: draft)
+                providerKeyDrafts[status.providerID] = ""
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(isSaving || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+            Button("Clear") {
+                store.clearProviderAPIKey(providerID: status.providerID)
+                providerKeyDrafts[status.providerID] = ""
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(isSaving || !status.savedAPIKeyConfigured)
+            .help(status.source == "environment" ? "Remove the saved key. The environment variable will still be used." : "Remove saved key")
+        }
+        .padding(10)
+        .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.white.opacity(0.06), lineWidth: 0.8)
+        }
+    }
+
     private var conversationRoutingPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
@@ -353,6 +533,39 @@ struct SettingsView: View {
         !store.isSavingChatRoutingSettings &&
         !selectedProvider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         !modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var providerKeyRows: [ProviderSecretStatus] {
+        let statuses = store.providerSecretSettings.providers.isEmpty
+            ? ProviderSecretSettings.defaultSettings.providers
+            : store.providerSecretSettings.providers
+        let order = Dictionary(uniqueKeysWithValues: ProviderSecretSettings.managedProviderIDs.enumerated().map { ($0.element, $0.offset) })
+        return statuses.sorted {
+            let leftOrder = order[$0.providerID] ?? Int.max
+            let rightOrder = order[$1.providerID] ?? Int.max
+            if leftOrder != rightOrder {
+                return leftOrder < rightOrder
+            }
+            return $0.title < $1.title
+        }
+    }
+
+    private var configuredProviderKeyCount: Int {
+        providerKeyRows.filter(\.apiKeyConfigured).count
+    }
+
+    private func providerKeyBinding(_ providerID: String) -> Binding<String> {
+        Binding(
+            get: { providerKeyDrafts[providerID, default: ""] },
+            set: { providerKeyDrafts[providerID] = $0 }
+        )
+    }
+
+    private var audioProviderBinding: Binding<SpeechTranscriptionProviderID> {
+        Binding(
+            get: { store.audioCapture.selectedProvider },
+            set: { store.audioCapture.selectedProvider = $0 }
+        )
     }
 
     private var runtimeTint: Color {

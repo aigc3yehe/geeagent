@@ -301,7 +301,9 @@ final class TelegramBridgeGearTests: XCTestCase {
         XCTAssertNil(state.selectedThreadID)
         XCTAssertNil(state.pendingPrompt)
         XCTAssertEqual(state.projectListMode, .all)
+        XCTAssertFalse(state.awaitingNewCodexPrompt)
         XCTAssertTrue(state.lastThreadIDs.isEmpty)
+        XCTAssertNil(state.lastThreadListSource)
 
         state.selectThread("thread-a")
         state.stagePrompt(sessionID: "thread-a", prompt: "please continue")
@@ -310,6 +312,7 @@ final class TelegramBridgeGearTests: XCTestCase {
         XCTAssertEqual(state.selectedThreadID, "thread-a")
         XCTAssertEqual(state.pendingPrompt?.prompt, "please continue")
         XCTAssertEqual(state.lastThreadIDs, ["thread-a", "thread-b"])
+        XCTAssertEqual(state.lastThreadListSource, .desktop)
 
         XCTAssertNil(state.popPendingPrompt(matching: "thread-b"))
         XCTAssertEqual(state.pendingPrompt?.sessionID, "thread-a")
@@ -324,11 +327,24 @@ final class TelegramBridgeGearTests: XCTestCase {
         XCTAssertNil(state.selectedThreadID)
         XCTAssertNil(state.pendingPrompt)
         XCTAssertEqual(state.projectListMode, .tracked)
+        XCTAssertFalse(state.awaitingNewCodexPrompt)
         XCTAssertTrue(state.lastThreadIDs.isEmpty)
+        XCTAssertNil(state.lastThreadListSource)
+
+        state.requestNewCodexPrompt()
+        XCTAssertTrue(state.awaitingNewCodexPrompt)
+        XCTAssertNil(state.lastThreadListSource)
+        state.stageNewCodexPrompt("start fresh")
+        XCTAssertFalse(state.awaitingNewCodexPrompt)
+        XCTAssertEqual(state.pendingPrompt?.sessionID, "newcodex")
+        XCTAssertEqual(state.pendingPrompt?.prompt, "start fresh")
     }
 
     func testCodexRemoteRouterParsesTextAndCallbackRoutes() {
         XCTAssertEqual(TelegramCodexRemoteRouter.route("  /LIST@gee_bot  "), .list)
+        XCTAssertEqual(TelegramCodexRemoteRouter.route("/newcodex start fresh"), .newCodex(prompt: "start fresh"))
+        XCTAssertEqual(TelegramCodexRemoteRouter.route("/mycodex"), .myCodex)
+        XCTAssertEqual(TelegramCodexRemoteRouter.route("/mycodexPage 2"), .myCodexPage(page: 2))
         XCTAssertEqual(TelegramCodexRemoteRouter.route("please continue"), .plainText(prompt: "please continue"))
         XCTAssertEqual(
             TelegramCodexRemoteRouter.route("/send thread-a please continue"),
@@ -349,6 +365,10 @@ final class TelegramBridgeGearTests: XCTestCase {
         XCTAssertEqual(
             TelegramCodexRemoteRouter.route(forCallbackData: "confirm:thread-a"),
             .confirm(selector: "thread-a")
+        )
+        XCTAssertEqual(
+            TelegramCodexRemoteRouter.route(forCallbackData: "mycodexPage:2"),
+            .myCodexPage(page: 2)
         )
         XCTAssertNil(TelegramCodexRemoteRouter.route(forCallbackData: "unknown:1"))
     }
@@ -916,6 +936,48 @@ final class TelegramBridgeGearTests: XCTestCase {
     }
 
     @MainActor
+    func testCodexRemotePollingRegistersNewCodexBotCommands() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-config-store-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sender = RecordingTelegramBridgeSender(
+            updates: [],
+            sendResult: .success(telegramMessageID: "36", sentAt: "2026-05-06T07:28:59Z")
+        )
+        let database = TelegramBridgeFileDatabase(dataDirectoryURL: directory)
+        try database.saveConfig(
+            TelegramBridgeConfigFile(
+                accounts: [
+                    TelegramBridgeAccountConfig(
+                        id: "codex_remote_default",
+                        role: "codex_remote",
+                        botUsername: nil,
+                        transport: .init(mode: "polling"),
+                        security: nil,
+                        push: nil,
+                        codex: .init(threadSource: "file_scan", sendMode: "cli_resume")
+                    )
+                ],
+                pushChannels: []
+            )
+        )
+        let tokenStore = TelegramBridgeTokenStore(storageURL: directory.appendingPathComponent("tokens.json"))
+        try tokenStore.saveToken("123456:secret", accountID: "codex_remote_default")
+        let store = TelegramBridgeGearStore(
+            database: database,
+            tokenStore: tokenStore,
+            sender: sender
+        )
+
+        await store.pollInboundOnce { _ -> String? in nil }
+
+        let commands = try XCTUnwrap(sender.commandMenuUpdates.first).map(\.command)
+        XCTAssertTrue(commands.contains("newcodex"))
+        XCTAssertTrue(commands.contains("mycodex"))
+    }
+
+    @MainActor
     func testConversationDuplicateCheckUsesUpdateIDBeforeMessageID() {
         let store = TelegramBridgeGearStore()
         let existing = TelegramBridgeConversationMessage(
@@ -1145,7 +1207,7 @@ final class TelegramBridgeGearTests: XCTestCase {
         let buttons = projectReply.replyMarkup?.inlineKeyboard.flatMap { $0 } ?? []
         XCTAssertTrue(buttons.contains { $0.callbackData == "open:thread_fast" })
         XCTAssertTrue(buttons.contains { $0.callbackData == "latest:thread_fast" })
-        XCTAssertTrue(buttons.contains { $0.callbackData == "desktop:thread_fast" })
+        XCTAssertFalse(buttons.contains { $0.callbackData == "desktop:thread_fast" })
     }
 
     @MainActor
@@ -1162,7 +1224,6 @@ final class TelegramBridgeGearTests: XCTestCase {
         let nestedURL = projectURL.appendingPathComponent("Sources/App", isDirectory: true)
         try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: nestedURL, withIntermediateDirectories: true)
-        try "visible marker".write(to: projectURL.appendingPathComponent("AGENTS.md"), atomically: true, encoding: .utf8)
 
         try """
         {"timestamp":"2026-05-04T10:00:00.000Z","type":"session_meta","payload":{"id":"visible_one","cwd":"\(nestedURL.path)","originator":"Codex Desktop","timestamp":"2026-05-04T10:00:00.000Z"}}
@@ -1214,15 +1275,53 @@ final class TelegramBridgeGearTests: XCTestCase {
 
         XCTAssertEqual(listReply.status, "codex_success")
         XCTAssertTrue(listReply.text.contains("visible-project"))
-        XCTAssertTrue(listReply.text.contains("2 thread(s)"))
+        XCTAssertTrue(listReply.text.contains("App"))
+        XCTAssertTrue(listReply.text.contains("1 thread(s)"))
         XCTAssertFalse(listReply.text.contains("Hidden subagent"))
         XCTAssertFalse(listReply.text.contains("Hidden CLI"))
 
-        let projectReply = await bridge.reply(for: account, text: "/project 1")
-        XCTAssertTrue(projectReply.text.contains("Visible one"))
-        XCTAssertTrue(projectReply.text.contains("Visible two"))
-        XCTAssertFalse(projectReply.text.contains("Hidden subagent"))
-        XCTAssertFalse(projectReply.text.contains("Hidden CLI"))
+        let firstProjectReply = await bridge.reply(for: account, text: "/project 1")
+        let secondProjectReply = await bridge.reply(for: account, text: "/project 2")
+        let combinedProjectText = [firstProjectReply.text, secondProjectReply.text].joined(separator: "\n")
+        XCTAssertTrue(combinedProjectText.contains("Visible one"))
+        XCTAssertTrue(combinedProjectText.contains("Visible two"))
+        XCTAssertFalse(combinedProjectText.contains("Hidden subagent"))
+        XCTAssertFalse(combinedProjectText.contains("Hidden CLI"))
+    }
+
+    @MainActor
+    func testCodexRemoteThreadListSkipsSyntheticContextTitles() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-codex-remote-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let codexHome = directory.appendingPathComponent(".codex", isDirectory: true)
+        let sessions = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026/05/08", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        let projectURL = directory.appendingPathComponent("power-video-2026", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectURL, withIntermediateDirectories: true)
+        try """
+        {"timestamp":"2026-05-08T04:10:28.377Z","type":"session_meta","payload":{"id":"thread_context_title","cwd":"\(projectURL.path)","originator":"Codex Desktop","timestamp":"2026-05-08T04:10:28.377Z","source":"vscode"}}
+        {"timestamp":"2026-05-08T04:10:28.379Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\\n  <cwd>\(projectURL.path)</cwd>\\n</environment_context>"}]}}
+        {"timestamp":"2026-05-08T04:10:28.380Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# Files mentioned by the user:\\n\\n## gee-power-video: \(projectURL.path)/gee-power-video\\n\\n## My request for Codex:\\nUse the gee power video skill to produce the video."}]}}
+        """.write(
+            to: sessions.appendingPathComponent("rollout-context-title.jsonl", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+        let bridge = TelegramCodexRemoteBridge(
+            codexHomeURL: codexHome,
+            codexBinaryURL: directory.appendingPathComponent("missing-codex")
+        )
+
+        _ = await bridge.reply(for: codexRemoteAccount(), text: "/list", chatID: "chat-1")
+        let projectReply = await bridge.reply(for: codexRemoteAccount(), text: "/project 1", chatID: "chat-1")
+
+        XCTAssertEqual(projectReply.status, "codex_success")
+        XCTAssertTrue(projectReply.text.contains("Use the gee power video skill to produce the video."))
+        XCTAssertFalse(projectReply.text.contains("<environment_context>"))
     }
 
     @MainActor
@@ -1260,6 +1359,175 @@ final class TelegramBridgeGearTests: XCTestCase {
         XCTAssertLessThan(reply.text.count, 320)
         XCTAssertFalse(reply.text.contains(String(repeating: "deep-folder-", count: 8)))
         XCTAssertFalse(reply.text.contains(String(repeating: "Huge title ", count: 8)))
+    }
+
+    @MainActor
+    func testCodexRemoteListUsesPersistedSessionIndexAcrossBridgeRestarts() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-codex-remote-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let codexHome = directory.appendingPathComponent(".codex", isDirectory: true)
+        let sessions = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026/05/09", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        let projectURL = try makeCodexRemoteProjectRoot(directory: directory, name: "cached-index-project")
+        try writeCodexRemoteSession(
+            sessionsDirectory: sessions,
+            id: "cached_index_thread",
+            title: "Cached index thread",
+            cwd: projectURL.path,
+            timestamp: "2026-05-09T08:30:00.000Z"
+        )
+        let sessionIndexURL = directory.appendingPathComponent("codex-remote-session-index.json")
+        let firstBridge = TelegramCodexRemoteBridge(
+            codexHomeURL: codexHome,
+            codexBinaryURL: directory.appendingPathComponent("missing-codex"),
+            sessionIndexURL: sessionIndexURL
+        )
+
+        let firstReply = await firstBridge.reply(for: codexRemoteAccount(), text: "/list", chatID: "chat-1")
+        XCTAssertEqual(firstReply.status, "codex_success")
+        XCTAssertTrue(firstReply.text.contains("cached-index-project"))
+
+        try FileManager.default.removeItem(at: codexHome.appendingPathComponent("sessions", isDirectory: true))
+        let restartedBridge = TelegramCodexRemoteBridge(
+            codexHomeURL: codexHome,
+            codexBinaryURL: directory.appendingPathComponent("missing-codex"),
+            sessionIndexURL: sessionIndexURL
+        )
+
+        let cachedReply = await restartedBridge.reply(
+            for: codexRemoteAccount(),
+            text: "/latest cached_index_thread",
+            chatID: "chat-1"
+        )
+
+        XCTAssertEqual(cachedReply.status, "codex_success")
+        XCTAssertTrue(cachedReply.text.contains("Cached index thread"))
+        XCTAssertTrue(cachedReply.text.contains("No Codex reply found yet."))
+    }
+
+    @MainActor
+    func testCodexRemoteExplicitListRefreshesRecentSessionIndex() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-codex-remote-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let codexHome = directory.appendingPathComponent(".codex", isDirectory: true)
+        let sessions = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026/05/09", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        let oldProjectURL = try makeCodexRemoteProjectRoot(directory: directory, name: "old-project")
+        try writeCodexRemoteSession(
+            sessionsDirectory: sessions,
+            id: "old_project_thread",
+            title: "Old project thread",
+            cwd: oldProjectURL.path,
+            timestamp: "2026-05-09T08:00:00.000Z"
+        )
+        let bridge = TelegramCodexRemoteBridge(
+            codexHomeURL: codexHome,
+            codexBinaryURL: directory.appendingPathComponent("missing-codex")
+        )
+
+        let firstReply = await bridge.reply(for: codexRemoteAccount(), text: "/list", chatID: "chat-1")
+        XCTAssertEqual(firstReply.status, "codex_success")
+        XCTAssertTrue(firstReply.text.contains("old-project"))
+
+        let freshProjectURL = try makeCodexRemoteProjectRoot(directory: directory, name: "fresh-project")
+        try writeCodexRemoteSession(
+            sessionsDirectory: sessions,
+            id: "fresh_project_thread",
+            title: "Fresh project thread",
+            cwd: freshProjectURL.path,
+            timestamp: "2026-05-09T09:00:00.000Z"
+        )
+
+        let refreshedReply = await bridge.reply(for: codexRemoteAccount(), text: "/list", chatID: "chat-1")
+
+        XCTAssertEqual(refreshedReply.status, "codex_success")
+        XCTAssertTrue(refreshedReply.text.contains("fresh-project"))
+    }
+
+    @MainActor
+    func testCodexRemoteListUsesRecordedCwdEvenWhenWorkspaceIsMissing() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-codex-remote-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let codexHome = directory.appendingPathComponent(".codex", isDirectory: true)
+        let sessions = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026/05/09", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        let missingWorkspaceURL = directory.appendingPathComponent("missing-workspace", isDirectory: true)
+        try writeCodexRemoteSession(
+            sessionsDirectory: sessions,
+            id: "missing_workspace_thread",
+            title: "Missing workspace thread",
+            cwd: missingWorkspaceURL.path,
+            timestamp: "2026-05-09T08:30:00.000Z"
+        )
+        let bridge = TelegramCodexRemoteBridge(
+            codexHomeURL: codexHome,
+            codexBinaryURL: directory.appendingPathComponent("missing-codex")
+        )
+
+        let reply = await bridge.reply(for: codexRemoteAccount(), text: "/list", chatID: "chat-1")
+
+        XCTAssertEqual(reply.status, "codex_success")
+        XCTAssertTrue(reply.text.contains("missing-workspace"))
+        XCTAssertFalse(reply.text.contains("Global"))
+    }
+
+    @MainActor
+    func testCodexRemoteListParsesHugeSessionMetaAndPaginatesWorkspaceProjects() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-codex-remote-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let codexHome = directory.appendingPathComponent(".codex", isDirectory: true)
+        let sessions = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026/05/09", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+
+        let parentRepo = try makeCodexRemoteProjectRoot(directory: directory, name: "skills-uniteyoo")
+        let anyaProject = parentRepo.appendingPathComponent("anya2026", isDirectory: true)
+        try FileManager.default.createDirectory(at: anyaProject, withIntermediateDirectories: true)
+        try writeCodexRemoteHugeSessionMeta(
+            sessionsDirectory: sessions,
+            id: "anya_direct_thread",
+            cwd: anyaProject.path,
+            timestamp: "2026-05-09T09:22:00.000Z"
+        )
+
+        for index in 1...7 {
+            let projectURL = try makeCodexRemoteProjectRoot(directory: directory, name: "other-project-\(index)")
+            try writeCodexRemoteSession(
+                sessionsDirectory: sessions,
+                id: "other_project_\(index)",
+                title: "Other \(index)",
+                cwd: projectURL.path,
+                timestamp: String(format: "2026-05-09T09:%02d:00.000Z", index)
+            )
+        }
+
+        let bridge = TelegramCodexRemoteBridge(
+            codexHomeURL: codexHome,
+            codexBinaryURL: directory.appendingPathComponent("missing-codex")
+        )
+
+        let firstPage = await bridge.reply(for: codexRemoteAccount(), text: "/list", chatID: "chat-1")
+
+        XCTAssertEqual(firstPage.status, "codex_success")
+        XCTAssertTrue(firstPage.text.contains("Projects (page 1 of 2):"))
+        XCTAssertTrue(firstPage.text.contains("anya2026"))
+        XCTAssertFalse(firstPage.text.contains("skills-uniteyoo\n   1 thread(s)"))
+        XCTAssertTrue(telegramButtons(firstPage).contains { $0.callbackData == "projectPage:2" })
     }
 
     @MainActor
@@ -1546,6 +1814,242 @@ final class TelegramBridgeGearTests: XCTestCase {
     }
 
     @MainActor
+    func testCodexRemoteSendResolvesMyCodexNumericSelectorToSessionID() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-codex-remote-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let registryURL = directory.appendingPathComponent("telegram-created-sessions.json")
+        let fakeCodex = directory.appendingPathComponent("codex")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try "#!/bin/sh\nexit 0\n".write(to: fakeCodex, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeCodex.path)
+        let account = codexRemoteAccount()
+        let stateKey = "\(account.id):chat-1"
+        let registry = TelegramCodexRemoteBridge.TelegramCreatedSessionRegistry(
+            sessionsByChat: [
+                stateKey: [
+                    "tg_cli_thread": TelegramCodexRemoteBridge.TelegramCreatedSession(
+                        id: "tg_cli_thread",
+                        title: "Telegram CLI thread",
+                        cwd: directory.path,
+                        createdAt: "2026-05-09T08:00:00.000Z",
+                        updatedAt: "2026-05-09T08:00:00.000Z",
+                        filePath: nil,
+                        source: "telegram_cli"
+                    )
+                ]
+            ]
+        )
+        let encodedRegistry = try JSONEncoder().encode(registry)
+        try encodedRegistry.write(to: registryURL, options: .atomic)
+        let runner = RecordingGearCommandRunner()
+        let bridge = TelegramCodexRemoteBridge(
+            codexHomeURL: directory.appendingPathComponent(".codex", isDirectory: true),
+            codexBinaryURL: fakeCodex,
+            telegramSessionRegistryURL: registryURL,
+            runner: runner
+        )
+
+        let myCodexReply = await bridge.reply(for: account, text: "/mycodex", chatID: "chat-1")
+        XCTAssertEqual(myCodexReply.status, "codex_success")
+        XCTAssertTrue(myCodexReply.text.contains("Telegram CLI thread"))
+
+        let sendReply = await bridge.reply(for: account, text: "/send 1 please continue", chatID: "chat-1")
+
+        XCTAssertEqual(sendReply.status, "codex_empty_result")
+        XCTAssertEqual(runner.calls.count, 1)
+        let commandLine = runner.calls[0].arguments.joined(separator: " ")
+        XCTAssertTrue(commandLine.contains("tg_cli_thread"))
+        XCTAssertTrue(commandLine.contains("--skip-git-repo-check"))
+        XCTAssertFalse(commandLine.contains(" '1' -"))
+    }
+
+    @MainActor
+    func testCodexRemoteSendCapsCodexCommandOutput() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-codex-remote-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let codexHome = directory.appendingPathComponent(".codex", isDirectory: true)
+        let sessions = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026/05/09", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        let projectURL = try makeCodexRemoteProjectRoot(directory: directory, name: "bounded-output-project")
+        try writeCodexRemoteSession(
+            sessionsDirectory: sessions,
+            id: "bounded_output_thread",
+            title: "Bounded output thread",
+            cwd: projectURL.path,
+            timestamp: "2026-05-09T08:00:00.000Z"
+        )
+        let longReply = String(repeating: "codex-output ", count: 400)
+        let fakeCodex = directory.appendingPathComponent("codex", isDirectory: false)
+        try """
+        #!/bin/sh
+        out=""
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = "-o" ]; then
+            shift
+            out="$1"
+          fi
+          shift || break
+        done
+        cat >/dev/null
+        if [ -n "$out" ]; then
+          cat > "$out" <<'TEXT'
+        \(longReply)
+        TEXT
+        fi
+        exit 0
+        """.write(to: fakeCodex, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeCodex.path)
+        let bridge = TelegramCodexRemoteBridge(
+            codexHomeURL: codexHome,
+            codexBinaryURL: fakeCodex,
+            timeoutSeconds: 5
+        )
+
+        let reply = await bridge.reply(
+            for: codexRemoteAccount(),
+            text: "/send bounded_output_thread please continue",
+            chatID: "chat-1"
+        )
+
+        XCTAssertEqual(reply.status, "codex_success")
+        XCTAssertTrue(reply.text.contains("...[truncated]"))
+        XCTAssertLessThan(reply.text.count, 2_000)
+    }
+
+    @MainActor
+    func testCodexRemoteNewCodexCreatesRegistrySessionOutsideDesktopList() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-codex-remote-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let codexHome = directory.appendingPathComponent(".codex", isDirectory: true)
+        let sessions = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026/05/09", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        let workspaceURL = try makeCodexRemoteProjectRoot(directory: directory, name: "telegram-cli-workspace")
+        let desktopWorkspaceURL = try makeCodexRemoteProjectRoot(directory: directory, name: "desktop-workspace")
+        try writeCodexRemoteSession(
+            sessionsDirectory: sessions,
+            id: "desktop_thread",
+            title: "Desktop thread",
+            cwd: desktopWorkspaceURL.path,
+            timestamp: "2026-05-09T08:00:00.000Z"
+        )
+        let sessionFileURL = sessions.appendingPathComponent("rollout-tg_new_thread.jsonl", isDirectory: false)
+        let fakeCodex = directory.appendingPathComponent("codex", isDirectory: false)
+        try """
+        #!/bin/sh
+        out=""
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = "-o" ]; then
+            shift
+            out="$1"
+          fi
+          shift || break
+        done
+        cat >/dev/null
+        timestamp="$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")"
+        cat > '\(sessionFileURL.path)' <<JSON
+        {"timestamp":"$timestamp","type":"session_meta","payload":{"id":"tg_new_thread","cwd":"\(workspaceURL.path)","originator":"Codex CLI","timestamp":"$timestamp"}}
+        {"timestamp":"$timestamp","type":"event_msg","payload":{"type":"thread_name_updated","thread_name":"Telegram fresh thread"}}
+        {"timestamp":"$timestamp","type":"event_msg","payload":{"type":"agent_message","message":"New session answer"}}
+        JSON
+        if [ -n "$out" ]; then
+          printf 'New session answer\\n' > "$out"
+        fi
+        exit 0
+        """.write(to: fakeCodex, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeCodex.path)
+        let bridge = TelegramCodexRemoteBridge(
+            codexHomeURL: codexHome,
+            codexBinaryURL: fakeCodex,
+            telegramSessionRegistryURL: directory.appendingPathComponent("telegram-created-sessions.json"),
+            timeoutSeconds: 5
+        )
+        let account = codexRemoteAccount()
+
+        let stagedReply = await bridge.reply(for: account, text: "/newcodex start a fresh task", chatID: "chat-1")
+        XCTAssertEqual(stagedReply.status, "codex_confirmation_required")
+        XCTAssertTrue(stagedReply.text.contains("Confirm starting a new Codex session"))
+        XCTAssertTrue(telegramButtons(stagedReply).contains { $0.callbackData == "confirm:newcodex" })
+
+        let confirmedReply = await bridge.reply(for: account, text: "/confirm newcodex", chatID: "chat-1")
+
+        XCTAssertEqual(confirmedReply.status, "codex_success")
+        XCTAssertTrue(confirmedReply.text.contains("Started new Codex session"))
+        XCTAssertTrue(confirmedReply.text.contains("tg_new_thread"))
+        XCTAssertTrue(confirmedReply.text.contains("New session answer"))
+
+        let desktopListReply = await bridge.reply(for: account, text: "/list", chatID: "chat-1")
+        XCTAssertEqual(desktopListReply.status, "codex_success")
+        XCTAssertFalse(desktopListReply.text.contains("tg_new_thread"))
+        XCTAssertFalse(desktopListReply.text.contains("Telegram fresh thread"))
+
+        let myCodexReply = await bridge.reply(for: account, text: "/mycodex", chatID: "chat-1")
+        XCTAssertEqual(myCodexReply.status, "codex_success")
+        XCTAssertTrue(myCodexReply.text.contains("Telegram fresh thread"))
+        XCTAssertTrue(myCodexReply.text.contains("tg_new_thread"))
+        XCTAssertTrue(telegramButtons(myCodexReply).contains { $0.callbackData == "open:tg_new_thread" })
+
+        let latestByTelegramNumberReply = await bridge.reply(for: account, text: "/latest 1", chatID: "chat-1")
+        XCTAssertEqual(latestByTelegramNumberReply.status, "codex_success")
+        XCTAssertTrue(latestByTelegramNumberReply.text.contains("Latest: Telegram fresh thread"))
+        XCTAssertFalse(latestByTelegramNumberReply.text.contains("Latest: Desktop thread"))
+
+        let latestReply = await bridge.reply(for: account, text: "/latest tg_new_thread", chatID: "chat-1")
+        XCTAssertEqual(latestReply.status, "codex_success")
+        XCTAssertTrue(latestReply.text.contains("Latest: Telegram fresh thread"))
+        XCTAssertTrue(latestReply.text.contains("New session answer"))
+
+        let numericDesktopReply = await bridge.reply(for: account, text: "/desktop 1", chatID: "chat-1")
+        XCTAssertEqual(numericDesktopReply.status, "codex_blocked")
+        XCTAssertTrue(numericDesktopReply.text.contains("Telegram-created Codex CLI session"))
+
+        let desktopReply = await bridge.reply(for: account, text: "/desktop tg_new_thread", chatID: "chat-1")
+        XCTAssertEqual(desktopReply.status, "codex_blocked")
+        XCTAssertTrue(desktopReply.text.contains("Telegram-created Codex CLI session"))
+    }
+
+    @MainActor
+    func testCodexRemoteNewCodexUsesExplicitNonRepoWorkspace() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-codex-remote-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let fakeCodex = directory.appendingPathComponent("codex")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try "#!/bin/sh\nexit 0\n".write(to: fakeCodex, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeCodex.path)
+        let runner = RecordingGearCommandRunner()
+        let bridge = TelegramCodexRemoteBridge(
+            codexHomeURL: directory.appendingPathComponent(".codex", isDirectory: true),
+            codexBinaryURL: fakeCodex,
+            telegramSessionRegistryURL: directory.appendingPathComponent("telegram-created-sessions.json"),
+            runner: runner,
+            timeoutSeconds: 5
+        )
+        let account = codexRemoteAccount()
+
+        let stagedReply = await bridge.reply(for: account, text: "/newcodex start from telegram", chatID: "chat-1")
+        XCTAssertEqual(stagedReply.status, "codex_confirmation_required")
+        let confirmedReply = await bridge.reply(for: account, text: "/confirm newcodex", chatID: "chat-1")
+
+        XCTAssertEqual(confirmedReply.status, "codex_degraded")
+        XCTAssertEqual(runner.calls.count, 1)
+        let commandLine = runner.calls[0].arguments.joined(separator: " ")
+        XCTAssertTrue(commandLine.contains(" exec --cd "))
+        XCTAssertTrue(commandLine.contains("codex-remote-workspace"))
+        XCTAssertTrue(commandLine.contains("--skip-git-repo-check"))
+    }
+
+    @MainActor
     func testCodexRemoteUnavailableAppServerModesFailWithoutCliFallback() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("telegram-codex-remote-\(UUID().uuidString)", isDirectory: true)
@@ -1704,7 +2208,41 @@ final class TelegramBridgeGearTests: XCTestCase {
         XCTAssertTrue(reply.text.contains("Newest Codex reply"))
         let buttons = reply.replyMarkup?.inlineKeyboard.flatMap { $0 } ?? []
         XCTAssertTrue(buttons.contains { $0.callbackData == "latest:thread_latest" })
-        XCTAssertTrue(buttons.contains { $0.callbackData == "desktop:thread_latest" })
+        XCTAssertFalse(buttons.contains { $0.callbackData == "desktop:thread_latest" })
+    }
+
+    @MainActor
+    func testCodexRemoteLatestCapsReturnedAssistantReplyVolume() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-codex-remote-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let codexHome = directory.appendingPathComponent(".codex", isDirectory: true)
+        let sessions = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026/05/09", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        let longReply = String(repeating: "latest-public-reply ", count: 260)
+        try """
+        {"timestamp":"2026-05-09T10:00:00.000Z","type":"session_meta","payload":{"id":"thread_latest_capped","cwd":"/tmp/latest","originator":"Codex Desktop","timestamp":"2026-05-09T10:00:00.000Z"}}
+        {"timestamp":"2026-05-09T10:01:00.000Z","type":"event_msg","payload":{"type":"thread_name_updated","thread_name":"Latest capped thread"}}
+        {"timestamp":"2026-05-09T10:02:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"\(longReply)"}]}}
+        """.write(
+            to: sessions.appendingPathComponent("rollout-thread-latest-capped.jsonl", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+        let bridge = TelegramCodexRemoteBridge(
+            codexHomeURL: codexHome,
+            codexBinaryURL: directory.appendingPathComponent("missing-codex")
+        )
+
+        let reply = await bridge.reply(for: codexRemoteAccount(), text: "/latest thread_latest_capped")
+
+        XCTAssertEqual(reply.status, "codex_success")
+        XCTAssertTrue(reply.text.contains("Latest: Latest capped thread"))
+        XCTAssertTrue(reply.text.contains("...[truncated]"))
+        XCTAssertLessThan(reply.text.count, 2_200)
     }
 
     @MainActor
@@ -1758,7 +2296,7 @@ final class TelegramBridgeGearTests: XCTestCase {
     func testCodexRemoteBotCommandMenuIncludesLegacyCommands() {
         let commands = TelegramBridgeSender.botCommands(for: "codex_remote").map(\.command)
 
-        XCTAssertEqual(commands, ["start", "help", "list", "recent", "tracked", "open", "latest", "desktop", "send", "cancel"])
+        XCTAssertEqual(commands, ["start", "help", "list", "recent", "tracked", "open", "latest", "desktop", "newcodex", "mycodex", "send", "cancel"])
     }
 
     func testTelegramMessageSplitterKeepsChunksUnderTelegramLimit() {
@@ -1967,6 +2505,30 @@ private func writeCodexRemoteSession(
     try """
     {"timestamp":"\(timestamp)","type":"session_meta","payload":{"id":"\(id)","cwd":"\(cwd)","originator":"Codex Desktop","timestamp":"\(timestamp)"}}
     {"timestamp":"\(timestamp)","type":"event_msg","payload":{"type":"thread_name_updated","thread_name":"\(title)"}}
+    """.write(
+        to: fileURL,
+        atomically: true,
+        encoding: .utf8
+    )
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = formatter.date(from: timestamp) {
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: fileURL.path)
+    }
+}
+
+private func writeCodexRemoteHugeSessionMeta(
+    sessionsDirectory: URL,
+    id: String,
+    cwd: String,
+    timestamp: String
+) throws {
+    let fileURL = sessionsDirectory.appendingPathComponent("rollout-\(id).jsonl", isDirectory: false)
+    let escapedCwd = cwd.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+    let hugeInstructions = String(repeating: "large instructions ", count: 10_000)
+    try """
+    {"timestamp":"\(timestamp)","type":"session_meta","payload":{"id":"\(id)","cwd":"\(escapedCwd)","originator":"Codex Desktop","timestamp":"\(timestamp)","source":"vscode","base_instructions":{"text":"\(hugeInstructions)"}}}
+    {"timestamp":"\(timestamp)","type":"event_msg","payload":{"type":"thread_name_updated","thread_name":"Huge meta thread"}}
     """.write(
         to: fileURL,
         atomically: true,

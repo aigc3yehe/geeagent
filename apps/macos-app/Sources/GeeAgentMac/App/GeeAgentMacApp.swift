@@ -7,27 +7,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// and the main window point at the same snapshot.
     let workbenchStore: WorkbenchStore = WorkbenchStore(runtimeClient: NativeWorkbenchRuntimeClient())
     private var menuBarController: MenuBarController?
+    private var audioBarController: AudioBarController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         GeeTypography.registerBundledFonts()
         Self.presentMainWindow()
         Self.presentMainWindow(after: 0.15)
 
-        let controller = MenuBarController(store: workbenchStore)
+        let audioController = AudioBarController(store: workbenchStore)
+        audioController.install()
+        self.audioBarController = audioController
+
+        let controller = MenuBarController(store: workbenchStore, audioBarController: audioController)
         controller.install()
         self.menuBarController = controller
 
         let store = workbenchStore
         Task { @MainActor in
             Self.presentMainWindow()
-            try? await Task.sleep(nanoseconds: 900_000_000)
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
             guard !Task.isCancelled else { return }
-            TelegramBridgeGearStore.shared.startInboundService { [weak store] payload in
-                guard let store else {
-                    throw RuntimeProcessError.runtimeUnavailable("GeeAgent workbench store is unavailable for Telegram channel ingress.")
-                }
-                return try await store.submitTelegramChannelMessage(payload)
-            }
+            store.startEnabledGearBackgroundServices()
         }
     }
 
@@ -41,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         TelegramBridgeGearStore.shared.stopInboundService()
         workbenchStore.shutdownRuntime()
         menuBarController?.uninstall()
+        audioBarController?.uninstall()
     }
 
     static func presentMainWindow() {

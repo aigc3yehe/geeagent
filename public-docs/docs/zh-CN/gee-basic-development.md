@@ -32,6 +32,8 @@ Assistant 文本现在开始通过 transcript event 以 live delta 的形式进�
 
 Workspace chat 现在可以把本地图片、文件和文件夹引用作为结构化 input attachments 提交。完整 Chat 页面和 Home focused chat composer 支持选择文件/文件夹、窗口级拖放本地 file URLs，以及把粘贴的图片暂存为本地 PNG 引用并显示紧凑缩略图。发送后，transcript 会在 user message 上保留紧凑附件 chip，显示类型、状态、可用时的大小和本地路径检查入口；Chat inspector 也会显示附件来源、解析后的路径、访问范围、图片尺寸、限制、错误信息和 `fallback_attempted`。Runtime 会把这些附件记录在 user message 和 transcript event 上，保持 `fallback_attempted: false`，把 attachment manifest 暴露给 active run，并在 scoped-root 和 byte-limit 校验后把 ready 的 PNG/JPEG/GIF/WebP 图片作为 SDK image content block 发送，同时通过本地 gateway 保留为 OpenAI-compatible image parts；文件夹则通过同一轮里的有边界目录快照/列表工具检查，而不是把本地路径或媒体内容塞进普通 chat 文本。Replay projection 会保留 user message 的附件 id 和状态，并把目录快照证据显示为正常的 tool invocation/result 行。对于截图对比文件夹的任务，agent 会自己读图、列出引用文件夹、再对比两边结构；不会使用专门的截图对比工具。普通图片理解和图片文字提取会优先使用模型 vision context；普通 image-only turn 会使用 no-tool chat profile，因此除非用户要求工具级验证，或把图片和本地文件/文件夹上下文一起使用，否则 OCR、文件系统读取和 metadata 探测不可用。图片失败后的短续试消息会继续携带上一张尚未成功处理的 ready image attachment。当配置的 backend model 不支持 vision 时，gateway 会在联系 upstream 前返回 `model_unsupported_multimodal`，不会丢弃图片，也不会尝试 OCR fallback。
 
+Settings 暴露一个统一的默认 STT 服务用于音频转写。Chat 语音输入和 Audio Capture 快捷 Bar 会使用同一个已保存 provider；当前可选项是 Local Whisper、Local SenseVoice 和 ElevenLabs。本地后端缺失时会明确失败，不会自动 fallback 到另一个 provider。Audio Capture Bar 可以从菜单栏面板打开，也可以用 Control+Option+A / Shift+Command+A 打开；麦克风和系统音频权限失败会显示 macOS 当前授权状态、bundle id 和正在运行的 app 路径。权限请求会超时失败，而不是让 bar 一直停在 Starting，并会直接提示 stale TCC entry。
+
 对于 Gear 工作，live SDK run 和 Gee MCP bridge 是必需路径。若 SDK runtime 或 bridge 不可用，GeeAgent 会报告结构化失败，而不是通过另一条 native 路径执行任务。
 
 Host-action completion 现在会在同一个 SDK run 仍然存活时回到该 run。若该 run 已经丢失，GeeAgent 会记录结构化 Gear 结果，并把本轮标记为 failed 或 degraded，而不是再启动一个隐藏的分离 completion turn。

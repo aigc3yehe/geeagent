@@ -641,6 +641,10 @@ private struct RuntimeExternalInvocationDTO: Decodable {
     let args: RuntimeJSONValue?
 }
 
+private struct RuntimeExternalInvocationStoreProjectionDTO: Decodable {
+    let externalInvocations: [RuntimeExternalInvocationDTO]?
+}
+
 private enum RuntimeJSONValue: Decodable {
     case string(String)
     case int(Int)
@@ -886,6 +890,16 @@ private final class AgentRuntimeProcess {
         try decodeSnapshotStandalone(arguments: ["snapshot"])
     }
 
+    func loadExternalInvocations() throws -> [RuntimeExternalInvocationDTO] {
+        let storeURL = applicationSupportRootURL.appendingPathComponent("runtime-store.json", isDirectory: false)
+        guard fileManager.fileExists(atPath: storeURL.path) else {
+            return []
+        }
+        let data = try Data(contentsOf: storeURL, options: [.mappedIfSafe])
+        let projection = try decoder.decode(RuntimeExternalInvocationStoreProjectionDTO.self, from: data)
+        return projection.externalInvocations ?? []
+    }
+
     func createConversation() throws -> RuntimeSnapshotDTO {
         try decodeSnapshot(arguments: ["create-conversation"])
     }
@@ -1037,6 +1051,18 @@ private final class AgentRuntimeProcess {
                 "The agent runtime returned invalid JSON while loading the Xenodia media channel: \(Self.redactSensitiveJSON(raw))"
             )
         }
+    }
+
+    func loadProviderSecretSettings() throws -> ProviderSecretSettings {
+        try ProviderSecretStore().loadSettings()
+    }
+
+    func saveProviderAPIKey(providerID: String, apiKey: String) throws -> ProviderSecretSettings {
+        try ProviderSecretStore().saveAPIKey(apiKey, providerID: providerID)
+    }
+
+    func clearProviderAPIKey(providerID: String) throws -> ProviderSecretSettings {
+        try ProviderSecretStore().clearAPIKey(providerID: providerID)
     }
 
     func saveChatRoutingSettings(_ settings: ChatRoutingSettings) throws -> RuntimeSnapshotDTO {
@@ -1318,7 +1344,12 @@ private final class AgentRuntimeProcess {
         let claudeSdkCliURL = try prepareClaudeSdkCli()
         return RuntimeCommandLaunch(
             executableURL: envExecutableURL,
-            arguments: ["node", entryURL.path] + arguments + ["--config-dir", applicationSupportRootURL.path],
+            arguments: ["node", entryURL.path] + arguments + [
+                "--config-dir",
+                applicationSupportRootURL.path,
+                "--parent-pid",
+                "\(ProcessInfo.processInfo.processIdentifier)"
+            ],
             currentDirectoryURL: safeRuntimeWorkingDirectoryURL,
             fingerprintURL: entryURL,
             environment: nativeRuntimeEnvironment(claudeSdkCliURL: claudeSdkCliURL)
@@ -1707,6 +1738,16 @@ final class NativeWorkbenchRuntimeClient: WorkbenchAttachmentRuntimeClient, @unc
         }
     }
 
+    func loadExternalInvocationSnapshot(from currentSnapshot: WorkbenchSnapshot) -> WorkbenchSnapshot {
+        do {
+            var snapshot = currentSnapshot
+            snapshot.externalInvocations = externalInvocations(from: try runtime.loadExternalInvocations())
+            return snapshot
+        } catch {
+            return currentSnapshot
+        }
+    }
+
     func createConversation(in snapshot: WorkbenchSnapshot) async throws -> WorkbenchSnapshot {
         _ = snapshot
         let nextSnapshot = try await runOffMainThread {
@@ -2022,6 +2063,27 @@ final class NativeWorkbenchRuntimeClient: WorkbenchAttachmentRuntimeClient, @unc
 
     func loadXenodiaMediaBackend() throws -> XenodiaMediaBackend {
         try runtime.loadXenodiaMediaBackend()
+    }
+
+    func loadProviderSecretSettings() async throws -> ProviderSecretSettings {
+        try await runOffMainThread {
+            try self.runtime.loadProviderSecretSettings()
+        }
+    }
+
+    func saveProviderAPIKey(
+        providerID: String,
+        apiKey: String
+    ) async throws -> ProviderSecretSettings {
+        try await runOffMainThread {
+            try self.runtime.saveProviderAPIKey(providerID: providerID, apiKey: apiKey)
+        }
+    }
+
+    func clearProviderAPIKey(providerID: String) async throws -> ProviderSecretSettings {
+        try await runOffMainThread {
+            try self.runtime.clearProviderAPIKey(providerID: providerID)
+        }
     }
 
     func saveChatRoutingSettings(

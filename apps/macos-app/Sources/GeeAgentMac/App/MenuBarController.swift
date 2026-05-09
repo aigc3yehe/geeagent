@@ -7,13 +7,15 @@ import SwiftUI
 @MainActor
 final class MenuBarController {
     private let store: WorkbenchStore
+    private let audioBarController: AudioBarController
     private var statusItem: NSStatusItem?
     private var menuPanel: FloatingPanelWindow?
     private var quickInputPanel: FloatingPanelWindow?
     private var shortcutRegistrar: GlobalShortcutRegistrar?
 
-    init(store: WorkbenchStore) {
+    init(store: WorkbenchStore, audioBarController: AudioBarController) {
         self.store = store
+        self.audioBarController = audioBarController
     }
 
     func install() {
@@ -80,6 +82,13 @@ final class MenuBarController {
                 keyEquivalent: " "
             ).configured(target: self, modifiers: [.option])
         )
+        menu.addItem(
+            NSMenuItem(
+                title: "Voice Input / Audio Capture",
+                action: #selector(showAudioCapture),
+                keyEquivalent: "a"
+            ).configured(target: self, modifiers: [.control, .option])
+        )
         menu.addItem(.separator())
         menu.addItem(
             NSMenuItem(
@@ -114,6 +123,12 @@ final class MenuBarController {
         toggleQuickInput()
     }
 
+    @objc private func showAudioCapture() {
+        menuPanel?.dismiss()
+        quickInputPanel?.dismiss()
+        audioBarController.showAudioBar()
+    }
+
     func toggleQuickInput() {
         if let panel = quickInputPanel, panel.isVisible {
             if panel.isKeyWindow {
@@ -137,13 +152,20 @@ final class MenuBarController {
         if let existing = menuPanel {
             panel = existing
         } else {
-            panel = FloatingPanelWindow(size: CGSize(width: 380, height: 420)) {
+            panel = FloatingPanelWindow(size: CGSize(width: 380, height: 448)) {
                 MenuBarPanelView(
                     store: self.store,
                     onOpenQuickInput: { [weak self] in
                         Task { @MainActor [weak self] in
                             self?.menuPanel?.dismiss()
                             self?.showQuickInputPanel()
+                        }
+                    },
+                    onOpenAudioCapture: { [weak self] in
+                        Task { @MainActor [weak self] in
+                            self?.menuPanel?.dismiss()
+                            self?.quickInputPanel?.dismiss()
+                            self?.audioBarController.showAudioBar()
                         }
                     },
                     onOpenMainWindow: { [weak self] section in

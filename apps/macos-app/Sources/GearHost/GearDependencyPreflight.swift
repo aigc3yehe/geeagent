@@ -106,6 +106,7 @@ struct GearShellCommandRunner: GearCommandRunning, Sendable {
 
         let commonPaths = [
             environment["PATH"],
+            "\(NSHomeDirectory())/.local/bin",
             "/opt/homebrew/bin",
             "/usr/local/bin",
             "/usr/bin",

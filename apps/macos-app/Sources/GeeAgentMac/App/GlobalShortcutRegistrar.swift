@@ -1,3 +1,4 @@
+import ApplicationServices
 import AppKit
 import Carbon.HIToolbox
 
@@ -40,6 +41,49 @@ final class GlobalShortcutRegistrar: @unchecked Sendable {
             .quickInputLegacy,
         ]
 
+        /// Dedicated launcher for audio capture. This intentionally does not
+        /// share Quick Input's bindings or panel lifecycle.
+        static let audioCapture = Binding(
+            keyCode: UInt16(kVK_ANSI_A),
+            modifierFlags: [.control, .option]
+        )
+
+        /// A second chord gives audio capture a path around keyboards or
+        /// system features that reserve Control-Option combinations.
+        static let audioCaptureAlternate = Binding(
+            keyCode: UInt16(kVK_ANSI_A),
+            modifierFlags: [.command, .shift]
+        )
+
+        static let audioCaptureBindings: [Binding] = [
+            .audioCapture,
+            .audioCaptureAlternate,
+        ]
+
+        func matches(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags) -> Bool {
+            guard keyCode == self.keyCode else { return false }
+            let relevantFlags: NSEvent.ModifierFlags = [.command, .shift, .option, .control]
+            return modifierFlags.intersection(relevantFlags) ==
+                self.modifierFlags.intersection(relevantFlags)
+        }
+
+        static func modifierFlags(from cgFlags: CGEventFlags) -> NSEvent.ModifierFlags {
+            var flags: NSEvent.ModifierFlags = []
+            if cgFlags.contains(.maskCommand) {
+                flags.insert(.command)
+            }
+            if cgFlags.contains(.maskShift) {
+                flags.insert(.shift)
+            }
+            if cgFlags.contains(.maskAlternate) {
+                flags.insert(.option)
+            }
+            if cgFlags.contains(.maskControl) {
+                flags.insert(.control)
+            }
+            return flags
+        }
+
         var carbonModifiers: UInt32 {
             var modifiers: UInt32 = 0
             if modifierFlags.contains(.command) {
@@ -60,14 +104,28 @@ final class GlobalShortcutRegistrar: @unchecked Sendable {
 
     private var hotKeyRefs: [EventHotKeyRef] = []
     private var eventHandlerRef: EventHandlerRef?
+    private var eventTap: CFMachPort?
+    private var eventTapRunLoopSource: CFRunLoopSource?
     private var localMonitor: Any?
     private var globalMonitor: Any?
     private var lastFireAt: TimeInterval = 0
     private let bindings: [Binding]
     private let handler: @MainActor () -> Void
+    private let hotKeySignature: OSType
+    private let hotKeyIDBase: UInt32
+    private let logLabel: String
 
-    init(bindings: [Binding] = Binding.quickInputBindings, handler: @escaping @MainActor () -> Void) {
+    init(
+        bindings: [Binding] = Binding.quickInputBindings,
+        hotKeySignature: OSType = OSType(UInt32(ascii: "GAGT")),
+        hotKeyIDBase: UInt32 = 1,
+        logLabel: String = "quick-input",
+        handler: @escaping @MainActor () -> Void
+    ) {
         self.bindings = bindings
+        self.hotKeySignature = hotKeySignature
+        self.hotKeyIDBase = hotKeyIDBase
+        self.logLabel = logLabel
         self.handler = handler
     }
 
@@ -81,11 +139,12 @@ final class GlobalShortcutRegistrar: @unchecked Sendable {
         let eventTarget = GetApplicationEventTarget()
         let handlerStatus = InstallEventHandler(
             eventTarget,
-            { _, _, userData in
-                guard let userData else { return noErr }
+            { _, event, userData in
+                guard let userData else { return OSStatus(eventNotHandledErr) }
                 let registrar = Unmanaged<GlobalShortcutRegistrar>
                     .fromOpaque(userData)
                     .takeUnretainedValue()
+                guard registrar.owns(event: event) else { return OSStatus(eventNotHandledErr) }
                 registrar.scheduleFire()
                 return noErr
             },
@@ -95,14 +154,14 @@ final class GlobalShortcutRegistrar: @unchecked Sendable {
             &eventHandlerRef
         )
         if handlerStatus != noErr {
-            NSLog("GeeAgent failed to install quick-input hotkey handler: \(handlerStatus)")
+            NSLog("GeeAgent failed to install \(logLabel) hotkey handler: \(handlerStatus)")
         }
 
         for (index, binding) in bindings.enumerated() {
             var ref: EventHotKeyRef?
             let hotKeyID = EventHotKeyID(
-                signature: OSType(UInt32(ascii: "GAGT")),
-                id: UInt32(index + 1)
+                signature: hotKeySignature,
+                id: hotKeyIDBase + UInt32(index)
             )
             let hotKeyStatus = RegisterEventHotKey(
                 UInt32(binding.keyCode),
@@ -115,13 +174,17 @@ final class GlobalShortcutRegistrar: @unchecked Sendable {
             if hotKeyStatus == noErr, let ref {
                 hotKeyRefs.append(ref)
             } else {
-                NSLog("GeeAgent failed to register global quick-input hotkey \(index + 1): \(hotKeyStatus)")
+                NSLog("GeeAgent failed to register global \(logLabel) hotkey \(index + 1): \(hotKeyStatus)")
             }
         }
 
         if hotKeyRefs.isEmpty {
-            NSLog("GeeAgent could not register any global quick-input hotkeys. Local focused shortcuts will still be monitored.")
+            NSLog("GeeAgent could not register any global \(logLabel) hotkeys. Local focused shortcuts will still be monitored.")
+        } else {
+            NSLog("GeeAgent registered \(hotKeyRefs.count) global \(logLabel) Carbon hotkey(s).")
         }
+
+        installEventTapFallback()
 
         // Fallbacks keep the shortcut usable while GeeAgent is focused even if
         // the global hotkey is unavailable, and can also work system-wide when
@@ -146,6 +209,14 @@ final class GlobalShortcutRegistrar: @unchecked Sendable {
             RemoveEventHandler(eventHandlerRef)
             self.eventHandlerRef = nil
         }
+        if let eventTapRunLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), eventTapRunLoopSource, .commonModes)
+            self.eventTapRunLoopSource = nil
+        }
+        if let eventTap {
+            CFMachPortInvalidate(eventTap)
+            self.eventTap = nil
+        }
         if let localMonitor {
             NSEvent.removeMonitor(localMonitor)
             self.localMonitor = nil
@@ -168,17 +239,92 @@ final class GlobalShortcutRegistrar: @unchecked Sendable {
         }
     }
 
+    private func owns(event: EventRef?) -> Bool {
+        guard let event else { return false }
+        var hotKeyID = EventHotKeyID()
+        let status = GetEventParameter(
+            event,
+            EventParamName(kEventParamDirectObject),
+            EventParamType(typeEventHotKeyID),
+            nil,
+            MemoryLayout<EventHotKeyID>.size,
+            nil,
+            &hotKeyID
+        )
+        guard status == noErr else { return false }
+        let ids = Set((0..<bindings.count).map { hotKeyIDBase + UInt32($0) })
+        return hotKeyID.signature == hotKeySignature && ids.contains(hotKeyID.id)
+    }
+
     private func matches(_ event: NSEvent) -> Bool {
+        matches(keyCode: event.keyCode, modifierFlags: event.modifierFlags)
+    }
+
+    private func matches(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags) -> Bool {
         bindings.contains { binding in
-            guard event.keyCode == binding.keyCode else { return false }
-            let relevantFlags: NSEvent.ModifierFlags = [.command, .shift, .option, .control]
-            return event.modifierFlags.intersection(relevantFlags) ==
-                binding.modifierFlags.intersection(relevantFlags)
+            binding.matches(keyCode: keyCode, modifierFlags: modifierFlags)
         }
+    }
+
+    private func installEventTapFallback() {
+        let promptOptions = [
+            "AXTrustedCheckOptionPrompt": true
+        ] as CFDictionary
+        guard AXIsProcessTrustedWithOptions(promptOptions) else {
+            NSLog("GeeAgent \(logLabel) global event-tap fallback needs Accessibility permission.")
+            return
+        }
+
+        let selfPointer = Unmanaged.passUnretained(self).toOpaque()
+        let mask = CGEventMask(1 << CGEventType.keyDown.rawValue)
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: mask,
+            callback: { _, type, event, userInfo in
+                guard let userInfo else {
+                    return Unmanaged.passUnretained(event)
+                }
+                let registrar = Unmanaged<GlobalShortcutRegistrar>
+                    .fromOpaque(userInfo)
+                    .takeUnretainedValue()
+                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                    registrar.enableEventTap()
+                    return Unmanaged.passUnretained(event)
+                }
+                guard type == .keyDown else {
+                    return Unmanaged.passUnretained(event)
+                }
+                let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+                let modifierFlags = Binding.modifierFlags(from: event.flags)
+                guard registrar.matches(keyCode: keyCode, modifierFlags: modifierFlags) else {
+                    return Unmanaged.passUnretained(event)
+                }
+                registrar.scheduleFire()
+                return nil
+            },
+            userInfo: selfPointer
+        ) else {
+            NSLog("GeeAgent failed to install \(logLabel) global event-tap fallback.")
+            return
+        }
+
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        eventTap = tap
+        eventTapRunLoopSource = source
+        NSLog("GeeAgent installed \(logLabel) global event-tap fallback.")
+    }
+
+    private func enableEventTap() {
+        guard let eventTap else { return }
+        CGEvent.tapEnable(tap: eventTap, enable: true)
     }
 }
 
-private extension UInt32 {
+extension UInt32 {
     init(ascii string: String) {
         self = string.utf8.reduce(0) { ($0 << 8) + UInt32($1) }
     }

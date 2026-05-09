@@ -1,6 +1,7 @@
 protocol WorkbenchRuntimeClient: Sendable {
     func loadSnapshot() -> WorkbenchSnapshot
     func loadLiveSnapshot() -> WorkbenchSnapshot
+    func loadExternalInvocationSnapshot(from currentSnapshot: WorkbenchSnapshot) -> WorkbenchSnapshot
     func createConversation(in snapshot: WorkbenchSnapshot) async throws -> WorkbenchSnapshot
     func activateConversation(
         _ conversationID: ConversationThread.ID,
@@ -72,6 +73,12 @@ protocol WorkbenchRuntimeClient: Sendable {
         _ settings: ChatRoutingSettings,
         in snapshot: WorkbenchSnapshot
     ) async throws -> WorkbenchSnapshot
+    func loadProviderSecretSettings() async throws -> ProviderSecretSettings
+    func saveProviderAPIKey(
+        providerID: String,
+        apiKey: String
+    ) async throws -> ProviderSecretSettings
+    func clearProviderAPIKey(providerID: String) async throws -> ProviderSecretSettings
     func projectRuntimeRun(_ runID: String) async throws -> WorkbenchRuntimeRunProjection
     func classifyRuntimeRunWait(_ runID: String) async throws -> WorkbenchRuntimeRunWaitClassification
 
@@ -239,6 +246,10 @@ extension WorkbenchRuntimeClient {
         loadSnapshot()
     }
 
+    func loadExternalInvocationSnapshot(from currentSnapshot: WorkbenchSnapshot) -> WorkbenchSnapshot {
+        loadLiveSnapshot()
+    }
+
     func cancelActiveRun(in snapshot: WorkbenchSnapshot) async throws -> WorkbenchSnapshot {
         snapshot
     }
@@ -353,6 +364,28 @@ extension WorkbenchRuntimeClient {
         _ = snapshot
         throw RuntimeProcessError.unsupported(
             "This runtime client does not support persona skill sources."
+        )
+    }
+
+    func loadProviderSecretSettings() async throws -> ProviderSecretSettings {
+        ProviderSecretSettings.defaultSettings
+    }
+
+    func saveProviderAPIKey(
+        providerID: String,
+        apiKey: String
+    ) async throws -> ProviderSecretSettings {
+        _ = providerID
+        _ = apiKey
+        throw RuntimeProcessError.unsupported(
+            "This runtime client does not support provider key storage."
+        )
+    }
+
+    func clearProviderAPIKey(providerID: String) async throws -> ProviderSecretSettings {
+        _ = providerID
+        throw RuntimeProcessError.unsupported(
+            "This runtime client does not support provider key storage."
         )
     }
 }

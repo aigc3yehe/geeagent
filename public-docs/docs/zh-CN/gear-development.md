@@ -15,7 +15,7 @@ Gear 是 GeeAgent 的可选内置 app 和首页挂件平台。它的目标不是
 核心目标：
 
 - 一个 gear 是一个独立 package。
-- 一个 gear 可以被复制、导入、默认启用、更新或删除；V1 catalog 不提供关闭 gear 的 UI。
+- 一个 gear 可以被复制、导入、默认启用、独立禁用或重新启用、更新或删除。
 - 删除 gear 文件夹后，重启 GeeAgent 就不再看到这个 gear。
 - 把符合标准的 gear 文件夹放到用户数据目录后，重启或刷新后就能看到这个 gear。
 - 一个损坏、缺失、策略阻止、未安装完成的 gear 不能破坏 GeeAgent chat、task、settings、runtime startup 或其他 gears。
@@ -24,7 +24,7 @@ Gear 是 GeeAgent 的可选内置 app 和首页挂件平台。它的目标不是
 - Gear 自己负责业务逻辑、资源、数据、依赖说明和可被调用的能力声明。
 - 未来 root agent 通过统一控制协议调用 gear，而不是把 gear-specific pseudo-tool 直接塞进 agent runtime。
 
-V1 要保持实用，不做过度复杂的平台设计。V1 的重点是本地复制 / 导入、bundled gears、依赖预检和首次安装、默认启用、native macOS 体验，以及未来 `gear.invoke` 接入准备。V1 catalog 不展示关闭入口；策略级禁用属于内部保护状态，不是普通用户操作。V1 不包含远程市场、支付、评分、评论、远程自动更新或强制开发者签名。
+V1 要保持实用，不做过度复杂的平台设计。V1 的重点是本地复制 / 导入、bundled gears、依赖预检和首次安装、默认启用、用户独立启用/禁用、native macOS 体验，以及未来 `gear.invoke` 接入准备。策略级禁用仍属于内部保护状态，和用户本地启用/禁用选择不同。V1 不包含远程市场、支付、评分、评论、远程自动更新或强制开发者签名。
 
 ## 名词定义
 
@@ -111,7 +111,7 @@ apps/macos-app/Sources/GeeAgentMac/Views/Content/HomeWidgetsView.swift
 - 可以从 bundled resources 和用户 Application Support 扫描 `gear.json`。
 - 无效 manifest 文件夹会降级为 Gears catalog 中的安装异常，而不是让应用崩溃。
 - folder name 必须匹配 manifest id，否则显示为安装异常。
-- Gear 默认启用；内部保留策略禁用状态，但 V1 catalog 不提供用户关闭入口。
+- Gear 默认启用。Gears catalog 提供每个 Gear 的启用/禁用控制；禁用的 Gear 不渲染 Home widget，不暴露 agent capability，也不启动 Gear 自己拥有的后台服务。
 - 有 dependency preflight 和 setup snapshot model。
 - `hyperframes.studio` 已经具备 Node、npm、Hyperframes、FFmpeg、FFprobe 的依赖计划。
 - Gears catalog 已经有检查、安装中、失败、打开等状态。
@@ -123,7 +123,10 @@ apps/macos-app/Sources/GeeAgentMac/Views/Content/HomeWidgetsView.swift
 - `app.icon.forge` 是当前第一方 Gear app。它可以把一张本地源图转换为 macOS app 图标 package，包含圆角安全区渲染、`AppIcon.icns`、`AppIcon.iconset`、`AppIcon.appiconset` 和 1024px 预览图；也可以生成简单的 Gear catalog 图标 package，包含 780x580 的 `assets/icon.png` 列表 tile、`preview-780x580.png` 和 `gear-icon.json`。
 - `todo.manager` 是当前第一方 Gear app。它提供受滴答清单式快速记录启发的原生本地优先任务清单，把 task 和 list 记录写入 `gear-data/todo.manager`，把常见的今天、明天、单一非提醒时段、下周几、明确日期、周末和提醒表达规范化成结构化日期，在获得授权时调度本地提醒通知，并向 GeeAgent 和 Codex bridge 暴露结构化 `todo.create`、`todo.query`、`todo.update`、`todo.delete` 能力。创建能力支持 idempotency key 和短窗口精确重复复用，因此重试不会重复创建同一个逻辑任务。只有提醒、没有 due date 的任务也能进入 Today/Upcoming，查询 payload 会包含 due/start/reminder-only/all-day/timed/overdue/unscheduled 的 schedule summary，原生 inspector 可以新增、编辑、移除和清空绝对时间或相对 due time 的提醒，并显示通知授权状态。重复规则会先作为 metadata 保存，暂不展开成循环任务实例；V1 不包含滴答清单云同步。
 - `power.video.manager` 是当前第一方只读 Gear app。它让用户选择 AI 视频 `runs` 工作区，把每个包含 `script/script-archive.md` 的文件夹视为一个独立项目，并在灵活的脚本元数据旁边提供严格的资产视图，包括角色定妆照、故事板网格、首帧、镜头视频、剪辑渲染、final 视频、成本摘要和显式当前选择。V1 不暴露 agent capabilities。
-- `telegram.bridge` 是当前第一方 Gear。它提供原生 Telegram Bridge 界面、基于 GearHost 且 token 存在 GeeAgent 本地 app data 的 push-only Telegram 投递、主窗口安全的延后 app-started polling service，用于 GeeAgent 直连对话和 Codex Remote 命令，以及 Gee direct 消息的 runtime channel ingress。它的设置界面已经把双向对话 Bot 和单向推送信道分开，标明首次配置必填字段，能用表单里的 bot token 读取最新 Telegram update chat ID 后填入推送目标字段，也能从本地会话历史、runtime channel ingress 历史或 Bot API updates 读取最新 Telegram sender user ID 后填入 Gee/Codex 对话 Bot allowlist，并提供独立的 Telegram Conversations 视图展示 bridge 的收发线程。Gee Direct 支持用 `/new` 重置已绑定的 runtime 对话，能通过上下文相关的原生 GearHost 执行把校验过的本地文件发回当前 Telegram 聊天，也会把 runtime 失败作为 `runtime_failed` 发回同一个 Telegram 聊天，而不是只记录在本地。Push-only 信道现在可以把文本、图片、视频、GIF 和其他可读本地文件发送到已配置的 Telegram 出站目标。入站 Telegram 媒体附件会作为远端 Telegram artifact reference 写入 runtime ingress 和 replay；不支持或无法读取的附件结构会明确失败，bridge 不会下载媒体，也不会把媒体塞进 transcript 文本。Status 输出包含 `gateway_health` 诊断，会报告缺失 token、webhook 尚未就绪的账户、polling offsets、push-channel counts 和 lifecycle readiness（`polling_loop`、`poll_interval_ms`、webhook `not_implemented`），并且不会连接 Telegram 或尝试 fallback 路线。Standalone worker 的 `poll-loop` 也会输出结构化 `poll_loop_started`、`poll_loop_iteration_failed` 和 `poll_loop_stopped` 事件，用于 daemon supervision。Codex Remote 支持 `/start`/`/help`、`/list`/`/recent`、`/tracked`、`/open`、`/latest`、`/desktop`、`/cancel`、`/send <text>` 和 `/send <session_id> <prompt>`，发送提示仍通过明确的 CLI resume mode。Native bridge 会注册 Telegram bot 命令菜单，为分页 project 选择、分页 thread 浏览、Track/Untrack 和 thread 操作发送 inline keyboard 按钮，`/list` 会按 project root 聚合，并且只列出 Codex Desktop 来源的非 subagent 会话，避免 Telegram 暴露 Codex app 工作台里看不到的内部对话。选中 Codex thread 后直接发送普通文本或 `/send <text>` 会先进入 Confirm/Cancel 确认，不会立刻 resume 对应 session。native 和 worker 的 file-scan 列表路径只读取有界的近期 Codex session 日期目录，限制每个目录文件数和总候选数，增量读取 JSONL 摘要，并压缩 `/list` 的 project 摘要，避免大型 session store 触发全历史遍历或生成过大的 Telegram 回复。`/latest` 只读取选中 session 文件的有界尾部窗口。对话长回复会拆成多条 Telegram 消息，而不是截断；长纯文本 push 消息也会拆分，带 Telegram parse mode 的长 push 消息则继续阻止，避免格式标签被切成无效片段；Telegram 发送卡住时会变成结构化 timeout failure，让 polling offset 能带着失败证据继续前进。不可用的 app-server mode 会返回结构化 failure，不会 fallback。Codex export 已对 status/list/send push 文本和文件 capabilities 启用；信道创建和上下文相关的 direct file send 仍保留在 Gee 原生流程里，因为 bot token 绑定、目标确认和 active-chat identity 都属于本地配置/runtime 步骤。
+- `telegram.bridge` 是当前第一方 Gear。它提供原生 Telegram Bridge 界面、基于 GearHost 且 token 存在 GeeAgent 本地 app data 的 push-only Telegram 投递、主窗口安全的延后 app-started polling service，用于 GeeAgent 直连对话和 Codex Remote 命令，以及 Gee direct 消息的 runtime channel ingress。它的设置界面已经把双向对话 Bot 和单向推送信道分开，标明首次配置必填字段，能用表单里的 bot token 读取最新 Telegram update chat ID 后填入推送目标字段，也能从本地会话历史、runtime channel ingress 历史或 Bot API updates 读取最新 Telegram sender user ID 后填入 Gee/Codex 对话 Bot allowlist，并提供独立的 Telegram Conversations 视图展示 bridge 的收发线程。Gee Direct 支持用 `/new` 重置已绑定的 runtime 对话，并把这条重置确认限制在重置命令内，不会把它复用成普通回复；它也能通过上下文相关的原生 GearHost 执行把校验过的本地文件发回当前 Telegram 聊天，也会把 runtime 失败作为 `runtime_failed` 发回同一个 Telegram 聊天，而不是只记录在本地。Push-only 信道现在可以把文本、图片、视频、GIF 和其他可读本地文件发送到已配置的 Telegram 出站目标。入站 Telegram 媒体附件会作为远端 Telegram artifact reference 写入 runtime ingress 和 replay；不支持或无法读取的附件结构会明确失败，bridge 不会下载媒体，也不会把媒体塞进 transcript 文本。Status 输出包含 `gateway_health` 诊断，会报告缺失 token、webhook 尚未就绪的账户、polling offsets、push-channel counts 和 lifecycle readiness（`polling_loop`、`poll_interval_ms`、webhook `not_implemented`），并且不会连接 Telegram 或尝试 fallback 路线。Standalone worker 的 `poll-loop` 也会输出结构化 `poll_loop_started`、`poll_loop_iteration_failed` 和 `poll_loop_stopped` 事件，用于 daemon supervision。Codex Remote 支持 `/start`/`/help`、`/list`/`/recent`、`/tracked`、`/open`、`/latest`、`/desktop`、`/newcodex [prompt]`、`/mycodex`、`/cancel`、`/send <text>` 和 `/send <session_id> <prompt>`，发送提示仍通过明确的 CLI resume mode。Native bridge 会注册 Telegram bot 命令菜单，为分页 project 选择、分页 thread 浏览、Track/Untrack 和 Open/Latest thread 操作发送 inline keyboard 按钮，`/list` 会按每个 Codex session 自己记录的 workspace/cwd 聚合，并且只列出 Codex Desktop 来源的非 subagent 会话，避免 Telegram 暴露 Codex app 工作台里看不到的内部对话。Telegram 创建的 CLI session 会写入每个 chat 自己的有界 registry，并通过 `/mycodex` 列出；Open、Latest 和 Send 可以指向这些 session，而 `/desktop [session_id]` 会阻止它们，因为它们不是 Codex Desktop thread。`/desktop [session_id]` 保留为 slash command，不再作为每条 thread 的 inline action。选中 Codex thread 后直接发送普通文本或 `/send <text>` 会先进入 Confirm/Cancel 确认，不会立刻 resume 对应 session。native 和 worker 的 file-scan 列表路径只读取有界的近期 Codex session 日期目录，限制每个目录文件数和总候选数，增量读取 JSONL 摘要，并压缩 `/list` 的 project 摘要，避免大型 session store 触发全历史遍历或生成过大的 Telegram 回复。`/latest` 只读取选中 session 文件的有界尾部窗口。对话长回复会拆成多条 Telegram 消息，而不是截断；长纯文本 push 消息也会拆分，带 Telegram parse mode 的长 push 消息则继续阻止，避免格式标签被切成无效片段；Telegram 发送卡住时会变成结构化 timeout failure，让 polling offset 能带着失败证据继续前进。不可用的 app-server mode 会返回结构化 failure，不会 fallback。Codex export 已对 status/list/send push 文本和文件 capabilities 启用；信道创建和上下文相关的 direct file send 仍保留在 Gee 原生流程里，因为 bot token 绑定、目标确认和 active-chat identity 都属于本地配置/runtime 步骤。
+- Telegram 创建的 Codex CLI session 会从 app-owned Codex Remote workspace 启动，并显式使用 Codex 的 `--skip-git-repo-check` 选项。Telegram 后续 resume 这些 session 时会保留同一 non-repo 语义；失败仍以结构化 Codex Remote failure 暴露，不会走 fallback execution。
+- Telegram 入站 polling 由 GeeAgentMac app 拥有。GeeAgentMac 启动入站 polling service 前会获取本地 single-owner lock；旧的独立 `tg-codex` launchd worker 不应与 app-owned bridge 并行运行。原生 Codex Remote 的 `/list` 扫描会离开 main actor 执行，使用有界的近期 session discovery 和短缓存，避免大型 Codex store 卡住 workbench。
+- 原生 Codex Remote 会在执行回复工作前先推进 polling offset，`/list` 扫描带有请求用时、条数、字节体积、workspace/cwd 元数据和持久化 session index 上限，通过每个 chat 的 registry 限制 Telegram 创建的 CLI session 找回范围，并限制 `/send` 和 `/newcodex` 返回的 Codex CLI 命令输出体积，避免崩溃或 Telegram 发送卡住后重复处理同一条重型 update。显式 `/list` 和 `/tracked` 命令会刷新有界 session index，分页和操作按钮则复用已记住的 index，让按钮编号保持稳定。Telegram 流程采用分层获取：`/list` 只返回 Desktop project 分页，`/project` 返回有界的 Desktop 对话标题分页，`/mycodex` 返回有界的 Telegram 创建 CLI session 分页，`/latest` 只返回选中 thread 最近一条有界公开 assistant 回复。GeeAgentMac 轮询 Codex-originated external invocations 时读取轻量 shared-store projection，而不是在 app 空闲时反复启动完整 runtime snapshot。
 - 在完整 SDK/MCP tool exposure 完成前，过渡期的 `host_action_intents` 可以让第一方 runtime turn 把 native Gear actions 交回 GeeAgentMac 顺序执行。
 - 外部 Codex 调用现在通过生成的 `geeagent-codex` plugin 和 Gee MCP server 创建 shared-store external invocations。GeeAgentMac 会轮询该队列，并把 `gee_invoke_capability` / `gee_open_surface` 通过 runtime 使用的同一 GearHost bridge 执行；Codex 通过 `gee_get_invocation` 读取已记录结果，只读 `media.generator` 模型/任务查询会被优先处理并使用较短等待窗口。已导出的内置能力包括低风险的 `media.generator` 模型/任务查询、仅面向明确用户请求的高风险 `media.generator/media_generator.create_task` 图片任务、图片 batch 或视频任务创建、`media.library` 视图过滤/文件夹聚焦和明确本地文件导入、仅面向明确用户请求的高风险 `app.icon.forge/app_icon.generate` app 图标 package 生成、仅面向明确用户请求的高风险 `app.icon.forge/gear_icon.generate` Gear catalog 图标生成、中风险的 `bookmark.vault/bookmark.save` Gear-owned bookmark 写入、低风险的 `todo.manager/todo.query`、中风险的 `todo.manager/todo.create` 和 `todo.manager/todo.update`、高风险软删除 `todo.manager/todo.delete`，以及中风险的 `telegram.bridge/telegram_push.send_message` 和高风险显式本地文件 `telegram.bridge/telegram_push.send_file` 已配置信道 Telegram push 投递。上下文相关的 `telegram_direct.send_file` 仍与 detached Codex direct-chat 调用分开。
 - `btc.price` 和 `system.monitor` 已经作为 Home widgets 的方向存在。
@@ -552,7 +555,7 @@ policy_blocked -> checking/installing only after policy changes
 
 - `invalid`：manifest 或 package 无效。
 - `installed`：package 可发现，manifest 有效，但尚未确认依赖 ready。
-- `disabled`：内部或策略禁用。V1 catalog 不提供用户禁用按钮。
+- `disabled`：用户本地禁用，或内部策略禁用。用户禁用的 Gear 保持安装状态，但不会渲染 Home widget、暴露 agent capability 或启动 Gear 自己拥有的后台服务。
 - `checking`：dependency 或 permission preflight 正在运行。
 - `needs_setup`：必需依赖缺失或版本不兼容。
 - `installing`：setup 正在进行。
@@ -567,7 +570,7 @@ Gears catalog 按钮含义：
 - `Install Dependencies`：缺少依赖且可安装。
 - `Installing...`：正在安装，按钮不可重复触发。
 - `Retry Install`：上一次安装失败，点击重试。
-- V1 catalog 不展示 `Enable` / `Disabled` 用户操作。Gear 默认启用；无法使用时展示 blocked、installing 或 failed 状态。
+- `Enable` / `Disable`：切换用户本地 Gear 启用状态。禁用的 Gear 保持安装状态，但不会渲染 Home widget、暴露 agent capability 或启动 Gear 自己拥有的后台服务。不可用的 Gear 仍会单独展示 blocked、installing 或 failed 状态。
 
 Home widget 使用同一套依赖流。依赖缺失的 widget 不应该在 Home 上显示破损卡片，而应该在 Gears catalog 显示 installing 或 failed 状态。
 
@@ -685,6 +688,7 @@ Provider 和渠道配置属于 GeeAgent 全局基础设施，不属于 Gear 状�
 规则：
 
 - 主 app runtime 负责 provider routing、API key、endpoint URL、readiness check 和 secret storage。
+- 用户在 Settings > Provider Keys 中配置保存的 provider key；当前托管项包括 Xenodia 和 ElevenLabs，值只保存在 GeeAgent 应用本地设置文件中，不写入系统 Keychain 或环境变量。
 - Gear package 不能在 `gear.json`、package 文件或 `gear-data/<gear-id>/` 中保存 provider API key、长期 token 或渠道 secret。
 - Gear 可以声明自己需要某个全局网络能力，例如 Xenodia 图片或视频生成，但必须通过 Gee host/runtime 边界请求已配置好的渠道。
 - Xenodia 媒体生成作为全局 provider channel 暴露，和 chat routing 属于同一层基础设施。当前渠道包含图片生成、视频生成和 task retrieval endpoint，后续可以扩展 dedicated storage upload endpoint。
@@ -902,7 +906,7 @@ Capability 示例：
 - 目标是从 SmartYT 参考项目改造来的 native URL media acquisition gear。
 - Gear 接收 URL，嗅探媒体 metadata，下载音频、视频或直链图片 artifact，并提取 transcript text。
 - V1 使用 `yt-dlp` 处理 metadata、下载和字幕提取，使用 `ffmpeg` / `ffprobe` 支撑媒体转换。
-- 转文本应优先走平台字幕快通道。如果没有字幕，Gear 可以在本地安装了 Whisper 等语音工具时降级到本地 speech tooling。如果没有可用 speech backend，Gear 必须返回结构化失败并说明缺少转写后端，不能假装转换已经完成。
+- 转文本应优先走平台字幕快通道。如果没有字幕，Gear 可以调用已安装的 Whisper 或 SenseVoice 等本地 speech tooling。如果没有可用 speech backend，Gear 必须返回结构化失败并说明缺少转写后端，不能假装转换已经完成。
 - Job state 应写入 `~/Library/Application Support/GeeAgent/gear-data/smartyt.media/`；下载媒体、提取字幕和 transcript text 在 agent call 未提供 `output_dir` 时默认写入 `~/Downloads/SmartYT/<job-id>/`。
 - Agent capabilities 是 `smartyt.sniff`、`smartyt.download`、`smartyt.download_now`、`smartyt.transcribe`。`smartyt.download` 面向 UI 排队执行，`smartyt.download_now` 会等到 artifact 真正生成后返回 `output_paths`，供多 Gear 工作流使用。直链图片 URL，包括带图片扩展名或 `format=` query hint 的 Twitter/X 图片 URL，会按图片下载处理，而不是误走视频下载。最终给用户看的自然语言回复由 active agent/LLM 生成。
 

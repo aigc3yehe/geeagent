@@ -314,6 +314,72 @@ final class WorkbenchStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testTelegramChannelReplyDoesNotReuseLegacyResetReplyProjectedAfterCurrentMessage() async throws {
+        var snapshot = PreviewWorkbenchRuntimeClient().loadSnapshot()
+        snapshot.quickReply = "Hey! Good to see you again. Anything on your mind?"
+        snapshot.conversations = [
+            ConversationThread(
+                id: "telegram",
+                title: "Telegram 7973901539",
+                participantLabel: "GeeAgent",
+                previewText: "hi",
+                statusLabel: "live",
+                lastActivityLabel: "Just now",
+                unreadCount: 0,
+                linkedTaskTitle: nil,
+                linkedAppName: nil,
+                messages: [
+                    ConversationMessage(
+                        id: "current-user",
+                        role: .user,
+                        content: "hi",
+                        timestampLabel: "Just now"
+                    ),
+                    ConversationMessage(
+                        id: "current-assistant",
+                        role: .assistant,
+                        kind: .chat,
+                        content: "Hey! Good to see you again. Anything on your mind?",
+                        timestampLabel: "Just now"
+                    ),
+                    ConversationMessage(
+                        id: "legacy-reset",
+                        role: .assistant,
+                        kind: .chat,
+                        content: "Started a new Telegram conversation. Previous Telegram context has been cleared.",
+                        timestampLabel: "Yesterday"
+                    )
+                ],
+                tags: ["telegram.bridge", "gee_direct"],
+                isActive: true
+            )
+        ]
+        let store = WorkbenchStore(runtimeClient: FixedSnapshotRuntimeClient(snapshot: snapshot))
+
+        let reply = try await store.submitTelegramChannelMessage(
+            TelegramChannelMessagePayload(
+                channelIdentity: "telegram:gee_direct_default:chat:7973901539",
+                message: .init(
+                    idempotencyKey: "telegram:update:491738621",
+                    telegramUpdateId: 491738621,
+                    chatId: "7973901539",
+                    messageId: "58",
+                    fromUserId: "7973901539",
+                    text: "hi",
+                    attachments: []
+                ),
+                security: .init(decision: "allowed", policyId: "telegram.allowlist"),
+                projection: .init(
+                    surface: "telegram",
+                    replyTarget: .init(chatId: "7973901539", messageId: "58")
+                )
+            )
+        )
+
+        XCTAssertEqual(reply, "Hey! Good to see you again. Anything on your mind?")
+    }
+
+    @MainActor
     func testTelegramChannelMessageWaitsForHostActionCompletionReply() async throws {
         let currentMessage = "https://example.com/article\nPlease inspect the library mentioned in this article."
         var intermediateSnapshot = PreviewWorkbenchRuntimeClient().loadSnapshot()
@@ -785,6 +851,32 @@ final class WorkbenchStoreTests: XCTestCase {
         XCTAssertNil(store.presentedStandaloneModuleID)
         XCTAssertEqual(store.selectedSection, .apps)
         XCTAssertEqual(store.selectedExtension, .app("app-release-board"))
+    }
+
+    func testDisablingSelectedGearSkipsDisabledGearFallback() throws {
+        let store = WorkbenchStore(runtimeClient: PreviewWorkbenchRuntimeClient())
+        let target = try XCTUnwrap(store.installedApps.first(where: \.isGearPackage))
+        let disabledFallback = try XCTUnwrap(
+            store.installedApps.first { $0.isGearPackage && $0.id != target.id }
+        )
+        let originalTargetState = GearHost.isEnabled(gearID: target.id)
+        let originalFallbackState = GearHost.isEnabled(gearID: disabledFallback.id)
+        defer {
+            GearHost.setEnabled(originalTargetState, gearID: target.id)
+            GearHost.setEnabled(originalFallbackState, gearID: disabledFallback.id)
+        }
+
+        GearHost.setEnabled(true, gearID: target.id)
+        GearHost.setEnabled(false, gearID: disabledFallback.id)
+        store.selectedExtension = .app(target.id)
+
+        store.setGearEnabled(false, gearID: target.id)
+
+        XCTAssertNotEqual(store.selectedExtension, .app(disabledFallback.id))
+        if case let .app(selectedID)? = store.selectedExtension {
+            XCTAssertTrue(GearHost.isEnabled(gearID: selectedID))
+        }
+        XCTAssertNotEqual(store.selectedInstalledApp?.id, disabledFallback.id)
     }
 
     func testInvokeGeeAppOpenSurfaceRequestsDedicatedGearWindow() async throws {

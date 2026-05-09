@@ -5,6 +5,7 @@ import SwiftUI
 struct MenuBarPanelView: View {
     let store: WorkbenchStore
     var onOpenQuickInput: () -> Void
+    var onOpenAudioCapture: () -> Void
     var onOpenMainWindow: (_ section: WorkbenchSection) -> Void
     var onDismiss: () -> Void
 
@@ -19,7 +20,7 @@ struct MenuBarPanelView: View {
             recentTasks
         }
         .padding(16)
-        .frame(width: 380, height: 420, alignment: .topLeading)
+        .frame(width: 380, height: 448, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(.regularMaterial)
@@ -79,23 +80,28 @@ struct MenuBarPanelView: View {
     // MARK: action cluster
 
     private var actionCluster: some View {
-        HStack(spacing: 6) {
-            menuChip("Quick Input", symbol: "bolt.fill", action: onOpenQuickInput)
-            menuChip("Chat", symbol: "bubble.left", action: {
-                onOpenMainWindow(.chat)
-            })
-            menuChip("Logs", symbol: "doc.text.magnifyingglass", action: {
-                onOpenMainWindow(.logs)
-            })
-            if reviewCount > 0 {
-                menuChip("Review", symbol: "checkmark.shield", action: {
-                    onOpenMainWindow(.logs)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                menuChip("Quick Input", symbol: "bolt.fill", action: onOpenQuickInput)
+                menuChip("Audio", symbol: "mic", action: onOpenAudioCapture)
+                menuChip("Chat", symbol: "bubble.left", action: {
+                    onOpenMainWindow(.chat)
                 })
             }
-            if needsSetup {
-                menuChip("Setup", symbol: "wrench.and.screwdriver", action: {
-                    onOpenMainWindow(.settings)
+            HStack(spacing: 6) {
+                menuChip("Logs", symbol: "doc.text.magnifyingglass", action: {
+                    onOpenMainWindow(.logs)
                 })
+                if reviewCount > 0 {
+                    menuChip("Review", symbol: "checkmark.shield", action: {
+                        onOpenMainWindow(.logs)
+                    })
+                }
+                if needsSetup {
+                    menuChip("Setup", symbol: "wrench.and.screwdriver", action: {
+                        onOpenMainWindow(.settings)
+                    })
+                }
             }
         }
     }

@@ -23,6 +23,7 @@ SOURCE_CONFIG="$REPO_ROOT/config"
 SDK_CLI="$AGENT_RUNTIME/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude"
 ROOT_BACKGROUND="$REPO_ROOT/bg.png"
 APP_SUPPORT_ROOT="$HOME/Library/Application Support/GeeAgent"
+APP_BACKUP_ROOT="${GEEAGENT_APP_BACKUP_ROOT:-$APP_SUPPORT_ROOT/BuildBackups}"
 
 stop_running_app_processes() {
   terminate_process_name "$APP_NAME"
@@ -176,13 +177,117 @@ cat >"$INFO_PLIST" <<PLIST
   <string>$MIN_SYSTEM_VERSION</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>GeeAgent records microphone audio when you start voice input or audio capture.</string>
 </dict>
 </plist>
 PLIST
 
+sign_app_bundle() {
+  local identity="${GEEAGENT_CODESIGN_IDENTITY:-}"
+  if [ -n "$identity" ]; then
+    /usr/bin/codesign --force --deep --sign "$identity" "$APP_BUNDLE"
+  else
+    # Give local ad-hoc builds an identifier-level designated requirement.
+    # ScreenCaptureKit TCC still keys ad-hoc builds by changing code hashes, so
+    # install_app resets stale TCC records when the installed cdhash changes.
+    /usr/bin/codesign \
+      --force \
+      --deep \
+      --sign - \
+      --requirements "=designated => identifier \"$BUNDLE_ID\"" \
+      "$APP_BUNDLE"
+  fi
+
+  local designated_requirement
+  designated_requirement="$(/usr/bin/codesign -d -r- "$APP_BUNDLE" 2>&1 || true)"
+  if ! grep -q "identifier \"$BUNDLE_ID\"" <<<"$designated_requirement"; then
+    echo "GeeAgentMac signature is not stable for TCC permissions:" >&2
+    echo "$designated_requirement" >&2
+    exit 1
+  fi
+}
+
+sign_app_bundle
+
+app_cdhash() {
+  local bundle="$1"
+  /usr/bin/codesign -dvvv "$bundle" 2>&1 | awk -F= '/^CDHash=/ { print $2; exit }'
+}
+
+app_signature_kind() {
+  local bundle="$1"
+  /usr/bin/codesign -dvvv "$bundle" 2>&1 | awk -F= '/^Signature=/ { print $2; exit }'
+}
+
+reset_stale_tcc_permissions_if_needed() {
+  local old_cdhash="$1"
+  local new_cdhash="$2"
+  local signature_kind="$3"
+
+  if [ "${GEEAGENT_RESET_STALE_TCC:-1}" = "0" ]; then
+    return 0
+  fi
+  if [ "$signature_kind" != "adhoc" ]; then
+    return 0
+  fi
+  if [ -z "$old_cdhash" ] || [ -z "$new_cdhash" ] || [ "$old_cdhash" = "$new_cdhash" ]; then
+    return 0
+  fi
+
+  echo "GeeAgentMac ad-hoc signature changed; resetting stale TCC records for $BUNDLE_ID." >&2
+  local service
+  for service in ScreenCapture Microphone Accessibility; do
+    /usr/bin/tccutil reset "$service" "$BUNDLE_ID" >/dev/null 2>&1 || true
+  done
+}
+
+migrate_legacy_application_backups() {
+  mkdir -p "$APP_BACKUP_ROOT"
+  local legacy_bundle
+  for legacy_bundle in /Applications/"$APP_NAME".app.pre-*; do
+    if [ -d "$legacy_bundle" ]; then
+      mv "$legacy_bundle" "$APP_BACKUP_ROOT/$(basename "$legacy_bundle")"
+    fi
+  done
+}
+
 open_app() {
   auto_allow_removable_volume_prompt
   /usr/bin/open -n "$APP_BUNDLE"
+}
+
+install_app() {
+  local installed_bundle="/Applications/$APP_NAME.app"
+  local previous_cdhash=""
+  quit_installed_app_if_running
+  migrate_legacy_application_backups
+  if [ -d "$installed_bundle" ]; then
+    previous_cdhash="$(app_cdhash "$installed_bundle" || true)"
+    local backup_bundle
+    mkdir -p "$APP_BACKUP_ROOT"
+    backup_bundle="$APP_BACKUP_ROOT/$APP_NAME.app.$(date +%Y%m%d%H%M%S)"
+    mv "$installed_bundle" "$backup_bundle"
+  fi
+  /usr/bin/ditto "$APP_BUNDLE" "$installed_bundle"
+  /usr/bin/codesign --verify --deep --strict --verbose=2 "$installed_bundle"
+  /usr/bin/codesign -d -r- "$installed_bundle" 2>&1 | grep -q "identifier \"$BUNDLE_ID\""
+  reset_stale_tcc_permissions_if_needed \
+    "$previous_cdhash" \
+    "$(app_cdhash "$installed_bundle" || true)" \
+    "$(app_signature_kind "$installed_bundle" || true)"
+}
+
+quit_installed_app_if_running() {
+  /usr/bin/osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
+  for _ in {1..40}; do
+    if ! /usr/bin/pgrep -x "$APP_NAME" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  /usr/bin/pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+  sleep 0.5
 }
 
 auto_allow_removable_volume_prompt() {
@@ -228,6 +333,13 @@ case "$MODE" in
   run)
     open_app
     ;;
+  --install|install)
+    install_app
+    ;;
+  --install-run|install-run)
+    install_app
+    /usr/bin/open -n "/Applications/$APP_NAME.app"
+    ;;
   --debug|debug)
     lldb -- "$APP_BINARY"
     ;;
@@ -245,7 +357,7 @@ case "$MODE" in
     pgrep -x "$APP_NAME" >/dev/null
     ;;
   *)
-    echo "usage: $0 [run|--package|--debug|--logs|--telemetry|--verify]" >&2
+    echo "usage: $0 [run|--package|--install|--install-run|--debug|--logs|--telemetry|--verify]" >&2
     exit 2
     ;;
 esac

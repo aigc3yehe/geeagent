@@ -893,6 +893,42 @@ struct PreviewWorkbenchRuntimeClient: WorkbenchAttachmentRuntimeClient {
         return nextSnapshot
     }
 
+    func loadProviderSecretSettings() async throws -> ProviderSecretSettings {
+        ProviderSecretSettings.defaultSettings
+    }
+
+    func saveProviderAPIKey(
+        providerID: String,
+        apiKey: String
+    ) async throws -> ProviderSecretSettings {
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedKey.isEmpty else {
+            throw NSError(
+                domain: "PreviewWorkbenchRuntimeClient",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "API key cannot be empty."]
+            )
+        }
+
+        var settings = ProviderSecretSettings.defaultSettings
+        if let index = settings.providers.firstIndex(where: { $0.providerID == providerID }) {
+            settings.providers[index].apiKeyConfigured = true
+            settings.providers[index].savedAPIKeyConfigured = true
+            settings.providers[index].source = "saved"
+        }
+        return settings
+    }
+
+    func clearProviderAPIKey(providerID: String) async throws -> ProviderSecretSettings {
+        var settings = ProviderSecretSettings.defaultSettings
+        if let index = settings.providers.firstIndex(where: { $0.providerID == providerID }) {
+            settings.providers[index].apiKeyConfigured = false
+            settings.providers[index].savedAPIKeyConfigured = false
+            settings.providers[index].source = "missing"
+        }
+        return settings
+    }
+
     func invokeTool(_ invocation: ToolInvocation) async throws -> WorkbenchToolOutcome {
         // Preview client: fake out the most common v1 calls so UI builds that
         // depend on this client aren't dead-ended.

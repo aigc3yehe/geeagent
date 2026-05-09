@@ -1,5 +1,61 @@
 import Foundation
 
+struct ProviderSecretSettings: Codable, Hashable, Sendable {
+    var providers: [ProviderSecretStatus]
+
+    static let managedProviderIDs = ["xenodia", "elevenlabs"]
+
+    static var defaultSettings: ProviderSecretSettings {
+        ProviderSecretSettings(
+            providers: [
+                ProviderSecretStatus(
+                    providerID: "xenodia",
+                    title: "Xenodia",
+                    apiKeyConfigured: false,
+                    savedAPIKeyConfigured: false,
+                    source: "missing",
+                    envVar: "XENODIA_API_KEY"
+                ),
+                ProviderSecretStatus(
+                    providerID: "elevenlabs",
+                    title: "ElevenLabs",
+                    apiKeyConfigured: false,
+                    savedAPIKeyConfigured: false,
+                    source: "missing",
+                    envVar: "ELEVENLABS_API_KEY"
+                )
+            ]
+        )
+    }
+
+    func status(for providerID: String) -> ProviderSecretStatus? {
+        providers.first { $0.providerID == providerID }
+    }
+}
+
+struct ProviderSecretStatus: Codable, Hashable, Identifiable, Sendable {
+    var id: String { providerID }
+
+    var providerID: String
+    var title: String
+    var apiKeyConfigured: Bool
+    var savedAPIKeyConfigured: Bool
+    var source: String
+    var envVar: String?
+
+    var sourceTitle: String {
+        switch source {
+        case "environment":
+            let environmentTitle = envVar.map { "Environment: \($0)" } ?? "Environment"
+            return savedAPIKeyConfigured ? "\(environmentTitle) + saved locally" : environmentTitle
+        case "saved":
+            return "Saved locally"
+        default:
+            return "Not configured"
+        }
+    }
+}
+
 enum WorkbenchSection: String, CaseIterable, Identifiable {
     case home
     case chat

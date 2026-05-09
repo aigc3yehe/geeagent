@@ -75,6 +75,12 @@ struct ChatView: View {
                 pendingAttachmentRecovery = []
             }
         }
+        .onChange(of: store.audioCapture.chatVoiceText) { _, recognizedText in
+            let trimmed = recognizedText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            let existingDraft = draftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+            draftMessage = existingDraft.isEmpty ? trimmed : "\(existingDraft) \(trimmed)"
+        }
     }
 
     private var conversationColumn: some View {
@@ -263,6 +269,23 @@ struct ChatView: View {
                 .help("Attach files or folders")
                 .disabled(store.isSendingMessage || !store.canSendMessages)
 
+                Button {
+                    toggleVoiceInput()
+                } label: {
+                    Image(systemName: store.audioCapture.isChatVoiceInputActive ? "mic.fill" : "mic")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(store.audioCapture.isChatVoiceInputActive ? Color.red : Color.primary.opacity(0.82))
+                        .frame(width: 34, height: 34)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(
+                    store.audioCapture.isChatVoiceInputActive
+                        ? "Stop voice input"
+                        : "Start voice input with \(store.audioCapture.selectedProvider.title)"
+                )
+                .disabled(store.isSendingMessage || !store.canSendMessages)
+
                 TextField(
                     "",
                     text: $draftMessage,
@@ -321,6 +344,19 @@ struct ChatView: View {
                 }
             }
 
+            if let voiceStatus = store.audioCapture.chatVoiceStatusMessage,
+               !voiceStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: store.audioCapture.isChatVoiceInputActive ? "waveform" : "info.circle")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(voiceStatus)
+                        .lineLimit(1)
+                }
+                .font(.geeBody(11))
+                .foregroundStyle(store.audioCapture.isChatVoiceInputActive ? Color.red.opacity(0.78) : Color.secondary)
+                .padding(.horizontal, 4)
+            }
+
         }
         .padding(12)
         .background(
@@ -373,6 +409,14 @@ struct ChatView: View {
         draftMessage = ""
         draftAttachments = []
         store.sendMessage(message, attachments: attachments)
+    }
+
+    private func toggleVoiceInput() {
+        if store.audioCapture.isChatVoiceInputActive {
+            store.audioCapture.stopChatVoiceInput()
+        } else {
+            store.audioCapture.startChatVoiceInput()
+        }
     }
 
     private var sendableAttachmentDrafts: [ChatAttachmentDraft] {

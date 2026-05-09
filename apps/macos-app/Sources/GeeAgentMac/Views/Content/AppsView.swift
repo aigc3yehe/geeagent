@@ -7,6 +7,7 @@ struct AppsView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var selectedKind: GearKind = .atmosphere
     @State private var preparationSnapshots: [String: GearPreparationSnapshot] = [:]
+    @State private var enabledRevision = 0
 
     var body: some View {
         GeometryReader { proxy in
@@ -47,10 +48,14 @@ struct AppsView: View {
                 GearCatalogCard(
                     app: app,
                     preparation: preparationSnapshots[app.id],
+                    isEnabled: isGearEnabled(app),
                     openAction: {
                         Task {
                             await prepareAndOpenGear(app)
                         }
+                    },
+                    toggleEnabledAction: {
+                        toggleGearEnabled(app)
                     }
                 )
             }
@@ -91,7 +96,9 @@ struct AppsView: View {
         guard app.installState == .installed else {
             return
         }
-        GearHost.setEnabled(true, gearID: app.id)
+        guard isGearEnabled(app) else {
+            return
+        }
 
         guard let manifest = GearHost.manifest(gearID: app.id) else {
             openPreparedGear(app)
@@ -147,6 +154,19 @@ struct AppsView: View {
             }
         }
         preparationSnapshots = snapshots
+    }
+
+    private func isGearEnabled(_ app: InstalledAppRecord) -> Bool {
+        _ = enabledRevision
+        return GearHost.isEnabled(gearID: app.id)
+    }
+
+    private func toggleGearEnabled(_ app: InstalledAppRecord) {
+        guard app.installState == .installed else {
+            return
+        }
+        store.setGearEnabled(!isGearEnabled(app), gearID: app.id)
+        enabledRevision += 1
     }
 }
 
@@ -226,15 +246,21 @@ struct GearCatalogVisual: Equatable {
 private struct GearCatalogCard: View {
     let app: InstalledAppRecord
     let preparation: GearPreparationSnapshot?
+    let isEnabled: Bool
     var openAction: () -> Void
+    var toggleEnabledAction: () -> Void
 
     private var canOpen: Bool {
         app.installState == .installed
+            && isEnabled
             && preparation?.state.isBusy != true
             && preparation?.state != .unsupported
     }
 
     private var attentionStateTitle: String? {
+        if app.installState == .installed, !isEnabled {
+            return "Disabled"
+        }
         guard app.installState == .installed else {
             return app.installState == .installError ? "Issue detected" : app.installState.title
         }
@@ -258,6 +284,9 @@ private struct GearCatalogCard: View {
     }
 
     private var attentionStateImage: String {
+        if app.installState == .installed, !isEnabled {
+            return "power"
+        }
         if app.installState == .installed, let preparation, preparation.state != .ready {
             return preparation.state.systemImage
         }
@@ -265,6 +294,9 @@ private struct GearCatalogCard: View {
     }
 
     private var attentionStateColor: Color {
+        if app.installState == .installed, !isEnabled {
+            return .white.opacity(0.62)
+        }
         guard app.installState == .installed else {
             return app.installState == .installError ? .orange.opacity(0.95) : .green.opacity(0.92)
         }
@@ -288,6 +320,9 @@ private struct GearCatalogCard: View {
     private var openButtonTitle: String {
         guard app.installState == .installed else {
             return "Blocked"
+        }
+        guard isEnabled else {
+            return "Off"
         }
         guard let preparation, preparation.state != .ready else {
             return app.gearKind == .widget ? "Home" : "Open"
@@ -356,6 +391,7 @@ private struct GearCatalogCard: View {
 
                 Spacer(minLength: 8)
 
+                toggleButton
                 openButton
             }
         }
@@ -452,6 +488,29 @@ private struct GearCatalogCard: View {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(attentionStateColor.opacity(0.12))
         )
+    }
+
+    private var toggleButton: some View {
+        Button {
+            toggleEnabledAction()
+        } label: {
+            Image(systemName: "power")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(isEnabled ? .green.opacity(0.88) : .white.opacity(0.46))
+                .frame(width: 30, height: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(isEnabled ? Color.green.opacity(0.12) : Color.white.opacity(0.055))
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(isEnabled ? Color.green.opacity(0.18) : Color.white.opacity(0.08), lineWidth: 0.8)
+                }
+        }
+        .buttonStyle(.plain)
+        .disabled(app.installState != .installed)
+        .help(isEnabled ? "Disable Gear" : "Enable Gear")
+        .accessibilityLabel(isEnabled ? "Disable \(app.name)" : "Enable \(app.name)")
     }
 
     private var openButton: some View {

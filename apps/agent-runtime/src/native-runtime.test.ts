@@ -5193,8 +5193,93 @@ describe("native runtime JSON-lines server", () => {
     } finally {
       lines.close();
       child.kill();
-  }
-});
+    }
+  });
+
+  it("stops the native runtime server when its declared parent process is gone", async () => {
+    const configDir = await tempConfigDir();
+    const child = spawn(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "src/native-runtime/index.ts",
+        "serve",
+        "--config-dir",
+        configDir,
+        "--parent-pid",
+        "99999999",
+      ],
+      {
+        cwd: process.cwd(),
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+
+    try {
+      const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(new Error("native runtime server did not exit after parent process disappeared"));
+        }, 5_000);
+        child.once("exit", (code, signal) => {
+          clearTimeout(timer);
+          resolve({ code, signal });
+        });
+      });
+      assert.equal(exit.signal, null);
+      assert.equal(exit.code, 0);
+    } finally {
+      child.kill();
+    }
+  });
+
+  it("stops the native runtime server with an in-flight request when its declared parent process is gone", async () => {
+    const configDir = await tempConfigDir();
+    const child = spawn(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "src/native-runtime/index.ts",
+        "serve",
+        "--config-dir",
+        configDir,
+        "--parent-pid",
+        "99999999",
+      ],
+      {
+        cwd: process.cwd(),
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+
+    try {
+      send(child, {
+        id: "sleep",
+        command: "invoke-tool",
+        args: [
+          JSON.stringify({
+            tool_id: "shell.run",
+            arguments: { command: "sleep", args: ["60"] },
+            approval_token: "test-parent-exit",
+          }),
+        ],
+      });
+      const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(new Error("native runtime server did not exit while an in-flight request was still running"));
+        }, 5_000);
+        child.once("exit", (code, signal) => {
+          clearTimeout(timer);
+          resolve({ code, signal });
+        });
+      });
+      assert.equal(exit.signal, null);
+      assert.equal(exit.code, 0);
+    } finally {
+      child.kill();
+    }
+  });
 
 async function singleServerRequest(
   configDir: string,

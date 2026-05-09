@@ -57,18 +57,15 @@ struct HomeRainGlassEffect: View {
     private let field = makeHomeRainGlassField()
 
     var body: some View {
-        TimelineView(.animation) { context in
-            GeometryReader { proxy in
-                let size = proxy.size
-                let time = context.date.timeIntervalSinceReferenceDate
+        GeometryReader { proxy in
+            let size = proxy.size
 
-                Canvas(opaque: false, colorMode: .linear, rendersAsynchronously: true) { canvas, canvasSize in
-                    drawStaticDroplets(field.staticDroplets, in: &canvas, size: canvasSize)
-                    drawSlidingDroplets(field.slidingDroplets, in: &canvas, size: canvasSize, time: time)
-                    drawImpactRipples(field.impactRipples, in: &canvas, size: canvasSize, time: time)
-                }
-                .frame(width: size.width, height: size.height)
+            Canvas(opaque: false, colorMode: .linear, rendersAsynchronously: true) { canvas, canvasSize in
+                drawStaticDroplets(field.staticDroplets, in: &canvas, size: canvasSize)
+                drawSlidingDroplets(field.slidingDroplets, in: &canvas, size: canvasSize, time: 0)
+                drawImpactRipples(field.impactRipples, in: &canvas, size: canvasSize, time: 0)
             }
+            .frame(width: size.width, height: size.height)
         }
         .allowsHitTesting(false)
     }

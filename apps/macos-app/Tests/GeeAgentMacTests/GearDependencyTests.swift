@@ -131,6 +131,21 @@ final class GearDependencyTests: XCTestCase {
         )
     }
 
+    func testDisabledTelegramBridgeDoesNotExposeAgentCapability() {
+        let gearID = TelegramBridgeGearDescriptor.gearID
+        let original = GearHost.isEnabled(gearID: gearID)
+        defer { GearHost.setEnabled(original, gearID: gearID) }
+
+        GearHost.setEnabled(false, gearID: gearID)
+
+        XCTAssertNil(
+            GearHost.enabledCapabilityRecord(
+                gearID: gearID,
+                capabilityID: "telegram_bridge.status"
+            )
+        )
+    }
+
     func testPreparationServiceInstallsWeSpyPythonRecipe() async throws {
         let data = Data("""
         {
