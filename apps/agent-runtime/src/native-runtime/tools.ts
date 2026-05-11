@@ -11,6 +11,7 @@ import {
 } from "./tools/files.js";
 import { geeGearInvoke, geeGearListCapabilities } from "./tools/gears.js";
 import { geeAppOpenSurface, navigateOpenModule, navigateOpenSection } from "./tools/navigation.js";
+import { geeNativeAppControl } from "./tools/native-app.js";
 import { shellRequestNeedsApproval, shellRun } from "./tools/shell.js";
 import { clipboardRead, clipboardWrite, notifyPost, urlOpen } from "./tools/system.js";
 import type { ToolOutcome, ToolRequest } from "./tools/types.js";
@@ -71,7 +72,11 @@ function personaAllows(allowList: string[] | undefined, toolID: string): boolean
 }
 
 function isHostManagedGeeBridgeTool(toolID: string): boolean {
-  return toolID.startsWith("gee.app.") || toolID.startsWith("gee.gear.");
+  return (
+    toolID.startsWith("gee.app.") ||
+    toolID.startsWith("gee.gear.") ||
+    toolID.startsWith("gee.nativeApp.")
+  );
 }
 
 async function runTool(request: ToolRequest): Promise<ToolOutcome> {
@@ -106,6 +111,8 @@ async function runTool(request: ToolRequest): Promise<ToolOutcome> {
       return geeGearListCapabilities(request);
     case "gee.gear.invoke":
       return geeGearInvoke(request);
+    case "gee.nativeApp.control":
+      return geeNativeAppControl(request);
     case "clipboard.read":
       return clipboardRead(request);
     case "clipboard.write":

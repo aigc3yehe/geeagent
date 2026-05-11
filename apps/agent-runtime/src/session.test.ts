@@ -148,7 +148,7 @@ describe("session prompt and tool-result helpers", () => {
     assert.match(prompt, /Workspace cwd: \/tmp\/workspace/);
     assert.match(prompt, /Approval posture: host_review/);
     assert.match(prompt, /Host capabilities: terminal, files/);
-    assert.doesNotMatch(prompt, /Gee Gear controls are available through the host bridge/);
+    assert.doesNotMatch(prompt, /Gee host controls are available through the host bridge/);
     assert.match(prompt, /\[GeeAgent Session Prompt\]\npersona rules/);
     assert.match(
       prompt,
@@ -291,15 +291,19 @@ describe("session prompt and tool-result helpers", () => {
     session.close();
   });
 
-  it("mentions Gear host bridge controls only when the bridge is actually enabled", () => {
+  it("mentions host bridge controls only when the bridge is actually enabled", () => {
     const prompt = __sessionTestHooks.buildSystemPrompt("", {
       capabilities: ["bash", "gee_host_bridge"],
     });
 
     assert.match(prompt, /Host capabilities: bash, gee_host_bridge/);
-    assert.match(prompt, /Gee Gear controls are available through the host bridge/);
+    assert.match(prompt, /Gee host controls are available through the host bridge/);
     assert.match(prompt, /For requests that match an installed Gear or built-in app/);
     assert.match(prompt, /Do not inspect GeeAgent source files/);
+    assert.match(prompt, /mcp__gee__native_app_control/);
+    assert.match(prompt, /opening Codex Desktop, creating a new Codex chat/);
+    assert.match(prompt, /Do not add delegation notes/);
+    assert.match(prompt, /browser\/plugin instructions/);
     assert.match(prompt, /WeChat article and album URLs/);
     assert.match(prompt, /WeSpy Reader Gear/);
     assert.match(prompt, /Use the Gear bridge first/);
@@ -708,6 +712,7 @@ describe("session prompt and tool-result helpers", () => {
     assert.ok(DEFAULT_SDK_AVAILABLE_TOOLS.includes("Read"));
     assert.ok(DEFAULT_SDK_AVAILABLE_TOOLS.includes("mcp__gee__files_directory_snapshot"));
     assert.ok(DEFAULT_SDK_AVAILABLE_TOOLS.includes("mcp__gee__gear_invoke"));
+    assert.ok(DEFAULT_SDK_AVAILABLE_TOOLS.includes("mcp__gee__native_app_control"));
     assert.equal(DEFAULT_SDK_AVAILABLE_TOOLS.includes("RemoteTrigger"), false);
   });
 

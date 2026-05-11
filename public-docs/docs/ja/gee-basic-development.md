@@ -36,6 +36,8 @@ Settings は audio transcription 用の default STT service を 1 つ公開し�
 
 Gear work では live SDK run と Gee MCP bridge が必須 path です。SDK runtime または bridge が live でない場合、GeeAgent は alternate native route で task を実行せず、structured failure を報告します。
 
+Native app control も shared Gee MCP host path であり、Gear や Telegram 固有の shortcut ではありません。App Chat/runtime は `native_app_control`（`gee.nativeApp.control`）で supported local macOS app を control できます。V1 は Codex Desktop の `new_chat_and_send` を公開し、app、permission、target UI element、send action が unavailable な場合は structured blocked/failed state を返します。
+
 Host-action completion は、同じ SDK run がまだ生きている場合はその run に戻ります。run が失われている場合、GeeAgent は structured Gear result を記録し、その turn を failed または degraded として扱います。隠れた separate completion turn は開始しません。
 
 Gear invocation arguments は、native host が Gear を実行する前に TypeScript runtime boundary で normalize と validate されます。Focused runtime plan は matching capability に deterministic stage arguments を提供できます。Missing or conflicting required fields still return structured tool errors so the active agent run can correct the call。

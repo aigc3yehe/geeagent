@@ -995,6 +995,21 @@ struct PreviewWorkbenchRuntimeClient: WorkbenchAttachmentRuntimeClient {
                 code: "args.surface_id",
                 message: "preview client: bad or missing surface_id"
             )
+        case "gee.nativeApp.control":
+            guard let appID = stringArgument("app_id", in: invocation),
+                  let action = stringArgument("action", in: invocation)
+            else {
+                return .error(
+                    toolID: invocation.toolID,
+                    code: "args.native_app",
+                    message: "preview client: bad or missing native app control ids"
+                )
+            }
+            return .error(
+                toolID: invocation.toolID,
+                code: "preview.native_app_control_unavailable",
+                message: "preview client cannot control native apps: \(appID) \(action)"
+            )
         case "gee.gear.listCapabilities":
             var payload: [String: Any] = [
                 "intent": "gear.list_capabilities",

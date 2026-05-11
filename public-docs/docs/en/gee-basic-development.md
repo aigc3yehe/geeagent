@@ -36,6 +36,8 @@ Settings exposes one default STT service for audio transcription. Chat voice inp
 
 For Gear work, the live SDK run and Gee MCP bridge are the required path. If the SDK runtime or bridge is not live, GeeAgent reports the structured failure instead of executing the task through an alternate native route.
 
+Native app control is also a shared Gee MCP host path rather than a Gear- or Telegram-specific shortcut. App Chat/runtime can call `native_app_control` (`gee.nativeApp.control`) for supported local macOS apps; V1 exposes Codex Desktop `new_chat_and_send` and returns structured blocked/failed states when the app, permission, target UI element, or send action is unavailable.
+
 Host-action completion now returns to the same SDK run when that run is still alive. If the run is gone, GeeAgent records the structured Gear result and marks the turn as failed or degraded instead of starting a separate hidden completion turn.
 
 Gear invocation arguments are now normalized and validated at the TypeScript runtime boundary before the native host executes a Gear. Focused runtime plans may supply deterministic stage arguments for the matching capability; missing or conflicting required fields still return structured tool errors so the active agent run can correct the call.

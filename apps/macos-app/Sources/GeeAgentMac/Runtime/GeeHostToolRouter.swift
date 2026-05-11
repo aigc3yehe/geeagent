@@ -29,9 +29,44 @@ enum GeeHostToolRouter {
             return listCapabilities(toolID: toolID, payload: payload)
         case "gear.invoke":
             return await invokeGear(toolID: toolID, payload: payload)
+        case "native_app.control":
+            return await controlNativeApp(toolID: toolID, payload: payload)
         default:
             return nil
         }
+    }
+
+    private static func controlNativeApp(
+        toolID: String,
+        payload: [String: Any]
+    ) async -> WorkbenchToolOutcome {
+        guard let appID = stringArg(payload, "app_id", "app"),
+              !appID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return .error(
+                toolID: toolID,
+                code: "native_app.args.app_id",
+                message: "`app_id` is required for native app control."
+            )
+        }
+        guard let action = stringArg(payload, "action"),
+              !action.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return .error(
+                toolID: toolID,
+                code: "native_app.args.action",
+                message: "`action` is required for native app control."
+            )
+        }
+        let result = await GeeNativeAppController.shared.control(
+            GeeNativeAppControlRequest(
+                appID: appID,
+                action: action,
+                prompt: stringArg(payload, "prompt"),
+                instruction: stringArg(payload, "instruction")
+            )
+        )
+        return .completed(toolID: toolID, payload: result.payload(toolID: toolID))
     }
 
     private static func listCapabilities(

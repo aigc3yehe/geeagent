@@ -410,7 +410,7 @@ function buildSystemPrompt(
     }
     if (context.capabilities?.includes("gee_host_bridge")) {
       lines.push(
-        "- Gee Gear controls are available through the host bridge. If `mcp__gee__gear_list_capabilities`, `mcp__gee__gear_invoke`, or `mcp__gee__app_open_surface` are visible as callable tools, use them deliberately and inspect each structured result before deciding the next step.",
+        "- Gee host controls are available through the host bridge. If `mcp__gee__gear_list_capabilities`, `mcp__gee__gear_invoke`, `mcp__gee__app_open_surface`, or `mcp__gee__native_app_control` are visible as callable tools, use them deliberately and inspect each structured result before deciding the next step.",
       );
       lines.push(
         "- For directory input attachments, use `mcp__gee__files_directory_snapshot` with the attachment id or attached path to inspect a bounded directory structure inside the active run. If the tool reports a scope or read failure, surface that real degraded state instead of using Bash or guessing from the manifest.",
@@ -423,6 +423,9 @@ function buildSystemPrompt(
       );
       lines.push(
         "- For requests that match an installed Gear or built-in app, use the Gee Gear bridge as the execution path. Do not inspect GeeAgent source files, call SDK Skill aliases, or use Bash to discover product internals unless the user explicitly asks to debug GeeAgent itself.",
+      );
+      lines.push(
+        "- For requests to control a local macOS app, including opening Codex Desktop, creating a new Codex chat, and sending a prompt to Codex Desktop, use `mcp__gee__native_app_control` with `app_id: \"codex\"`, `action: \"new_chat_and_send\"`, and exactly the user's requested Codex task as `prompt`. Do not add delegation notes, environment instructions, browser/plugin instructions, safety wrappers, or a `Task:` label unless the user wrote them. Report the structured blocked/failed result if the native host, app, Accessibility permission, target UI element, or send action is unavailable.",
       );
       lines.push(
         "- WeChat article and album URLs (`mp.weixin.qq.com/s/...` and `mp.weixin.qq.com/mp/appmsgalbum?...`) belong to the installed WeSpy Reader Gear (`wespy.reader`). Use the Gear bridge first for fetching or listing those pages; use Bash/file tools only after the Gear returns structured results and the user asked for local composition, copying, or saving.",
@@ -1122,6 +1125,17 @@ export class ClaudeRuntimeSession {
           async (args) => this.callGeeHostAction("gee.app.openSurface", compactRecord(args)),
         ),
         tool(
+          "native_app_control",
+          "Control a supported local macOS app through GeeAgent's native host. Use for Codex Desktop new-chat prompt sending and inspect the structured result. Pass the user's requested Codex task exactly as prompt without adding wrappers.",
+          {
+            app_id: z.enum(["codex"]),
+            action: z.enum(["new_chat_and_send"]),
+            prompt: z.string().optional(),
+            instruction: z.string().optional(),
+          },
+          async (args) => this.callGeeHostAction("gee.nativeApp.control", compactRecord(args)),
+        ),
+        tool(
           "files_directory_snapshot",
           "Return a bounded deterministic tree snapshot for the current workspace or a directory attachment in this active GeeAgent run. Prefer attachment_id from the input attachment manifest when available.",
           {
@@ -1471,6 +1485,8 @@ function isGeeHostToolName(toolName: string): boolean {
       "files_directory_snapshot",
       "gee.gear.listCapabilities",
       "gee.gear.invoke",
+      "gee.nativeApp.control",
+      "native_app_control",
     ].includes(toolName)
   );
 }

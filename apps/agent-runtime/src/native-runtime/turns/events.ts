@@ -436,6 +436,8 @@ function hostBridgeToolName(toolID: string): string | null {
       return "gear_list_capabilities";
     case "gee.gear.invoke":
       return "gear_invoke";
+    case "gee.nativeApp.control":
+      return "native_app_control";
     default:
       return null;
   }

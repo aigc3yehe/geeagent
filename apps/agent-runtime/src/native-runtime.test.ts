@@ -1886,6 +1886,57 @@ api_key = "saved-xenodia-key"
       },
     });
 
+    const nativeAppRaw = await handleNativeRuntimeCommand(
+      "invoke-tool",
+      [
+        JSON.stringify({
+          tool_id: "gee.nativeApp.control",
+          arguments: {
+            app_id: "codex",
+            action: "new_chat_and_send",
+            prompt: "summarize this video",
+          },
+        }),
+      ],
+      { configDir },
+    );
+    const nativeApp = JSON.parse(nativeAppRaw);
+    assert.deepEqual(nativeApp, {
+      kind: "completed",
+      tool_id: "gee.nativeApp.control",
+      payload: {
+        intent: "native_app.control",
+        app_id: "codex",
+        action: "new_chat_and_send",
+        prompt: "summarize this video",
+      },
+    });
+
+    const wrappedNativeAppRaw = await handleNativeRuntimeCommand(
+      "invoke-tool",
+      [
+        JSON.stringify({
+          tool_id: "gee.nativeApp.control",
+          arguments: {
+            app_id: "codex",
+            action: "new_chat_and_send",
+            prompt: [
+              "The user delegated the following task from GeeAgent into Codex Desktop.",
+              "",
+              "Use the browser/Chrome plugin and local tools available in this Codex Desktop session.",
+              "Do not pretend completion; if browser access, webpage access, file writes, downloads, or transcription fail, report the real failure reason.",
+              "",
+              "Task:",
+              "Use Gee Power Video to start the video production workflowUse Gee Power Video to start the video production workflow",
+            ].join("\n"),
+          },
+        }),
+      ],
+      { configDir },
+    );
+    const wrappedNativeApp = JSON.parse(wrappedNativeAppRaw);
+    assert.equal(wrappedNativeApp.payload.prompt, "Use Gee Power Video to start the video production workflow");
+
     const missingArgsRaw = await handleNativeRuntimeCommand(
       "invoke-tool",
       [
@@ -3531,6 +3582,22 @@ api_key = "saved-xenodia-key"
     assert.match(actions[0].host_action_id, /^host_action_directive_[a-f0-9]{8}_[a-f0-9]{8}$/);
   });
 
+  it("extracts native app host-action directives through the shared host bridge", () => {
+    const actions = __sdkTurnRunnerTestHooks.extractHostActionDirective([
+      '<gee-host-actions>{"actions":[',
+      '{"tool_id":"gee.nativeApp.control","arguments":{"app_id":"codex","action":"new_chat_and_send","prompt":"summarize this video"}}',
+      "]}</gee-host-actions>",
+    ]);
+
+    assert.equal(actions.length, 1);
+    assert.equal(actions[0].tool_id, "gee.nativeApp.control");
+    assert.deepEqual(actions[0].arguments, {
+      app_id: "codex",
+      action: "new_chat_and_send",
+      prompt: "summarize this video",
+    });
+  });
+
   it("keeps Gee host-action directives out of visible assistant text", () => {
     const partition = __sdkTurnRunnerTestHooks.partitionAssistantControlText(
       [
@@ -3623,6 +3690,20 @@ api_key = "saved-xenodia-key"
       ]),
       [],
     );
+  });
+
+  it("validates Codex native app host-action prompt before creating host actions", () => {
+    const extraction = __sdkTurnRunnerTestHooks.extractHostActionDirectiveResult([
+      "<gee-host-actions>{\"actions\":[",
+      "{\"tool_id\":\"gee.nativeApp.control\",\"arguments\":{\"app_id\":\"codex\",\"action\":\"new_chat_and_send\"}}",
+      "]}</gee-host-actions>",
+    ]);
+
+    assert.equal(extraction.sawDirective, true);
+    assert.deepEqual(extraction.actions, []);
+    assert.equal(extraction.errors[0]?.tool_id, "gee.nativeApp.control");
+    assert.equal(extraction.errors[0]?.code, "native_app.args.prompt");
+    assert.match(extraction.errors[0]?.message ?? "", /required string `prompt` is missing/);
   });
 
   it("rejects unsupported Gee host-action directive tools instead of silently no-oping", () => {

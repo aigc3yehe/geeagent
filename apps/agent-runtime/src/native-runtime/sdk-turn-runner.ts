@@ -1563,6 +1563,7 @@ const ALLOWED_HOST_ACTION_TOOLS = new Set([
   "gee.app.openSurface",
   "gee.gear.listCapabilities",
   "gee.gear.invoke",
+  "gee.nativeApp.control",
 ]);
 
 function hostActionFromDirective(
@@ -1636,6 +1637,40 @@ function validateHostActionDirectiveArgs(
   toolID: string,
   args: Record<string, unknown>,
 ): HostActionDirectiveValidationError | null {
+  if (toolID === "gee.nativeApp.control") {
+    const appID = typeof args.app_id === "string" ? args.app_id : "";
+    if (!appID.trim()) {
+      return {
+        code: "native_app.args.app_id",
+        message: "required string `app_id` is missing for gee.nativeApp.control.",
+      };
+    }
+
+    const action = typeof args.action === "string" ? args.action : "";
+    if (!action.trim()) {
+      return {
+        code: "native_app.args.action",
+        message: "required string `action` is missing for gee.nativeApp.control.",
+      };
+    }
+
+    if (
+      ["codex", "codex.desktop", "codex_desktop", "codex desktop"].includes(appID.trim().toLowerCase()) &&
+      ["new_chat_and_send", "new-chat-and-send", "new_chat", "send_prompt", "send"].includes(action.trim().toLowerCase())
+    ) {
+      const prompt = typeof args.prompt === "string" ? args.prompt : "";
+      const instruction = typeof args.instruction === "string" ? args.instruction : "";
+      if (!prompt.trim() && !instruction.trim()) {
+        return {
+          code: "native_app.args.prompt",
+          message: "required string `prompt` is missing for Codex native app control.",
+        };
+      }
+    }
+
+    return null;
+  }
+
   if (toolID !== "gee.gear.invoke") {
     return null;
   }

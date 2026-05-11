@@ -3,6 +3,7 @@ export const GEE_HOST_SDK_TOOLS = [
   "mcp__gee__files_directory_snapshot",
   "mcp__gee__gear_list_capabilities",
   "mcp__gee__gear_invoke",
+  "mcp__gee__native_app_control",
 ];
 
 export const CHAT_ONLY_SDK_AVAILABLE_TOOLS: string[] = [];

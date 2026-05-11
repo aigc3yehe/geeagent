@@ -541,6 +541,43 @@ struct MediaGeneratorTaskGroup: Identifiable, Hashable, Sendable {
     }
 }
 
+struct MediaGeneratorTaskPage: Equatable, Sendable {
+    var tasks: [MediaGeneratorTask]
+    var totalCount: Int
+    var loadedCount: Int
+
+    var hasMore: Bool {
+        loadedCount < totalCount
+    }
+}
+
+private struct MediaGeneratorTaskIndexRecord: Codable, Equatable, Sendable {
+    var id: String
+    var createdAt: Date
+    var updatedAt: Date
+    var batchID: String?
+    var batchIndex: Int
+
+    init(task: MediaGeneratorTask) {
+        id = task.id
+        createdAt = task.createdAt
+        updatedAt = task.updatedAt
+        batchID = task.batchID
+        batchIndex = task.batchIndex
+    }
+
+    static func sort(_ lhs: MediaGeneratorTaskIndexRecord, _ rhs: MediaGeneratorTaskIndexRecord) -> Bool {
+        if let lhsBatchID = lhs.batchID,
+           lhsBatchID == rhs.batchID {
+            return lhs.batchIndex < rhs.batchIndex
+        }
+        if lhs.createdAt != rhs.createdAt {
+            return lhs.createdAt > rhs.createdAt
+        }
+        return lhs.id < rhs.id
+    }
+}
+
 enum MediaGeneratorError: LocalizedError {
     static let maxReferenceCount = 8
     static let maxReferenceFileBytes: Int64 = 31_457_280
@@ -580,18 +617,110 @@ struct MediaGeneratorFileDatabase {
     var fileManager: FileManager = .default
 
     func loadTasks() -> [MediaGeneratorTask] {
+        loadTaskPage(limit: nil).tasks
+    }
+
+    func loadTaskPage(limit: Int?) -> MediaGeneratorTaskPage {
         do {
-            let entries = try fileManager.contentsOfDirectory(
-                at: try tasksRoot(),
-                includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
-                options: [.skipsHiddenFiles]
-            )
-            return entries
-                .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
-                .compactMap(loadTask)
-                .sorted { $0.createdAt > $1.createdAt }
+            let index = try loadTaskIndex()
+            let page = try loadTaskPage(from: index, limit: limit)
+            guard page.missingTaskIDs.isEmpty else {
+                let rebuiltIndex = try rebuildTaskIndex()
+                return try loadTaskPage(from: rebuiltIndex, limit: limit).page
+            }
+            return page.page
         } catch {
-            return []
+            return MediaGeneratorTaskPage(tasks: [], totalCount: 0, loadedCount: 0)
+        }
+    }
+
+    private func loadTaskPage(
+        from index: [MediaGeneratorTaskIndexRecord],
+        limit: Int?
+    ) throws -> (page: MediaGeneratorTaskPage, missingTaskIDs: [String]) {
+        let root = try tasksRoot()
+        let records = Self.pageRecords(from: index, limit: limit)
+        var missingTaskIDs: [String] = []
+        let tasks = records
+            .compactMap { record -> MediaGeneratorTask? in
+                guard let task = loadTask(id: record.id, tasksRoot: root) else {
+                    missingTaskIDs.append(record.id)
+                    return nil
+                }
+                return task
+            }
+            .sorted(by: MediaGeneratorTaskGroup.sortTasks)
+        return (
+            MediaGeneratorTaskPage(
+                tasks: tasks,
+                totalCount: index.count,
+                loadedCount: tasks.count
+            ),
+            missingTaskIDs
+        )
+    }
+
+    private static func pageRecords(
+        from records: [MediaGeneratorTaskIndexRecord],
+        limit: Int?
+    ) -> [MediaGeneratorTaskIndexRecord] {
+        let ordered = records.sorted(by: MediaGeneratorTaskIndexRecord.sort)
+        guard let limit else {
+            return ordered
+        }
+        let boundedLimit = max(0, limit)
+        var page = Array(ordered.prefix(boundedLimit))
+        let batchIDs = Set(page.compactMap(\.batchID))
+        guard !batchIDs.isEmpty else {
+            return page
+        }
+        var ids = Set(page.map(\.id))
+        for record in ordered where record.batchID.map(batchIDs.contains) == true && !ids.contains(record.id) {
+            page.append(record)
+            ids.insert(record.id)
+        }
+        return page.sorted(by: MediaGeneratorTaskIndexRecord.sort)
+    }
+
+    private func loadTaskIndex() throws -> [MediaGeneratorTaskIndexRecord] {
+        let url = try taskIndexURL()
+        guard fileManager.fileExists(atPath: url.path) else {
+            return try rebuildTaskIndex()
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        do {
+            return try decoder.decode([MediaGeneratorTaskIndexRecord].self, from: Data(contentsOf: url))
+        } catch {
+            return try rebuildTaskIndex()
+        }
+    }
+
+    @discardableResult
+    private func rebuildTaskIndex() throws -> [MediaGeneratorTaskIndexRecord] {
+        let entries = try taskDirectories()
+        let tasks = entries.compactMap(loadTask)
+        let records = tasks.map(MediaGeneratorTaskIndexRecord.init(task:))
+        try saveTaskIndex(records)
+        return records
+    }
+
+    private func saveTaskIndex(_ records: [MediaGeneratorTaskIndexRecord]) throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(records.sorted(by: MediaGeneratorTaskIndexRecord.sort))
+        try data.write(to: try taskIndexURL(), options: .atomic)
+    }
+
+    private func upsertTaskIndexRecord(for task: MediaGeneratorTask) {
+        do {
+            var records = try loadTaskIndex()
+            records.removeAll { $0.id == task.id }
+            records.append(MediaGeneratorTaskIndexRecord(task: task))
+            try saveTaskIndex(records)
+        } catch {
+            _ = try? rebuildTaskIndex()
         }
     }
 
@@ -658,6 +787,7 @@ struct MediaGeneratorFileDatabase {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(task)
         try data.write(to: directory.appendingPathComponent("task.json"), options: .atomic)
+        upsertTaskIndexRecord(for: task)
     }
 
     func taskFileURL(_ id: String) throws -> URL {
@@ -666,10 +796,10 @@ struct MediaGeneratorFileDatabase {
 
     func deleteTask(id: String) throws {
         let directory = try taskDirectory(id)
-        guard fileManager.fileExists(atPath: directory.path) else {
-            return
+        if fileManager.fileExists(atPath: directory.path) {
+            try fileManager.removeItem(at: directory)
         }
-        try fileManager.removeItem(at: directory)
+        removeTaskIndexRecord(id: id)
     }
 
     func saveResultData(_ data: Data, for task: MediaGeneratorTask, suggestedExtension: String) throws -> URL {
@@ -690,6 +820,28 @@ struct MediaGeneratorFileDatabase {
         return try? decoder.decode(MediaGeneratorTask.self, from: data)
     }
 
+    private func loadTask(id: String) -> MediaGeneratorTask? {
+        guard let root = try? tasksRoot() else { return nil }
+        return loadTask(id: id, tasksRoot: root)
+    }
+
+    private func loadTask(id: String, tasksRoot: URL) -> MediaGeneratorTask? {
+        let url = tasksRoot.appendingPathComponent(id, isDirectory: true).appendingPathComponent("task.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(MediaGeneratorTask.self, from: data)
+    }
+
+    private func taskDirectories() throws -> [URL] {
+        try fileManager.contentsOfDirectory(
+            at: try tasksRoot(),
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+        .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+    }
+
     private func tasksRoot() throws -> URL {
         try ensureCurrentTaskHistorySchema()
         let root = try taskRootURL()
@@ -705,6 +857,20 @@ struct MediaGeneratorFileDatabase {
         try gearRoot().appendingPathComponent("tasks", isDirectory: true)
     }
 
+    private func taskIndexURL() throws -> URL {
+        try gearRoot().appendingPathComponent("tasks-index.json")
+    }
+
+    private func removeTaskIndexRecord(id: String) {
+        do {
+            var records = try loadTaskIndex()
+            records.removeAll { $0.id == id }
+            try saveTaskIndex(records)
+        } catch {
+            _ = try? rebuildTaskIndex()
+        }
+    }
+
     private func ensureCurrentTaskHistorySchema() throws {
         let root = try gearRoot()
         let markerURL = root.appendingPathComponent("task-history-schema-version")
@@ -712,9 +878,13 @@ struct MediaGeneratorFileDatabase {
         let current = (try? String(contentsOf: markerURL, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let tasksURL = root.appendingPathComponent("tasks", isDirectory: true)
+        let taskIndexURL = root.appendingPathComponent("tasks-index.json")
         guard current == expected else {
             if fileManager.fileExists(atPath: tasksURL.path) {
                 try fileManager.removeItem(at: tasksURL)
+            }
+            if fileManager.fileExists(atPath: taskIndexURL.path) {
+                try fileManager.removeItem(at: taskIndexURL)
             }
             try fileManager.createDirectory(at: tasksURL, withIntermediateDirectories: true)
             try expected.write(to: markerURL, atomically: true, encoding: .utf8)
@@ -1268,6 +1438,7 @@ struct XenodiaImageGenerationClient {
 @MainActor
 final class MediaGeneratorGearStore: ObservableObject {
     static let shared = MediaGeneratorGearStore()
+    private static let taskHistoryPageSize = 100
 
     @Published var category: MediaGeneratorCategory = .image
     @Published var selectedModel: MediaGeneratorModelID = .nanoBananaPro
@@ -1288,6 +1459,8 @@ final class MediaGeneratorGearStore: ObservableObject {
     @Published var quickPrompts: [MediaGeneratorQuickPrompt] = MediaGeneratorQuickPrompt.defaults
     @Published private(set) var imageHistory: [MediaGeneratorImageHistoryItem] = []
     @Published private(set) var tasks: [MediaGeneratorTask] = []
+    @Published private(set) var loadedTaskCount = 0
+    @Published private(set) var totalTaskCount = 0
     @Published var selectedTaskID: MediaGeneratorTask.ID?
     @Published private(set) var statusMessage = "Ready"
     @Published private(set) var activeCreationCount = 0
@@ -1295,6 +1468,7 @@ final class MediaGeneratorGearStore: ObservableObject {
     private let database: MediaGeneratorFileDatabase
     private let channel: XenodiaMediaChannel
     private var pollingTaskIDs: Set<MediaGeneratorTask.ID> = []
+    private var taskHistoryLimit = MediaGeneratorGearStore.taskHistoryPageSize
 
     var isBusy: Bool {
         activeCreationCount > 0
@@ -1350,6 +1524,17 @@ final class MediaGeneratorGearStore: ObservableObject {
         Self.groupedTasks(visibleTasks)
     }
 
+    var hasMoreTasks: Bool {
+        loadedTaskCount < totalTaskCount
+    }
+
+    var taskHistorySummary: String {
+        guard totalTaskCount > 0 else {
+            return "No saved tasks"
+        }
+        return "Showing \(min(loadedTaskCount, totalTaskCount)) of \(totalTaskCount)"
+    }
+
     init(
         database: MediaGeneratorFileDatabase = MediaGeneratorFileDatabase(),
         channel: XenodiaMediaChannel = XenodiaMediaChannel()
@@ -1362,8 +1547,27 @@ final class MediaGeneratorGearStore: ObservableObject {
     }
 
     func loadTasks() {
-        tasks = database.loadTasks()
-        selectedTaskID = selectedTaskID ?? taskGroups.first?.representative.id
+        taskHistoryLimit = Self.taskHistoryPageSize
+        loadTaskPage()
+    }
+
+    func loadMoreTasks() {
+        guard hasMoreTasks else {
+            return
+        }
+        taskHistoryLimit += Self.taskHistoryPageSize
+        loadTaskPage()
+        statusMessage = taskHistorySummary
+    }
+
+    private func loadTaskPage() {
+        let page = database.loadTaskPage(limit: taskHistoryLimit)
+        tasks = page.tasks
+        loadedTaskCount = page.loadedCount
+        totalTaskCount = page.totalCount
+        if selectedTaskID == nil || !tasks.contains(where: { $0.id == selectedTaskID }) {
+            selectedTaskID = taskGroups.first?.representative.id
+        }
         resumePollingForRunningTasks()
     }
 
@@ -1673,6 +1877,8 @@ final class MediaGeneratorGearStore: ObservableObject {
         do {
             try database.deleteTask(id: task.id)
             tasks.removeAll { $0.id == task.id }
+            totalTaskCount = max(0, totalTaskCount - 1)
+            loadedTaskCount = tasks.count
             if selectedTaskID == task.id {
                 selectedTaskID = tasks.first?.id
             }
@@ -1689,6 +1895,8 @@ final class MediaGeneratorGearStore: ObservableObject {
             }
             let ids = Set(group.tasks.map(\.id))
             tasks.removeAll { ids.contains($0.id) }
+            totalTaskCount = max(0, totalTaskCount - ids.count)
+            loadedTaskCount = tasks.count
             if let currentSelection = selectedTaskID, ids.contains(currentSelection) {
                 selectedTaskID = taskGroups.first?.representative.id
             }
@@ -2117,6 +2325,8 @@ final class MediaGeneratorGearStore: ObservableObject {
             batchCount: batchCount
         )
         tasks.insert(task, at: 0)
+        totalTaskCount = max(totalTaskCount + 1, tasks.count)
+        loadedTaskCount = tasks.count
         selectedTaskID = task.id
         persist(task)
         return task
@@ -2449,7 +2659,9 @@ final class MediaGeneratorGearStore: ObservableObject {
             tasks[index] = task
         } else {
             tasks.insert(task, at: 0)
+            totalTaskCount = max(totalTaskCount + 1, tasks.count)
         }
+        loadedTaskCount = tasks.count
         persist(task)
     }
 

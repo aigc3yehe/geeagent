@@ -774,6 +774,12 @@ final class TelegramBridgeGearStore: ObservableObject {
                     guard let rawReplyText = reply?.trimmingCharacters(in: .whitespacesAndNewlines),
                           !rawReplyText.isEmpty
                     else {
+                        await sendRuntimeEmptyReply(
+                            account: account,
+                            token: token,
+                            chatID: envelope.chatID,
+                            updateID: envelope.updateID
+                        )
                         state.offsets[account.id] = nextOffset
                         try database.savePollingState(state)
                         continue
@@ -826,6 +832,54 @@ final class TelegramBridgeGearStore: ObservableObject {
             } catch {
                 lastStatusMessage = error.localizedDescription
             }
+        }
+    }
+
+    private func sendRuntimeEmptyReply(
+        account: TelegramBridgeAccountConfig,
+        token: String,
+        chatID: String,
+        updateID: Int
+    ) async {
+        let projection = TelegramBridgeGatewayOutboundProjection(
+            chatID: chatID,
+            text: normalizedTelegramReply(
+                "GeeAgent runtime finished without a reply. I did not mark the request complete; please retry or check the runtime log for the missing final response."
+            ),
+            parseMode: nil,
+            disableWebPreview: nil,
+            successStatus: "runtime_empty_reply",
+            successUpdateID: updateID,
+            failureUpdateID: updateID
+        )
+        do {
+            let sendResult = try await sendTelegramMessageChunks(
+                token: token,
+                target: .init(kind: "chat_id", value: projection.chatID),
+                text: projection.text,
+                parseMode: projection.parseMode,
+                disableWebPreview: projection.disableWebPreview,
+                replyMarkup: nil
+            )
+            recordOutboundEvidence(
+                accountID: account.id,
+                accountRole: account.role,
+                evidence: TelegramBridgeGateway.outboundEvidence(
+                    projection: projection,
+                    result: sendResult
+                )
+            )
+            lastStatusMessage = "Telegram runtime produced an empty reply."
+        } catch {
+            recordOutboundEvidence(
+                accountID: account.id,
+                accountRole: account.role,
+                evidence: TelegramBridgeGateway.outboundExceptionEvidence(
+                    projection: projection,
+                    errorMessage: error.localizedDescription
+                )
+            )
+            lastStatusMessage = error.localizedDescription
         }
     }
 
@@ -2987,6 +3041,7 @@ enum TelegramCodexRemoteRouter {
     private static func argument<S: Sequence>(_ parts: S) -> String? where S.Element == String {
         parts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
     }
+
 }
 
 @MainActor
@@ -4284,7 +4339,7 @@ final class TelegramCodexRemoteBridge {
     }
 
     private func codexUsageText() -> String {
-        "Use `/list` to show Codex Desktop projects, `/mycodex` to show Telegram-created CLI sessions, or `/newcodex` to start a new Codex session. Use Open/Latest buttons or `/desktop [session_id]` for Desktop threads."
+        "Use `/list` to show Codex Desktop projects, `/mycodex` to show Telegram-created CLI sessions, or `/newcodex` to start a CLI session. Use Open/Latest buttons or `/desktop [session_id]` for Desktop threads. Native app control belongs to GeeAgent runtime/App Chat, not Codex Remote."
     }
 
     private func codexHelpText() -> String {
@@ -4302,7 +4357,7 @@ final class TelegramCodexRemoteBridge {
             "/desktop [session_id] - open the selected or explicit thread in Codex Desktop on this Mac",
             "/cancel - clear the selected Codex Remote thread",
             "",
-            "Only Codex Desktop sessions visible in the Codex app are listed; subagent/internal sessions are hidden."
+            "Only Codex Desktop sessions visible in the Codex app are listed; subagent/internal sessions are hidden. Native app control is exposed through GeeAgent runtime/App Chat via native_app_control."
         ].joined(separator: "\n")
     }
 

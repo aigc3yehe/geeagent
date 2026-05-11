@@ -343,9 +343,14 @@ final class TelegramBridgeGearTests: XCTestCase {
     func testCodexRemoteRouterParsesTextAndCallbackRoutes() {
         XCTAssertEqual(TelegramCodexRemoteRouter.route("  /LIST@gee_bot  "), .list)
         XCTAssertEqual(TelegramCodexRemoteRouter.route("/newcodex start fresh"), .newCodex(prompt: "start fresh"))
+        XCTAssertEqual(TelegramCodexRemoteRouter.route("/codexdesktop capture this"), .unsupported)
         XCTAssertEqual(TelegramCodexRemoteRouter.route("/mycodex"), .myCodex)
         XCTAssertEqual(TelegramCodexRemoteRouter.route("/mycodexPage 2"), .myCodexPage(page: 2))
         XCTAssertEqual(TelegramCodexRemoteRouter.route("please continue"), .plainText(prompt: "please continue"))
+        XCTAssertEqual(
+            TelegramCodexRemoteRouter.route("have Codex download this page video and summarize it"),
+            .plainText(prompt: "have Codex download this page video and summarize it")
+        )
         XCTAssertEqual(
             TelegramCodexRemoteRouter.route("/send thread-a please continue"),
             .send(arguments: "thread-a please continue")
@@ -873,6 +878,54 @@ final class TelegramBridgeGearTests: XCTestCase {
 
         let state = try database.loadPollingState()
         XCTAssertEqual(state.offsets["gee_direct_default"], 491738610)
+    }
+
+    @MainActor
+    func testGeeDirectEmptyRuntimeReplyStillRepliesToTelegram() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-config-store-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let update = try telegramTextUpdate(
+            updateID: 491738620,
+            messageID: 40,
+            chatID: "7973901539",
+            fromUserID: "7973901539",
+            text: "please do a thing"
+        )
+        let sender = RecordingTelegramBridgeSender(
+            updates: [update],
+            sendResult: .success(telegramMessageID: "41", sentAt: "2026-05-06T07:29:59Z")
+        )
+        let database = TelegramBridgeFileDatabase(dataDirectoryURL: directory)
+        let store = TelegramBridgeGearStore(
+            database: database,
+            tokenStore: TelegramBridgeTokenStore(storageURL: directory.appendingPathComponent("tokens.json")),
+            sender: sender
+        )
+        try store.upsertConversationBot(
+            role: "gee_direct",
+            accountID: "gee_direct_default",
+            botUsername: "gee_bot",
+            allowUserIds: ["7973901539"],
+            allowChatIds: [],
+            groupPolicy: "deny",
+            codexThreadSource: nil,
+            codexSendMode: nil,
+            token: "123456:secret"
+        )
+
+        await store.pollInboundOnce { _ in nil }
+
+        XCTAssertEqual(sender.sentMessages.count, 1)
+        let sentMessage = try XCTUnwrap(sender.sentMessages.first)
+        XCTAssertTrue(sentMessage.text.contains("GeeAgent runtime finished without a reply."))
+
+        let log = try database.loadConversationLog()
+        let thread = try XCTUnwrap(log.threads.first { $0.id == "gee_direct_default:7973901539" })
+        XCTAssertEqual(thread.messages.last?.status, "runtime_empty_reply")
+        let state = try database.loadPollingState()
+        XCTAssertEqual(state.offsets["gee_direct_default"], 491738621)
     }
 
     @MainActor
@@ -2050,6 +2103,26 @@ final class TelegramBridgeGearTests: XCTestCase {
     }
 
     @MainActor
+    func testCodexRemoteDoesNotOwnNativeAppControlCommand() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telegram-codex-remote-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let bridge = TelegramCodexRemoteBridge(
+            codexHomeURL: directory.appendingPathComponent(".codex", isDirectory: true),
+            codexBinaryURL: directory.appendingPathComponent("missing-codex")
+        )
+
+        let reply = await bridge.reply(
+            for: codexRemoteAccount(),
+            text: "/codexdesktop capture this",
+            chatID: "chat-1"
+        )
+
+        XCTAssertEqual(reply.status, "codex_blocked")
+        XCTAssertTrue(reply.text.contains("Native app control belongs to GeeAgent runtime/App Chat"))
+    }
+
+    @MainActor
     func testCodexRemoteCallbackStartDoesNotWaitForCallbackAcknowledgement() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("telegram-config-store-\(UUID().uuidString)", isDirectory: true)
@@ -2250,6 +2323,8 @@ final class TelegramBridgeGearTests: XCTestCase {
         XCTAssertTrue(reply.text.contains("Codex Telegram Remote"))
         XCTAssertTrue(reply.text.contains("/open"))
         XCTAssertTrue(reply.text.contains("/latest"))
+        XCTAssertFalse(reply.text.contains("/codexdesktop"))
+        XCTAssertTrue(reply.text.contains("native_app_control"))
         XCTAssertTrue(reply.text.contains("/send"))
     }
 

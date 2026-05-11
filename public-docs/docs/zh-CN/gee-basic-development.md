@@ -36,6 +36,8 @@ Settings 暴露一个统一的默认 STT 服务用于音频转写。Chat 语音�
 
 对于 Gear 工作，live SDK run 和 Gee MCP bridge 是必需路径。若 SDK runtime 或 bridge 不可用，GeeAgent 会报告结构化失败，而不是通过另一条 native 路径执行任务。
 
+本地应用控制也是共享的 Gee MCP host path，不是 Gear 或 Telegram 的专用捷径。App Chat/runtime 可以通过 `native_app_control`（`gee.nativeApp.control`）控制受支持的本地 macOS app；V1 暴露 Codex Desktop 的 `new_chat_and_send`，并在 app、权限、目标 UI 元素或发送动作不可用时返回结构化 blocked/failed 状态。
+
 Host-action completion 现在会在同一个 SDK run 仍然存活时回到该 run。若该 run 已经丢失，GeeAgent 会记录结构化 Gear 结果，并把本轮标记为 failed 或 degraded，而不是再启动一个隐藏的分离 completion turn。
 
 Gear invocation 参数现在会先在 TypeScript runtime 边界完成规范化和校验，再交给 native host 执行。已聚焦的 runtime plan 可以为匹配的 capability 提供确定性阶段参数；缺失或冲突的必填字段仍会作为结构化 tool error 返回，使 active agent run 可以修正调用。

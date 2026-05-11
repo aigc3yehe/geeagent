@@ -547,6 +547,9 @@ private struct MediaGeneratorGearRootView: View {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(MediaGeneratorClearCacheButtonStyle())
+                Text(store.taskHistorySummary)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.44))
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 12)
@@ -649,6 +652,16 @@ private struct MediaGeneratorGearRootView: View {
                                     store.selectedTaskID = task.id
                                 }
                             }
+                        }
+                        if store.hasMoreTasks {
+                            Button {
+                                store.loadMoreTasks()
+                            } label: {
+                                Label("Load older", systemImage: "clock.arrow.circlepath")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(MediaGeneratorLoadMoreButtonStyle())
+                            .padding(.top, 2)
                         }
                     }
                     .padding(16)
@@ -2627,6 +2640,21 @@ private struct MediaGeneratorClearCacheButtonStyle: ButtonStyle {
             .background(.white.opacity(configuration.isPressed ? 0.08 : 0.001), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(MediaGeneratorPalette.border, lineWidth: 1)
+            }
+    }
+}
+
+private struct MediaGeneratorLoadMoreButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .semibold))
+            .padding(.horizontal, 12)
+            .frame(height: 34)
+            .foregroundStyle(.white.opacity(configuration.isPressed ? 0.68 : 0.76))
+            .background(.white.opacity(configuration.isPressed ? 0.09 : 0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(MediaGeneratorPalette.border, lineWidth: 1)
             }
     }

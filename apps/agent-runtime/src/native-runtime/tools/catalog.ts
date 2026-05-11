@@ -99,6 +99,14 @@ const TOOL_CATALOG: ToolSpec[] = [
     blastRadius: "safe",
   },
   {
+    id: "gee.nativeApp.control",
+    title: "Control native app",
+    description:
+      "Ask the Gee native host to control a supported local macOS app through the shared app-control protocol.",
+    needsApproval: false,
+    blastRadius: "external",
+  },
+  {
     id: "files.readText",
     title: "Read text file",
     description: "Read a UTF-8 file from the local filesystem and return its contents.",

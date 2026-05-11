@@ -284,6 +284,46 @@ final class MediaGeneratorGearTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: try database.taskFileURL(task.id).path))
     }
 
+    func testMediaGeneratorFileDatabaseLoadsBoundedTaskPageFromIndex() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-generator-page-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = MediaGeneratorFileDatabase(rootURL: root)
+
+        for index in 0..<105 {
+            try database.save(makeMediaGeneratorTask(id: "task-\(index)", index: index))
+        }
+
+        let page = database.loadTaskPage(limit: 25)
+
+        XCTAssertEqual(page.tasks.count, 25)
+        XCTAssertEqual(page.loadedCount, 25)
+        XCTAssertEqual(page.totalCount, 105)
+        XCTAssertTrue(page.hasMore)
+        XCTAssertEqual(page.tasks.first?.id, "task-104")
+        XCTAssertEqual(page.tasks.last?.id, "task-80")
+        XCTAssertEqual(database.loadTasks().count, 105)
+    }
+
+    func testMediaGeneratorFileDatabaseRebuildsStaleTaskIndex() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-generator-stale-index-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = MediaGeneratorFileDatabase(rootURL: root)
+        for index in 0..<3 {
+            try database.save(makeMediaGeneratorTask(id: "task-\(index)", index: index))
+        }
+        let removedDirectory = try database.taskFileURL("task-2").deletingLastPathComponent()
+        try FileManager.default.removeItem(at: removedDirectory)
+
+        let page = database.loadTaskPage(limit: 10)
+
+        XCTAssertEqual(page.tasks.map(\.id), ["task-1", "task-0"])
+        XCTAssertEqual(page.loadedCount, 2)
+        XCTAssertEqual(page.totalCount, 2)
+        XCTAssertFalse(page.hasMore)
+    }
+
     func testMediaGeneratorReferencePreviewURLSupportsDisplayableImageReferencesOnly() {
         let remote = MediaGeneratorReference(
             id: "remote",
@@ -711,6 +751,32 @@ final class MediaGeneratorGearTests: XCTestCase {
     }
 
     @MainActor
+    func testMediaGeneratorStoreLoadsTaskHistoryOnePageAtATime() {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-generator-store-page-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = MediaGeneratorFileDatabase(rootURL: root)
+        for index in 0..<105 {
+            try? database.save(makeMediaGeneratorTask(id: "store-task-\(index)", index: index))
+        }
+
+        let store = MediaGeneratorGearStore(database: database)
+
+        XCTAssertEqual(store.tasks.count, 100)
+        XCTAssertEqual(store.loadedTaskCount, 100)
+        XCTAssertEqual(store.totalTaskCount, 105)
+        XCTAssertTrue(store.hasMoreTasks)
+        XCTAssertEqual(store.tasks.first?.id, "store-task-104")
+
+        store.loadMoreTasks()
+
+        XCTAssertEqual(store.tasks.count, 105)
+        XCTAssertEqual(store.loadedTaskCount, 105)
+        XCTAssertEqual(store.totalTaskCount, 105)
+        XCTAssertFalse(store.hasMoreTasks)
+    }
+
+    @MainActor
     func testApplyTaskParametersRestoresPromptModelParametersAndReferences() {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-generator-apply-task-tests-\(UUID().uuidString)", isDirectory: true)
@@ -1066,5 +1132,23 @@ final class MediaGeneratorGearTests: XCTestCase {
         XCTAssertEqual(payload["status"] as? String, "failed")
         XCTAssertTrue((payload["error"] as? String)?.contains("cannot be combined") == true)
         XCTAssertTrue(store.tasks.isEmpty)
+    }
+
+    private func makeMediaGeneratorTask(id: String, index: Int) -> MediaGeneratorTask {
+        MediaGeneratorTask(
+            id: id,
+            category: .image,
+            modelID: .nanoBananaPro,
+            prompt: "Paged task \(index)",
+            status: .completed,
+            createdAt: Date(timeIntervalSince1970: 1_774_000_000 + TimeInterval(index)),
+            updatedAt: Date(timeIntervalSince1970: 1_774_000_030 + TimeInterval(index)),
+            providerTaskID: nil,
+            resultURL: "https://cdn.example/task-\(index).png",
+            localOutputPath: nil,
+            errorMessage: nil,
+            parameters: ["aspect_ratio": "1:1"],
+            references: []
+        )
     }
 }

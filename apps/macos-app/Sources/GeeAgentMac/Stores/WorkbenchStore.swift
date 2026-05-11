@@ -1598,6 +1598,18 @@ final class WorkbenchStore {
         }
 
         if let intentName = payload["intent"] as? String {
+            if intentName == "native_app.control" {
+                let appID = payload["app_id"] as? String ?? "native app"
+                let action = payload["action"] as? String ?? "action"
+                var parts = ["\(intent.toolID) completed \(action) for \(appID)"]
+                if let state = payload["state"] as? String {
+                    parts.append("state: \(state)")
+                }
+                if let code = payload["code"] as? String {
+                    parts.append("code: \(code)")
+                }
+                return parts.joined(separator: "; ")
+            }
             if let moduleID = payload["module_id"] as? String {
                 return "\(intent.toolID) completed \(intentName) for \(moduleID)"
             }
