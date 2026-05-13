@@ -913,8 +913,14 @@ final class WorkbenchStoreTests: XCTestCase {
         XCTAssertEqual(summaryPayload["disclosure_level"] as? String, "summary")
         let gears = try XCTUnwrap(summaryPayload["gears"] as? [[String: Any]])
         let mediaGear = try XCTUnwrap(gears.first { $0["gear_id"] as? String == "media.library" })
-        XCTAssertEqual(mediaGear["capability_count"] as? Int, 3)
-        XCTAssertTrue((mediaGear["capability_ids"] as? [String])?.contains("media.import_files") == true)
+        XCTAssertEqual(mediaGear["capability_count"] as? Int, 6)
+        let mediaCapabilityIDs = Set((mediaGear["capability_ids"] as? [String]) ?? [])
+        XCTAssertTrue(mediaCapabilityIDs.isSuperset(of: [
+            "media.import_files",
+            "media.inspect_assets",
+            "media.update_review_state",
+            "media.search_assets"
+        ]))
         XCTAssertNil(mediaGear["description"], "Summary disclosure should not include full capability copy.")
 
         store.invokeTool(

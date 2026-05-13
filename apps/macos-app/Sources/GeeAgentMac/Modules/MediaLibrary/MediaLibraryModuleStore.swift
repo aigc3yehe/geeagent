@@ -217,11 +217,17 @@ final class MediaLibraryModuleStore {
         }
     }
 
-    func importMediaForAgent(paths: [String]) async throws -> [MediaLibraryItem] {
-        try await importMediaForAgentReport(paths: paths).importedItems
+    func importMediaForAgent(
+        paths: [String],
+        metadata: MediaLibraryImportMetadata? = nil
+    ) async throws -> [MediaLibraryItem] {
+        try await importMediaForAgentReport(paths: paths, metadata: metadata).importedItems
     }
 
-    func importMediaForAgentReport(paths: [String]) async throws -> MediaLibraryImportReport {
+    func importMediaForAgentReport(
+        paths: [String],
+        metadata: MediaLibraryImportMetadata? = nil
+    ) async throws -> MediaLibraryImportReport {
         let urls = paths
             .map { NSString(string: $0).expandingTildeInPath }
             .map { URL(fileURLWithPath: $0) }
@@ -238,7 +244,7 @@ final class MediaLibraryModuleStore {
 
         do {
             let importService = MediaLibraryService()
-            let report = try await importService.importFilesWithReport(urls, into: library.url)
+            let report = try await importService.importFilesWithReport(urls, into: library.url, metadata: metadata)
             try reloadLibraryContents()
             if let firstAvailable = report.availableItems.first {
                 focusedItemID = firstAvailable.id
@@ -253,6 +259,68 @@ final class MediaLibraryModuleStore {
             errorMessage = error.localizedDescription
             throw error
         }
+    }
+
+    func updateReviewStateForAgent(
+        itemIDs: [String],
+        reviewStatus: String,
+        manualFlags: [String: String],
+        notes: String?
+    ) async throws -> [MediaLibraryItem] {
+        let library = try await ensureLibraryForAgent()
+        isLoading = true
+        errorMessage = nil
+        defer { isLoading = false }
+
+        do {
+            let updated = try service.updateReviewState(
+                itemIDs: itemIDs,
+                reviewStatus: reviewStatus,
+                manualFlags: manualFlags,
+                notes: notes,
+                in: library.url
+            )
+            try reloadLibraryContents()
+            if let first = updated.first {
+                focusedItemID = first.id
+                selectedItemIDs = Set(updated.map(\.id))
+            }
+            return updated
+        } catch {
+            errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    func inspectAssetsForAgent(itemIDs: [String], paths: [String]) async throws -> [MediaLibraryAssetInspection] {
+        var inspectItems: [MediaLibraryItem] = []
+        var missingInspections: [MediaLibraryAssetInspection] = []
+        if !itemIDs.isEmpty {
+            _ = try await ensureLibraryForAgent()
+            for itemID in itemIDs {
+                if let item = items.first(where: { $0.id == itemID }) {
+                    inspectItems.append(item)
+                } else {
+                    missingInspections.append(
+                        MediaLibraryAssetInspection(
+                            itemID: itemID,
+                            filePath: "",
+                            exists: false,
+                            playable: false,
+                            durationSeconds: nil,
+                            width: nil,
+                            height: nil,
+                            orientation: nil,
+                            videoCodec: nil,
+                            audioCodec: nil,
+                            errors: ["item_not_found"]
+                        )
+                    )
+                }
+            }
+        }
+        let inspected = await MediaLibraryService().inspectAssets(items: inspectItems, paths: paths)
+        return missingInspections + inspected
     }
 
     func ensureLibraryForAgent(pendingPaths: [String] = []) async throws -> MediaLibraryInfo {

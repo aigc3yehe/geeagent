@@ -52,6 +52,76 @@ final class MediaLibraryAgentImportTests: XCTestCase {
     }
 
     @MainActor
+    func testImportStoresExplicitProductionMetadata() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-agent-metadata-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let source = root.appendingPathComponent("sample.png")
+        try makePNGData().write(to: source)
+
+        let service = MediaLibraryService()
+        let library = try service.createLibrary(parentURL: root, name: "AgentMetadata.library")
+        let metadata = MediaLibraryImportMetadata(
+            projectID: "project-1",
+            runID: "run-1",
+            sourceURL: "https://example.com/source",
+            platform: "youtube",
+            sourceTaskID: "smartyt-download-1",
+            beatID: "rank-4",
+            intendedUse: "walking b-roll",
+            reviewStatus: "pending_review",
+            tags: ["walk", "city"],
+            manualFlags: ["watermark": "needs_human_check"],
+            notes: "check later"
+        )
+
+        let report = try await service.importFilesWithReport([source], into: library.url, metadata: metadata)
+
+        let item = try XCTUnwrap(report.importedItems.first)
+        XCTAssertEqual(item.projectID, "project-1")
+        XCTAssertEqual(item.runID, "run-1")
+        XCTAssertEqual(item.sourceURL, "https://example.com/source")
+        XCTAssertEqual(item.platform, "youtube")
+        XCTAssertEqual(item.sourceTaskID, "smartyt-download-1")
+        XCTAssertEqual(item.beatID, "rank-4")
+        XCTAssertEqual(item.intendedUse, "walking b-roll")
+        XCTAssertEqual(item.reviewStatus, "pending_review")
+        XCTAssertEqual(item.tags, ["walk", "city"])
+        XCTAssertEqual(item.manualFlags["watermark"], "needs_human_check")
+        XCTAssertEqual(item.reviewNotes, "check later")
+    }
+
+    @MainActor
+    func testReviewStateUpdateRecordsManualFlags() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-agent-review-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let source = root.appendingPathComponent("sample.png")
+        try makePNGData().write(to: source)
+
+        let service = MediaLibraryService()
+        let library = try service.createLibrary(parentURL: root, name: "AgentReview.library")
+        let report = try await service.importFilesWithReport([source], into: library.url)
+        let item = try XCTUnwrap(report.importedItems.first)
+
+        let updated = try service.updateReviewState(
+            itemIDs: [item.id],
+            reviewStatus: "draft_usable",
+            manualFlags: ["style": "fits_reference"],
+            notes: "usable for draft",
+            in: library.url
+        )
+
+        XCTAssertEqual(updated.first?.reviewStatus, "draft_usable")
+        XCTAssertEqual(updated.first?.manualFlags["style"], "fits_reference")
+        XCTAssertEqual(updated.first?.reviewNotes, "usable for draft")
+    }
+
+    @MainActor
     func testAgentImportRestoresLastLibraryBeforeImporting() async throws {
         let suiteName = "media-agent-restore-tests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

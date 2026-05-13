@@ -2,7 +2,7 @@
   "schema": "gee.gear.v1",
   "id": "smartyt.media",
   "name": "SmartYT Media",
-  "description": "URL media sniffer for downloading video, audio, or direct image artifacts and extracting transcript text through subtitles or local speech tooling.",
+  "description": "URL media sniffer and candidate search gear for explicit video, audio, or direct image acquisition.",
   "developer": "Gee",
   "version": "0.1.0",
   "category": "Media",
@@ -71,13 +71,80 @@
     "enabled": true,
     "capabilities": [
       {
+        "id": "smartyt.search_candidates",
+        "title": "Search media candidates",
+        "description": "Search for candidate media from an explicit Codex/user query and platform list, save a search task, and return candidate metadata without downloading anything.",
+        "examples": [
+          "Search YouTube for evening neighborhood walking footage",
+          "Find candidate clips for this media search plan"
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "query"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "type": "string"
+            },
+            "run_id": {
+              "type": "string"
+            },
+            "task_label": {
+              "type": "string"
+            },
+            "query": {
+              "type": "string"
+            },
+            "platforms": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "filters": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50
+            }
+          }
+        },
+        "side_effect": "gear_data.write",
+        "permissions": [
+          "network.web",
+          "process.spawn",
+          "gear_data.write"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "medium",
+            "requires_approval": false,
+            "skill_hint": "Use when Codex has an explicit media search query and platform list. This capability only returns candidates and search task state; it must not download or import media."
+          }
+        }
+      },
+      {
         "id": "smartyt.sniff",
         "title": "Sniff URL media",
         "description": "Inspect a URL and return structured media metadata such as title, platform, duration, thumbnail, extension, and available formats.",
         "examples": [
           "Inspect this YouTube URL",
           "Sniff media information from this video link"
-        ]
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "low",
+            "requires_approval": false,
+            "skill_hint": "Use to inspect an explicit media URL before choosing whether to download. Do not treat metadata as a content suitability judgment."
+          }
+        }
       },
       {
         "id": "smartyt.download",
@@ -86,7 +153,15 @@
         "examples": [
           "Download audio from this URL",
           "Download the video from this link"
-        ]
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "high",
+            "requires_approval": false,
+            "skill_hint": "Use only after the user or Codex plan explicitly selects a candidate or URL to download. Downloaded files stay in the SmartYT task output directory and are not imported into Media Library automatically."
+          }
+        }
       },
       {
         "id": "smartyt.download_now",
@@ -95,16 +170,80 @@
         "examples": [
           "Download this video and give me the local file path",
           "Fetch this media file now so it can be imported into the media library"
-        ]
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "high",
+            "requires_approval": false,
+            "skill_hint": "Use only for an explicit selected URL/candidate. Return output_paths and task state exactly; do not call Media Library import unless the user separately requests import."
+          }
+        }
       },
       {
-        "id": "smartyt.transcribe",
-        "title": "Convert media to text",
-        "description": "Queue transcript extraction for a URL. The gear first tries platform subtitles, then falls back to local Whisper tooling when available.",
+        "id": "smartyt.get_task",
+        "title": "Get SmartYT task",
+        "description": "Return one saved SmartYT search or download task by id, including state, source URL or query, output files, candidates, and errors.",
         "examples": [
-          "Convert this video URL to text",
-          "Transcribe the audio from this link"
-        ]
+          "Show this SmartYT download task",
+          "Get the candidate search task"
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "task_id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "task_id": {
+              "type": "string"
+            }
+          }
+        },
+        "side_effect": "read_only",
+        "permissions": [
+          "gear_data.read"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "low",
+            "requires_approval": false,
+            "skill_hint": "Use to inspect SmartYT task state before deciding the next explicit action."
+          }
+        }
+      },
+      {
+        "id": "smartyt.list_tasks",
+        "title": "List SmartYT tasks",
+        "description": "List recent SmartYT search and download tasks with compact state for inspection and recovery.",
+        "examples": [
+          "List recent SmartYT tasks",
+          "Show SmartYT search and download history"
+        ],
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            }
+          }
+        },
+        "side_effect": "read_only",
+        "permissions": [
+          "gear_data.read"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "low",
+            "requires_approval": false,
+            "skill_hint": "Use to inspect recent SmartYT task state. This capability does not search, download, or import media."
+          }
+        }
       }
     ]
   }

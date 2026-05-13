@@ -127,6 +127,19 @@
                 "type": "string"
               },
               "description": "Local image or video file paths to import into the authorized Media Library."
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Optional project id to store as explicit media metadata."
+            },
+            "run_id": {
+              "type": "string",
+              "description": "Optional run id to store as explicit media metadata."
+            },
+            "metadata": {
+              "type": "object",
+              "additionalProperties": true,
+              "description": "Optional explicit source, beat, intended use, review, and tag metadata. Gee records these fields without judging the media."
             }
           }
         },
@@ -233,6 +246,146 @@
             "risk": "high",
             "requires_approval": false,
             "skill_hint": "Use only when the current user message explicitly asks Codex to import local media files into GeeAgent Media Library. Pass only local paths supplied by the user or returned by Gee capabilities, and report structured imported_items/existing_items or authorization_required failures."
+          }
+        }
+      },
+      {
+        "id": "media.inspect_assets",
+        "title": "Inspect media assets",
+        "description": "Inspect imported media item ids or explicit local paths for file existence, playability, duration, dimensions, orientation, and basic stream evidence without judging content suitability.",
+        "examples": [
+          "Inspect these media library items",
+          "Check whether these local media files are playable"
+        ],
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "item_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "side_effect": "read_only",
+        "permissions": [
+          "filesystem.read.user_selected",
+          "media.library.read"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "low",
+            "requires_approval": false,
+            "skill_hint": "Use to verify explicit Media Library item ids or local paths before downstream rendering or review. Do not infer copyright, watermark, style, or suitability from this result."
+          }
+        }
+      },
+      {
+        "id": "media.update_review_state",
+        "title": "Update media review state",
+        "description": "Record human- or agent-supplied review status, manual flags, and notes on Media Library items. Gee stores the state but does not make the judgment.",
+        "examples": [
+          "Mark these clips as draft usable",
+          "Record that this item needs replacement"
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "item_ids",
+            "review_status"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "item_ids": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              }
+            },
+            "review_status": {
+              "type": "string",
+              "enum": [
+                "pending_review",
+                "draft_usable",
+                "final_usable",
+                "not_suitable",
+                "needs_replacement"
+              ]
+            },
+            "manual_flags": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        },
+        "side_effect": "media_library.update_review_state",
+        "permissions": [
+          "media.library.write",
+          "gear_data.write"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "medium",
+            "requires_approval": false,
+            "skill_hint": "Use only to record an explicit review state or manual flag supplied by the user or by a Codex plan. Do not present Gee as having judged copyright, watermark, likeness, similarity, style, or beat fit."
+          }
+        }
+      },
+      {
+        "id": "media.search_assets",
+        "title": "Search media assets",
+        "description": "Search the authorized Media Library by explicit project, run, beat, media type, orientation, review status, and tags.",
+        "examples": [
+          "Find draft usable clips for this beat",
+          "List horizontal approved media for this run"
+        ],
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "type": "string"
+            },
+            "run_id": {
+              "type": "string"
+            },
+            "filters": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            }
+          }
+        },
+        "side_effect": "read_only",
+        "permissions": [
+          "media.library.read"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "low",
+            "requires_approval": false,
+            "skill_hint": "Use to retrieve Media Library file paths that already carry explicit project, run, beat, tag, or review metadata. The result is an asset lookup, not a content suitability judgment."
           }
         }
       }

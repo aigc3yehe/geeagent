@@ -81,6 +81,73 @@ struct PowerVideoManagerCostSummary: Decodable, Hashable {
     }
 }
 
+private struct PowerVideoManagerRunState: Decodable {
+    struct Script: Decodable {
+        var id: String?
+        var slug: String?
+        var archivePath: String?
+        var productionPromptsPath: String?
+    }
+
+    struct Topic: Decodable {
+        var titleEn: String?
+        var title: String?
+    }
+
+    struct VideoCandidate: Decodable {
+        var shotNumber: Int?
+        var localPath: String?
+        var cost: Double?
+        var status: String?
+    }
+
+    struct VideoCandidates: Decodable {
+        var accepted: [VideoCandidate]?
+        var completed: [VideoCandidate]?
+    }
+
+    struct AcceptedFirstFrame: Decodable {
+        var shotNumber: Int?
+        var localPath: String?
+    }
+
+    var script: Script?
+    var topic: Topic?
+    var status: String?
+    var contentTemplateId: String?
+    var productionMode: String?
+    var productionRoute: String?
+    var editingTemplate: String?
+    var cropTemplate: String?
+    var aspectRatio: String?
+    var finalDeliveryAspect: String?
+    var updatedAt: String?
+    var acceptedFirstFrames: [AcceptedFirstFrame]?
+    var videoCandidates: VideoCandidates?
+}
+
+private struct PowerVideoManagerProductionPromptsEnvelope: Decodable {
+    struct Payload: Decodable {
+        struct PromptShot: Decodable {
+            var shotNumber: Int?
+            var duration: Double?
+            var prompt: String?
+            var firstFrameCore: String?
+        }
+
+        var contentTemplateId: String?
+        var productionMode: String?
+        var productionRoute: String?
+        var editingTemplate: String?
+        var aspectRatio: String?
+        var firstFramePrompts: [PromptShot]?
+        var videoPrompts: [PromptShot]?
+    }
+
+    var resolvedAspectRatio: String?
+    var productionPrompts: Payload?
+}
+
 struct PowerVideoManagerAsset: Identifiable, Hashable {
     var id: String { relativePath }
     var kind: PowerVideoManagerAssetKind
@@ -188,7 +255,9 @@ struct PowerVideoManagerWorkspaceScanner {
     private func scanProject(_ projectURL: URL) throws -> PowerVideoManagerProject {
         let scriptURL = projectURL.appendingPathComponent("script/script-archive.md")
         let scriptText = (try? String(contentsOf: scriptURL, encoding: .utf8)) ?? ""
-        let selectedPaths = selectedAssetPaths(in: projectURL)
+        let runState = parseRunState(projectURL: projectURL)
+        let productionPrompts = parseProductionPrompts(projectURL: projectURL, runState: runState)
+        let selectedPaths = selectedAssetPaths(in: projectURL, runState: runState)
         let assets = try scanAssets(projectURL: projectURL, selectedPaths: selectedPaths)
         let folderValues = try? projectURL.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
         let updatedAt = maxDate([folderValues?.contentModificationDate] + assets.map(\.updatedAt)) ?? Date.distantPast
@@ -197,16 +266,28 @@ struct PowerVideoManagerWorkspaceScanner {
         return PowerVideoManagerProject(
             folderName: projectURL.lastPathComponent,
             url: projectURL,
-            title: parseTitle(scriptText) ?? projectURL.lastPathComponent,
+            title: parseTitle(scriptText)
+                ?? runState?.topic?.titleEn
+                ?? runState?.topic?.title
+                ?? runState?.script?.slug
+                ?? projectURL.lastPathComponent,
             createdAt: createdAt,
             updatedAt: updatedAt,
-            status: parseHeaderValue("Status", from: scriptText),
+            status: runState?.status
+                ?? parseHeaderValue("Status", from: scriptText)
+                ?? runState?.productionMode
+                ?? productionPrompts?.productionPrompts?.productionMode,
             score: parseHeaderValue("Score", from: scriptText),
-            duration: parseHeaderValue("Duration", from: scriptText),
-            aspectRatio: parseHeaderValue("Aspect Ratio", from: scriptText),
-            cost: parseCostSummary(projectURL: projectURL),
+            duration: durationSummary(from: productionPrompts)
+                ?? parseHeaderValue("Duration", from: scriptText),
+            aspectRatio: runState?.finalDeliveryAspect
+                ?? runState?.aspectRatio
+                ?? productionPrompts?.resolvedAspectRatio
+                ?? productionPrompts?.productionPrompts?.aspectRatio
+                ?? parseHeaderValue("Aspect Ratio", from: scriptText),
+            cost: parseCostSummary(projectURL: projectURL, runState: runState),
             assets: assets,
-            shots: buildShots(from: assets, scriptText: scriptText),
+            shots: buildShots(from: assets, scriptText: scriptText, productionPrompts: productionPrompts),
             warnings: []
         )
     }
@@ -284,21 +365,36 @@ struct PowerVideoManagerWorkspaceScanner {
         if (isVideo || isImage) && path.hasPrefix("editing/renders/") {
             return .editRender
         }
+        if path.hasPrefix("production/video-review/") {
+            return .diagnostic
+        }
         if isJSONOrMarkdown && (
             path == "work-notes.md"
             || path == "run-state.json"
             || path.hasPrefix("editing/")
             || path.hasPrefix("production/")
+            || path.hasPrefix("script/")
         ) {
             return .diagnostic
         }
         return .other
     }
 
-    private func selectedAssetPaths(in projectURL: URL) -> Set<String> {
+    private func selectedAssetPaths(in projectURL: URL, runState: PowerVideoManagerRunState?) -> Set<String> {
         var paths = Set<String>()
         let productionSelectionURL = projectURL.appendingPathComponent("production/current-selection.json")
         let editingSelectionURL = projectURL.appendingPathComponent("editing/current-edit.json")
+
+        for item in runState?.acceptedFirstFrames ?? [] {
+            if let localPath = item.localPath {
+                paths.insert(normalizedRelativePath(localPath, projectURL: projectURL))
+            }
+        }
+        for item in runState?.videoCandidates?.accepted ?? [] {
+            if let localPath = item.localPath {
+                paths.insert(normalizedRelativePath(localPath, projectURL: projectURL))
+            }
+        }
 
         if let data = try? Data(contentsOf: productionSelectionURL),
            let selection = try? JSONDecoder().decode(ProductionSelection.self, from: data) {
@@ -316,17 +412,34 @@ struct PowerVideoManagerWorkspaceScanner {
         return paths
     }
 
-    private func parseCostSummary(projectURL: URL) -> PowerVideoManagerCostSummary? {
+    private func parseCostSummary(projectURL: URL, runState: PowerVideoManagerRunState?) -> PowerVideoManagerCostSummary? {
         let url = projectURL.appendingPathComponent("cost-summary.json")
-        guard let data = try? Data(contentsOf: url) else {
-            return nil
+        if let data = try? Data(contentsOf: url),
+           let summary = try? JSONDecoder().decode(PowerVideoManagerCostSummary.self, from: data) {
+            return summary
         }
-        return try? JSONDecoder().decode(PowerVideoManagerCostSummary.self, from: data)
+
+        let accepted = runState?.videoCandidates?.accepted ?? []
+        let items = accepted.compactMap { candidate -> PowerVideoManagerCostSummary.Item? in
+            guard candidate.cost != nil || candidate.localPath != nil else { return nil }
+            return PowerVideoManagerCostSummary.Item(kind: "video", path: candidate.localPath, cost: candidate.cost)
+        }
+        let total = items.compactMap(\.cost).reduce(0, +)
+        guard !items.isEmpty else { return nil }
+        return PowerVideoManagerCostSummary(currency: "RMB", total: total, items: items)
     }
 
-    private func buildShots(from assets: [PowerVideoManagerAsset], scriptText: String) -> [PowerVideoManagerShot] {
+    private func buildShots(
+        from assets: [PowerVideoManagerAsset],
+        scriptText: String,
+        productionPrompts: PowerVideoManagerProductionPromptsEnvelope?
+    ) -> [PowerVideoManagerShot] {
         let summaries = parseShotSummaries(scriptText)
-        let shotNumbers = Set(assets.compactMap(\.shotNumber)).union(summaries.keys)
+            .merging(parsePromptShotSummaries(productionPrompts)) { existing, _ in existing }
+        let promptShotNumbers = productionPrompts?.productionPrompts?.videoPrompts?.compactMap(\.shotNumber) ?? []
+        let shotNumbers = Set(assets.compactMap(\.shotNumber))
+            .union(summaries.keys)
+            .union(promptShotNumbers)
         return shotNumbers.sorted().map { shotNumber in
             let shotAssets = assets.filter { $0.shotNumber == shotNumber }
             return PowerVideoManagerShot(
@@ -355,6 +468,51 @@ struct PowerVideoManagerWorkspaceScanner {
             }
         }
         return summaries
+    }
+
+    private func parsePromptShotSummaries(_ envelope: PowerVideoManagerProductionPromptsEnvelope?) -> [Int: String] {
+        var summaries: [Int: String] = [:]
+        for shot in envelope?.productionPrompts?.videoPrompts ?? [] {
+            guard let shotNumber = shot.shotNumber else { continue }
+            summaries[shotNumber] = shot.prompt?.nilIfEmpty
+                ?? shot.firstFrameCore?.nilIfEmpty
+                ?? shot.duration.map { "Duration \(durationLabel($0))" }
+        }
+        for shot in envelope?.productionPrompts?.firstFramePrompts ?? [] where summaries[shot.shotNumber ?? -1] == nil {
+            guard let shotNumber = shot.shotNumber else { continue }
+            summaries[shotNumber] = shot.firstFrameCore?.nilIfEmpty ?? shot.prompt?.nilIfEmpty
+        }
+        return summaries
+    }
+
+    private func parseRunState(projectURL: URL) -> PowerVideoManagerRunState? {
+        let url = projectURL.appendingPathComponent("run-state.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(PowerVideoManagerRunState.self, from: data)
+    }
+
+    private func parseProductionPrompts(
+        projectURL: URL,
+        runState: PowerVideoManagerRunState?
+    ) -> PowerVideoManagerProductionPromptsEnvelope? {
+        let relativePath = runState?.script?.productionPromptsPath ?? "script/production-prompts.json"
+        let url = projectURL.appendingPathComponent(relativePath)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(PowerVideoManagerProductionPromptsEnvelope.self, from: data)
+    }
+
+    private func durationSummary(from envelope: PowerVideoManagerProductionPromptsEnvelope?) -> String? {
+        let durations = envelope?.productionPrompts?.videoPrompts?.compactMap(\.duration) ?? []
+        guard !durations.isEmpty else { return nil }
+        return durationLabel(durations.reduce(0, +))
+    }
+
+    private func durationLabel(_ seconds: Double) -> String {
+        let rounded = seconds.rounded()
+        if abs(seconds - rounded) < 0.001 {
+            return "\(Int(rounded)) seconds"
+        }
+        return String(format: "%.1f seconds", seconds)
     }
 
     private func parseTitle(_ text: String) -> String? {

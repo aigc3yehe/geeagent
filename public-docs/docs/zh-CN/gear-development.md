@@ -874,7 +874,7 @@ Capability 示例：
 - package 内包含 manifest、README、assets、setup metadata、storage notes 和未来 capability declarations。
 - Native Swift 实现可以在迁移期继续 host-compiled，但业务边界必须从主 app 里抽离。
 - 文件夹、筛选、星标、Quick Look、Finder、视频编辑交接、带缩略图兜底的视频 / gif hover playback、无缝循环预览、动态展示等行为属于 media gear，不属于主 workbench。
-- Agent capabilities 包括 `media.filter`、`media.focus_folder` 和 `media.import_files`。当当前用户明确要求导入本地文件时，`media.import_files` 可由 GeeAgent root-agent 对话和 Codex 对话触发。它会把本地媒体路径导入已授权的媒体库，能在可能时恢复已保存的访问授权，并为多 Gear 工作流返回 item proof。新导入文件会出现在 `imported_items`；重复文件会作为幂等成功返回 `action: "import_noop"`、`existing_items` 和 `duplicate_paths`；源文件不存在时通过 `missing_paths` 报告；不支持的文件通过 `unsupported_paths` 报告。如果没有任何可用的已导入或已存在媒体条目，它会返回带 `code: "gear.media.no_supported_files"` 的结构化失败，而不是用 `imported_count: 0` 伪装成功。如果授权缺失，它会把可读路径保留为 `pending_paths`，打开 Media Library 界面，并返回结构化失败交给 active agent/LLM 解释。
+- Agent capabilities 包括 `media.filter`、`media.focus_folder`、`media.import_files`、`media.inspect_assets`、`media.update_review_state` 和 `media.search_assets`。只有当前用户明确要求导入本地文件时，`media.import_files` 才可由 GeeAgent root-agent 对话和 Codex 对话触发；下载或生成出的媒体不会自动入库。导入时可以带上 project、run、source、beat、intended-use、review、flag、note 和 tag 等显式 metadata，Gear 会把这些字段写入 Eagle-compatible item metadata，能在可能时恢复已保存的访问授权，并为多 Gear 工作流返回 item proof。新导入文件会出现在 `imported_items`；重复文件会作为幂等成功返回 `action: "import_noop"`、`existing_items` 和 `duplicate_paths`；源文件不存在时通过 `missing_paths` 报告；不支持的文件通过 `unsupported_paths` 报告。`media.inspect_assets` 只报告文件存在性、可播放性、时长、尺寸和方向等技术事实。`media.update_review_state` 只保存人或 agent 明确给出的 review status、flags 和 notes，Gee 不判断版权、水印、肖像、风格或 beat 适配度。如果没有任何可用的已导入或已存在媒体条目，它会返回带 `code: "gear.media.no_supported_files"` 的结构化失败，而不是用 `imported_count: 0` 伪装成功。如果授权缺失，它会把可读路径保留为 `pending_paths`，打开 Media Library 界面，并返回结构化失败交给 active agent/LLM 解释。
 
 `hyperframes.studio`：
 
@@ -906,11 +906,10 @@ Capability 示例：
 `smartyt.media`：
 
 - 目标是从 SmartYT 参考项目改造来的 native URL media acquisition gear。
-- Gear 接收 URL，嗅探媒体 metadata，下载音频、视频或直链图片 artifact，并提取 transcript text。
-- V1 使用 `yt-dlp` 处理 metadata、下载和字幕提取，使用 `ffmpeg` / `ffprobe` 支撑媒体转换。
-- 转文本应优先走平台字幕快通道。如果没有字幕，Gear 可以调用已安装的 Whisper 或 SenseVoice 等本地 speech tooling。如果没有可用 speech backend，Gear 必须返回结构化失败并说明缺少转写后端，不能假装转换已经完成。
-- Job state 应写入 `~/Library/Application Support/GeeAgent/gear-data/smartyt.media/`；下载媒体、提取字幕和 transcript text 在 agent call 未提供 `output_dir` 时默认写入 `~/Downloads/SmartYT/<job-id>/`。
-- Agent capabilities 是 `smartyt.sniff`、`smartyt.download`、`smartyt.download_now`、`smartyt.transcribe`。`smartyt.download` 面向 UI 排队执行，`smartyt.download_now` 会等到 artifact 真正生成后返回 `output_paths`，供多 Gear 工作流使用。直链图片 URL，包括带图片扩展名或 `format=` query hint 的 Twitter/X 图片 URL，会按图片下载处理，而不是误走视频下载。最终给用户看的自然语言回复由 active agent/LLM 生成。
+- Gear 接收明确的 URL 或媒体搜索 query，嗅探媒体 metadata，搜索候选素材，并且只在候选或 URL 被明确选中后下载音频、视频或直链图片 artifact。
+- V1 使用 `yt-dlp` 处理候选搜索、metadata、下载，以及平台已有字幕文件；使用 `ffmpeg` / `ffprobe` 支撑媒体转换。语音转写和语音互转不属于当前 Codex-exported 采集工作流。
+- Job state 应写入 `~/Library/Application Support/GeeAgent/gear-data/smartyt.media/`；下载媒体和平台已有字幕文件在 agent call 未提供 `output_dir` 时默认写入 `~/Downloads/SmartYT/<job-id>/`。
+- Codex-exported agent capabilities 是 `smartyt.search_candidates`、`smartyt.sniff`、`smartyt.download`、`smartyt.download_now`、`smartyt.get_task` 和 `smartyt.list_tasks`。`smartyt.search_candidates` 会保存 search task 并返回候选 metadata，不下载任何文件。`smartyt.download` 面向 UI 排队执行，`smartyt.download_now` 会等到 artifact 真正生成后返回 `output_paths`，供多 Gear 工作流使用。下载文件会留在 SmartYT task output directory，不会自动导入 Media Library；只有用户另外明确要求入库时才调用导入。直链图片 URL，包括带图片扩展名或 `format=` query hint 的 Twitter/X 图片 URL，会按图片下载处理，而不是误走视频下载。最终给用户看的自然语言回复由 active agent/LLM 生成。
 
 `twitter.capture`：
 
@@ -963,9 +962,9 @@ Capability 示例：
 - 目标是用于 AI 视频制作 `runs` 工作区的原生只读查看器。
 - 用户手动选择 `runs` 文件夹。Gear 把每个直接包含 `script/script-archive.md` 的子文件夹视为一个独立项目，不跨文件夹合并项目。
 - 项目列表展示可用的角色定妆照、标题、相对更新时间、进度标签和成本总额，并按更新时间排序。
-- 详情界面对脚本元数据保持宽松，允许查看原始文档；资产视图则严格归一：定妆照、故事板网格、首帧、镜头视频、剪辑渲染、final 视频、诊断文件，以及 closeout 文件声明的显式选中资产。
+- 详情界面对脚本元数据保持宽松，允许查看原始文档；资产视图则严格归一：定妆照、故事板网格、首帧、镜头视频、剪辑渲染、final 视频、诊断文件，以及当前 run-state 证据或 closeout 文件声明的显式选中资产。
 - 时间线为横向视图，一行一个镜头，按文件创建/更新时间展示所有发现的首帧和视频版本。视频 tile 会显示文件抽帧封面，并在鼠标 hover 时静音循环播放。它不审阅，也不解释版本产生原因。
-- AI 视频 skills 应在可用时补齐 closeout 文件：`production/current-selection.json` 记录选中的首帧/视频，`editing/current-edit.json` 记录选中的 final/剪辑渲染，`cost-summary.json` 记录项目成本。若 selection 文件缺失，Gear 只是不显示选中标记。
+- 当前 AI 视频 runs 可在 `run-state.json` 中记录已接受首帧、已接受视频候选、路线元数据和视频成本。旧版 workflow closeout 文件仍会在可用时被支持：`production/current-selection.json` 记录选中的首帧/视频，`editing/current-edit.json` 记录选中的 final/剪辑渲染，`cost-summary.json` 记录项目成本。若 run-state 和 selection 文件都没有指明某个资产，Gear 只是不显示选中标记。
 - V1 禁用 agent capabilities。这个 Gear 不通过 Codex bridge 导出，也不能新增 gear-specific pseudo-tools。
 
 信息采集工作流：

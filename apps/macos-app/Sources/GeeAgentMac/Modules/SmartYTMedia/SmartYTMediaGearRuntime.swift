@@ -59,6 +59,157 @@ enum SmartYTJobStatus: String, Codable, Hashable {
     }
 }
 
+struct SmartYTSearchCandidate: Codable, Identifiable, Hashable {
+    var id: String
+    var platform: String
+    var title: String
+    var url: String
+    var sourceURL: String
+    var thumbnailURL: String?
+    var previewURL: String?
+    var durationSeconds: Double?
+    var width: Int?
+    var height: Int?
+    var orientation: String?
+    var author: String?
+    var publishedAt: String?
+    var rawMetadata: [String: String]
+
+    var candidateID: String { id }
+
+    static func parseYTDLPJSONLines(
+        _ stdout: String,
+        platform: String,
+        taskID: String,
+        startingIndex: Int
+    ) -> [SmartYTSearchCandidate] {
+        var candidates: [SmartYTSearchCandidate] = []
+        for rawLine in stdout.split(whereSeparator: \.isNewline) {
+            let line = String(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty,
+                  let data = line.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else {
+                continue
+            }
+            guard let candidate = parseYTDLPObject(
+                object,
+                platform: platform,
+                taskID: taskID,
+                index: startingIndex + candidates.count + 1
+            ) else {
+                continue
+            }
+            candidates.append(candidate)
+        }
+        if candidates.isEmpty,
+           let data = stdout.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let candidate = parseYTDLPObject(
+                object,
+                platform: platform,
+                taskID: taskID,
+                index: startingIndex + 1
+           )
+        {
+            candidates.append(candidate)
+        }
+        return candidates
+    }
+
+    private static func parseYTDLPObject(
+        _ object: [String: Any],
+        platform: String,
+        taskID: String,
+        index: Int
+    ) -> SmartYTSearchCandidate? {
+        let title = string(object["title"]) ?? string(object["fulltitle"]) ?? "Untitled media"
+        let sourceURL = string(object["webpage_url"])
+            ?? string(object["original_url"])
+            ?? string(object["url"])
+            ?? ""
+        guard !sourceURL.isEmpty else {
+            return nil
+        }
+        let width = int(object["width"])
+        let height = int(object["height"])
+        let uploadDate = string(object["upload_date"])
+        return SmartYTSearchCandidate(
+            id: String(format: "cand-%03d", index),
+            platform: platform,
+            title: title,
+            url: sourceURL,
+            sourceURL: sourceURL,
+            thumbnailURL: string(object["thumbnail"]),
+            previewURL: string(object["webpage_url"]) ?? sourceURL,
+            durationSeconds: double(object["duration"]),
+            width: width,
+            height: height,
+            orientation: orientation(width: width, height: height),
+            author: string(object["uploader"]) ?? string(object["channel"]) ?? string(object["creator"]),
+            publishedAt: isoDate(fromUploadDate: uploadDate),
+            rawMetadata: [
+                "extractor": string(object["extractor"]) ?? "",
+                "extractor_key": string(object["extractor_key"]) ?? "",
+                "id": string(object["id"]) ?? ""
+            ].filter { !$0.value.isEmpty }
+        )
+    }
+
+    private static func orientation(width: Int?, height: Int?) -> String? {
+        guard let width, let height, width > 0, height > 0 else {
+            return nil
+        }
+        if width == height { return "square" }
+        return width > height ? "horizontal" : "vertical"
+    }
+
+    private static func isoDate(fromUploadDate value: String?) -> String? {
+        guard let value, value.count == 8 else {
+            return nil
+        }
+        let year = value.prefix(4)
+        let month = value.dropFirst(4).prefix(2)
+        let day = value.suffix(2)
+        return "\(year)-\(month)-\(day)T00:00:00Z"
+    }
+
+    private static func string(_ value: Any?) -> String? {
+        value as? String
+    }
+
+    private static func int(_ value: Any?) -> Int? {
+        if let int = value as? Int { return int }
+        if let double = value as? Double { return Int(double) }
+        if let number = value as? NSNumber { return number.intValue }
+        return nil
+    }
+
+    private static func double(_ value: Any?) -> Double? {
+        if let double = value as? Double { return double }
+        if let int = value as? Int { return Double(int) }
+        if let number = value as? NSNumber { return number.doubleValue }
+        return nil
+    }
+}
+
+struct SmartYTSearchTask: Codable, Identifiable, Hashable {
+    var id: String
+    var projectID: String?
+    var runID: String?
+    var taskLabel: String?
+    var query: String
+    var platforms: [String]
+    var filters: [String: String]
+    var limit: Int
+    var status: String
+    var candidates: [SmartYTSearchCandidate]
+    var warnings: [String]
+    var error: String?
+    var createdAt: Date
+    var updatedAt: Date
+}
+
 struct SmartYTMediaInfo: Codable, Hashable {
     var title: String
     var platform: String
@@ -199,6 +350,7 @@ final class SmartYTMediaGearStore: ObservableObject {
     @Published var languagePreference = ""
     @Published private(set) var mediaInfo: SmartYTMediaInfo?
     @Published private(set) var jobs: [SmartYTMediaJob] = []
+    @Published private(set) var searchTasks: [SmartYTSearchTask] = []
     @Published var selectedJobID: SmartYTMediaJob.ID?
     @Published private(set) var statusMessage = "Ready"
     @Published private(set) var isBusy = false
@@ -217,6 +369,7 @@ final class SmartYTMediaGearStore: ObservableObject {
         self.runner = runner
         self.fileManager = fileManager
         loadJobs()
+        loadSearchTasks()
     }
 
     func loadJobs() {
@@ -235,6 +388,112 @@ final class SmartYTMediaGearStore: ObservableObject {
         } catch {
             statusMessage = "Could not load SmartYT jobs: \(error.localizedDescription)"
         }
+    }
+
+    func searchCandidatesForAgent(args: [String: Any]) async -> [String: Any] {
+        guard let query = Self.stringArg(args, "query")?.nilIfBlank else {
+            return [
+                "gear_id": SmartYTMediaGearDescriptor.gearID,
+                "capability_id": "smartyt.search_candidates",
+                "status": "failed",
+                "error": "`query` is required.",
+                "recovery": "Call smartyt.search_candidates with an explicit search query."
+            ]
+        }
+
+        let platforms = (Self.stringArrayArg(args, "platforms") ?? ["youtube"])
+            .map { Self.normalizedPlatform($0) }
+            .filter { !$0.isEmpty }
+        guard !platforms.isEmpty else {
+            return [
+                "gear_id": SmartYTMediaGearDescriptor.gearID,
+                "capability_id": "smartyt.search_candidates",
+                "status": "failed",
+                "code": "gear.smartyt.platforms_required",
+                "error": "`platforms` must include at least one platform when provided.",
+                "recovery": "Retry with `platforms: [\"youtube\"]` or omit platforms to use the default."
+            ]
+        }
+        let limit = max(1, min(Self.intArg(args, "limit") ?? 30, 50))
+        let taskID = "smartyt-search-\(Self.timestamp())-\(UUID().uuidString.prefix(8))"
+        let filters = Self.stringDictionaryArg(args, "filters")
+        var candidates: [SmartYTSearchCandidate] = []
+        var warnings: [String] = []
+
+        for platform in platforms {
+            switch platform {
+            case "youtube":
+                do {
+                    let remaining = max(limit - candidates.count, 0)
+                    guard remaining > 0 else { continue }
+                    let results = try await searchYouTubeCandidates(
+                        query: query,
+                        limit: remaining,
+                        taskID: taskID,
+                        startingIndex: candidates.count
+                    )
+                    candidates.append(contentsOf: results)
+                } catch {
+                    warnings.append("youtube search failed: \(error.localizedDescription)")
+                }
+            case "bilibili", "douyin", "xiaohongshu":
+                warnings.append("\(platform) search is not implemented yet; no fallback search was attempted.")
+            default:
+                warnings.append("\(platform) search is not supported.")
+            }
+        }
+
+        let status: String
+        let error: String?
+        if candidates.isEmpty {
+            status = "failed"
+            error = warnings.isEmpty ? "No candidates were found." : warnings.joined(separator: " ")
+        } else if warnings.isEmpty {
+            status = "succeeded"
+            error = nil
+        } else {
+            status = "partial"
+            error = warnings.joined(separator: " ")
+        }
+
+        let now = Date()
+        let task = SmartYTSearchTask(
+            id: taskID,
+            projectID: Self.stringArg(args, "project_id"),
+            runID: Self.stringArg(args, "run_id"),
+            taskLabel: Self.stringArg(args, "task_label"),
+            query: query,
+            platforms: platforms,
+            filters: filters,
+            limit: limit,
+            status: status,
+            candidates: candidates,
+            warnings: warnings,
+            error: error,
+            createdAt: now,
+            updatedAt: now
+        )
+        do {
+            try persist(task)
+        } catch {
+            statusMessage = "Could not save search task: \(error.localizedDescription)"
+            return [
+                "gear_id": SmartYTMediaGearDescriptor.gearID,
+                "capability_id": "smartyt.search_candidates",
+                "status": "failed",
+                "code": "gear.smartyt.search_persist_failed",
+                "search_task_id": task.id,
+                "task_id": task.id,
+                "candidates": candidates.map(candidatePayload),
+                "warnings": warnings,
+                "error": "Could not save SmartYT search task: \(error.localizedDescription)",
+                "recovery": "Check GeeAgent application data directory permissions and retry."
+            ]
+        }
+        searchTasks.insert(task, at: 0)
+        statusMessage = candidates.isEmpty ? "Search returned no candidates." : "Found \(candidates.count) candidate(s)."
+
+        return searchTaskPayload(task)
     }
 
     func sniffCurrentURL() async {
@@ -507,6 +766,49 @@ final class SmartYTMediaGearStore: ObservableObject {
         return payload
     }
 
+    func taskPayload(taskID: String) -> [String: Any] {
+        if let job = jobs.first(where: { $0.id == taskID }) {
+            return [
+                "gear_id": SmartYTMediaGearDescriptor.gearID,
+                "capability_id": "smartyt.get_task",
+                "status": "succeeded",
+                "task": jobPayload(job),
+                "error": NSNull()
+            ]
+        }
+        if let task = searchTasks.first(where: { $0.id == taskID }) {
+            return [
+                "gear_id": SmartYTMediaGearDescriptor.gearID,
+                "capability_id": "smartyt.get_task",
+                "status": "succeeded",
+                "task": searchTaskSummaryPayload(task),
+                "candidates": task.candidates.map(candidatePayload),
+                "error": NSNull()
+            ]
+        }
+        return [
+            "gear_id": SmartYTMediaGearDescriptor.gearID,
+            "capability_id": "smartyt.get_task",
+            "status": "failed",
+            "error": "Task `\(taskID)` was not found.",
+            "recovery": "Call smartyt.list_tasks to inspect available SmartYT tasks."
+        ]
+    }
+
+    func listTasksPayload(limit: Int) -> [String: Any] {
+        let jobPayloads = jobs.map(jobPayload)
+        let searchPayloads = searchTasks.map(searchTaskSummaryPayload)
+        let tasks = Array((jobPayloads + searchPayloads).prefix(min(max(limit, 1), 200)))
+        return [
+            "gear_id": SmartYTMediaGearDescriptor.gearID,
+            "capability_id": "smartyt.list_tasks",
+            "status": "succeeded",
+            "tasks": tasks,
+            "count": tasks.count,
+            "error": NSNull()
+        ]
+    }
+
     private func reusableCompletedDownload(
         for url: String,
         kind: SmartYTDownloadKind
@@ -634,6 +936,33 @@ final class SmartYTMediaGearStore: ObservableObject {
             throw SmartYTMediaError.commandFailed(command: "yt-dlp --dump-single-json", detail: result.combinedOutput)
         }
         return try SmartYTMediaInfo.parse(from: result.stdout, fallbackURL: url)
+    }
+
+    private func searchYouTubeCandidates(
+        query: String,
+        limit: Int,
+        taskID: String,
+        startingIndex: Int
+    ) async throws -> [SmartYTSearchCandidate] {
+        let result = await runner.run(
+            "yt-dlp",
+            arguments: [
+                "--dump-json",
+                "--no-warnings",
+                "--skip-download",
+                "ytsearch\(limit):\(query)"
+            ],
+            timeoutSeconds: 120
+        )
+        guard result.exitCode == 0 else {
+            throw SmartYTMediaError.commandFailed(command: "yt-dlp ytsearch", detail: result.combinedOutput)
+        }
+        return SmartYTSearchCandidate.parseYTDLPJSONLines(
+            result.stdout,
+            platform: "youtube",
+            taskID: taskID,
+            startingIndex: startingIndex
+        )
     }
 
     private func download(url: String, kind: SmartYTDownloadKind, into directory: URL) async throws -> [URL] {
@@ -1017,6 +1346,42 @@ final class SmartYTMediaGearStore: ObservableObject {
         return try? decoder.decode(SmartYTMediaJob.self, from: data)
     }
 
+    private func persist(_ task: SmartYTSearchTask) throws {
+        let directory = try ensureStateSearchDirectory(task.id)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(task)
+        try data.write(to: directory.appendingPathComponent("search.json"), options: .atomic)
+    }
+
+    private func loadSearchTasks() {
+        do {
+            let root = try searchesRoot()
+            let entries = try fileManager.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            )
+            searchTasks = entries
+                .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+                .compactMap(loadSearchTask)
+                .sorted { $0.createdAt > $1.createdAt }
+        } catch {
+            statusMessage = "Could not load SmartYT search tasks: \(error.localizedDescription)"
+        }
+    }
+
+    private func loadSearchTask(_ directory: URL) -> SmartYTSearchTask? {
+        let url = directory.appendingPathComponent("search.json")
+        guard let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(SmartYTSearchTask.self, from: data)
+    }
+
     private func dataRoot() throws -> URL {
         let root = try fileManager.url(
             for: .applicationSupportDirectory,
@@ -1031,6 +1396,12 @@ final class SmartYTMediaGearStore: ObservableObject {
 
     private func jobsRoot() throws -> URL {
         let root = try dataRoot().appendingPathComponent("jobs", isDirectory: true)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private func searchesRoot() throws -> URL {
+        let root = try dataRoot().appendingPathComponent("searches", isDirectory: true)
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
         return root
     }
@@ -1051,6 +1422,12 @@ final class SmartYTMediaGearStore: ObservableObject {
 
     private func ensureStateJobDirectory(_ id: String) throws -> URL {
         let directory = try stateJobDirectory(id)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    private func ensureStateSearchDirectory(_ id: String) throws -> URL {
+        let directory = try searchesRoot().appendingPathComponent(id, isDirectory: true)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }
@@ -1097,6 +1474,115 @@ final class SmartYTMediaGearStore: ObservableObject {
             return trimmed
         }
         return String(trimmed.prefix(1_200)) + "\n..."
+    }
+
+    private func searchTaskPayload(_ task: SmartYTSearchTask) -> [String: Any] {
+        [
+            "gear_id": SmartYTMediaGearDescriptor.gearID,
+            "capability_id": "smartyt.search_candidates",
+            "status": task.status,
+            "search_task_id": task.id,
+            "task_id": task.id,
+            "candidates": task.candidates.map(candidatePayload),
+            "warnings": task.warnings,
+            "error": task.error ?? NSNull()
+        ]
+    }
+
+    private func searchTaskSummaryPayload(_ task: SmartYTSearchTask) -> [String: Any] {
+        [
+            "task_id": task.id,
+            "kind": "search",
+            "state": task.status,
+            "query": task.query,
+            "platforms": task.platforms,
+            "candidate_count": task.candidates.count,
+            "created_at": Self.iso8601(task.createdAt),
+            "updated_at": Self.iso8601(task.updatedAt),
+            "error": task.error ?? NSNull()
+        ]
+    }
+
+    private func jobPayload(_ job: SmartYTMediaJob) -> [String: Any] {
+        [
+            "task_id": job.id,
+            "job_id": job.id,
+            "kind": job.action.rawValue,
+            "state": job.status.rawValue,
+            "source_url": job.url,
+            "download_kind": job.downloadKind.rawValue,
+            "output_files": job.outputPaths.map { ["path": $0] },
+            "artifact_root": artifactDirectory(for: job).path,
+            "created_at": Self.iso8601(job.createdAt),
+            "updated_at": Self.iso8601(job.updatedAt),
+            "error": job.errorMessage ?? NSNull()
+        ]
+    }
+
+    private func candidatePayload(_ candidate: SmartYTSearchCandidate) -> [String: Any] {
+        [
+            "candidate_id": candidate.id,
+            "platform": candidate.platform,
+            "title": candidate.title,
+            "url": candidate.url,
+            "source_url": candidate.sourceURL,
+            "thumbnail_url": candidate.thumbnailURL ?? NSNull(),
+            "preview_url": candidate.previewURL ?? NSNull(),
+            "duration": candidate.durationSeconds ?? NSNull(),
+            "duration_seconds": candidate.durationSeconds ?? NSNull(),
+            "width": candidate.width ?? NSNull(),
+            "height": candidate.height ?? NSNull(),
+            "orientation": candidate.orientation ?? NSNull(),
+            "author": candidate.author ?? NSNull(),
+            "published_at": candidate.publishedAt ?? NSNull(),
+            "raw_metadata": candidate.rawMetadata
+        ]
+    }
+
+    private static func iso8601(_ date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
+    }
+
+    private static func normalizedPlatform(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "youtube.com", with: "youtube")
+    }
+
+    private static func stringArg(_ args: [String: Any], _ key: String) -> String? {
+        args[key] as? String
+    }
+
+    private static func stringArrayArg(_ args: [String: Any], _ key: String) -> [String]? {
+        args[key] as? [String]
+    }
+
+    private static func intArg(_ args: [String: Any], _ key: String) -> Int? {
+        if let int = args[key] as? Int {
+            return int
+        }
+        if let double = args[key] as? Double {
+            return Int(double)
+        }
+        if let string = args[key] as? String {
+            return Int(string)
+        }
+        return nil
+    }
+
+    private static func stringDictionaryArg(_ args: [String: Any], _ key: String) -> [String: String] {
+        guard let dictionary = args[key] as? [String: Any] else {
+            return [:]
+        }
+        return dictionary.reduce(into: [String: String]()) { output, entry in
+            if let string = entry.value as? String {
+                output[entry.key] = string
+            } else if let number = entry.value as? NSNumber {
+                output[entry.key] = number.stringValue
+            } else if let bool = entry.value as? Bool {
+                output[entry.key] = bool ? "true" : "false"
+            }
+        }
     }
 }
 

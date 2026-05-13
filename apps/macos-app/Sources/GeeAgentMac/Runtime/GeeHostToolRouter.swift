@@ -638,8 +638,19 @@ enum GeeHostToolRouter {
             }
             let expandedPaths = paths.map { NSString(string: $0).expandingTildeInPath }
             let missingPaths = expandedPaths.filter { !FileManager.default.fileExists(atPath: $0) }
+            let importMetadata = mediaLibraryImportMetadata(from: args)
+            if let reviewStatus = importMetadata?.reviewStatus?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !reviewStatus.isEmpty,
+               !MediaLibraryService.allowedReviewStatuses.contains(reviewStatus)
+            {
+                return .error(
+                    toolID: toolID,
+                    code: "gear.media.invalid_review_status",
+                    message: "`\(reviewStatus)` is not an allowed media review status."
+                )
+            }
             do {
-                let report = try await store.importMediaForAgentReport(paths: paths)
+                let report = try await store.importMediaForAgentReport(paths: paths, metadata: importMetadata)
                 if report.availableItems.isEmpty {
                     return .completed(
                         toolID: toolID,
@@ -723,6 +734,114 @@ enum GeeHostToolRouter {
                     message: error.localizedDescription
                 )
             }
+        case "media.inspect_assets":
+            let itemIDs = stringArrayArg(args, "item_ids") ?? stringArrayArg(args, "ids") ?? []
+            let paths = stringArrayArg(args, "paths") ?? stringArrayArg(args, "file_paths") ?? []
+            guard !itemIDs.isEmpty || !paths.isEmpty else {
+                return .error(
+                    toolID: toolID,
+                    code: "gear.args.assets",
+                    message: "`item_ids` or `paths` is required."
+                )
+            }
+            do {
+                let inspections = try await store.inspectAssetsForAgent(itemIDs: itemIDs, paths: paths)
+                return .completed(
+                    toolID: toolID,
+                    payload: [
+                        "gear_id": MediaLibraryGearDescriptor.gearID,
+                        "capability_id": capabilityID,
+                        "status": "succeeded",
+                        "assets": inspections.map { mediaLibraryInspectionPayload($0) },
+                        "error": NSNull()
+                    ]
+                )
+            } catch let error as MediaLibraryAgentImportError {
+                return mediaLibraryErrorOutcome(
+                    toolID: toolID,
+                    capabilityID: capabilityID,
+                    error: error
+                )
+            } catch {
+                return .error(
+                    toolID: toolID,
+                    code: "gear.media.inspect_failed",
+                    message: error.localizedDescription
+                )
+            }
+        case "media.update_review_state":
+            let itemIDs = stringArrayArg(args, "item_ids") ?? stringArrayArg(args, "ids") ?? []
+            guard !itemIDs.isEmpty else {
+                return .error(toolID: toolID, code: "gear.args.item_ids", message: "`item_ids` is required.")
+            }
+            guard let reviewStatus = stringArg(args, "review_status"), !reviewStatus.isEmpty else {
+                return .error(toolID: toolID, code: "gear.args.review_status", message: "`review_status` is required.")
+            }
+            let manualFlags = stringDictionaryArg(args, "manual_flags")
+            do {
+                let updated = try await store.updateReviewStateForAgent(
+                    itemIDs: itemIDs,
+                    reviewStatus: reviewStatus,
+                    manualFlags: manualFlags,
+                    notes: stringArg(args, "notes")
+                )
+                let updatedIDs = Set(updated.map(\.id))
+                let missingItemIDs = itemIDs.filter { !updatedIDs.contains($0) }
+                let status = updated.isEmpty ? "failed" : (missingItemIDs.isEmpty ? "succeeded" : "partial")
+                return .completed(
+                    toolID: toolID,
+                    payload: [
+                        "gear_id": MediaLibraryGearDescriptor.gearID,
+                        "capability_id": capabilityID,
+                        "status": status,
+                        "code": updated.isEmpty ? "gear.media.items_not_found" : NSNull(),
+                        "updated_items": updated.map(\.id),
+                        "missing_item_ids": missingItemIDs,
+                        "updated_count": updated.count,
+                        "items": updated.map { mediaLibraryItemPayload($0) },
+                        "error": updated.isEmpty ? "No requested Media Library items were found." : NSNull()
+                    ]
+                )
+            } catch let error as MediaLibraryAgentImportError {
+                return mediaLibraryErrorOutcome(
+                    toolID: toolID,
+                    capabilityID: capabilityID,
+                    error: error
+                )
+            } catch {
+                return .error(
+                    toolID: toolID,
+                    code: "gear.media.review_update_failed",
+                    message: error.localizedDescription
+                )
+            }
+        case "media.search_assets":
+            if let unavailable = await mediaLibraryUnavailableOutcome(
+                toolID: toolID,
+                capabilityID: capabilityID,
+                pendingPaths: []
+            ) {
+                return unavailable
+            }
+            let filters = dictionaryArg(args, "filters")
+            let items = mediaLibrarySearchItems(
+                store.items,
+                projectID: stringArg(args, "project_id") ?? stringArg(filters, "project_id"),
+                runID: stringArg(args, "run_id") ?? stringArg(filters, "run_id"),
+                filters: filters,
+                limit: intArg(args, "limit") ?? intArg(filters, "limit") ?? 50
+            )
+            return .completed(
+                toolID: toolID,
+                payload: [
+                    "gear_id": MediaLibraryGearDescriptor.gearID,
+                    "capability_id": capabilityID,
+                    "status": "succeeded",
+                    "items": items.map { mediaLibraryItemPayload($0) },
+                    "count": items.count,
+                    "error": NSNull()
+                ]
+            )
         default:
             return .error(
                 toolID: toolID,
@@ -737,11 +856,37 @@ enum GeeHostToolRouter {
         capabilityID: String,
         args: [String: Any]
     ) async -> WorkbenchToolOutcome {
-        guard ["smartyt.sniff", "smartyt.download", "smartyt.download_now", "smartyt.transcribe"].contains(capabilityID) else {
+        guard [
+            "smartyt.search_candidates",
+            "smartyt.sniff",
+            "smartyt.download",
+            "smartyt.download_now",
+            "smartyt.get_task",
+            "smartyt.list_tasks"
+        ].contains(capabilityID) else {
             return .error(
                 toolID: toolID,
                 code: "gear.smartyt.capability_unsupported",
                 message: "smartyt.media does not support `\(capabilityID)` yet."
+            )
+        }
+        if capabilityID == "smartyt.search_candidates" {
+            let payload = await SmartYTMediaGearStore.shared.searchCandidatesForAgent(args: args)
+            return .completed(toolID: toolID, payload: payload)
+        }
+        if capabilityID == "smartyt.get_task" {
+            guard let taskID = stringArg(args, "task_id") ?? stringArg(args, "job_id") ?? stringArg(args, "search_task_id") else {
+                return .error(toolID: toolID, code: "gear.args.task_id", message: "`task_id` is required.")
+            }
+            return .completed(
+                toolID: toolID,
+                payload: SmartYTMediaGearStore.shared.taskPayload(taskID: taskID)
+            )
+        }
+        if capabilityID == "smartyt.list_tasks" {
+            return .completed(
+                toolID: toolID,
+                payload: SmartYTMediaGearStore.shared.listTasksPayload(limit: intArg(args, "limit") ?? 50)
             )
         }
         guard let url = stringArg(args, "url"), !url.isEmpty else {
@@ -848,14 +993,152 @@ enum GeeHostToolRouter {
     }
 
     private static func mediaLibraryItemPayload(_ item: MediaLibraryItem) -> [String: Any] {
-        [
+        let metadata: [String: Any] = [
+            "source_url": item.sourceURL ?? NSNull(),
+            "project_id": item.projectID ?? NSNull(),
+            "run_id": item.runID ?? NSNull(),
+            "platform": item.platform ?? NSNull(),
+            "source_task_id": item.sourceTaskID ?? NSNull(),
+            "beat_id": item.beatID ?? NSNull(),
+            "intended_use": item.intendedUse ?? NSNull(),
+            "review_status": item.reviewStatus ?? NSNull(),
+            "manual_flags": item.manualFlags,
+            "notes": item.reviewNotes ?? NSNull()
+        ]
+        return [
+            "item_id": item.id,
             "id": item.id,
             "name": item.name,
             "ext": item.ext,
             "file_path": item.fileURL.path,
+            "thumbnail_path": item.thumbnailURL?.path ?? NSNull(),
+            "media_type": item.mediaKind.rawValue,
             "media_kind": item.mediaKind.rawValue,
-            "duration_seconds": item.durationSeconds ?? NSNull()
+            "duration_seconds": item.durationSeconds ?? NSNull(),
+            "duration": item.durationSeconds ?? NSNull(),
+            "width": item.width ?? NSNull(),
+            "height": item.height ?? NSNull(),
+            "orientation": mediaLibraryOrientation(width: item.width, height: item.height) ?? NSNull(),
+            "source_url": item.sourceURL ?? NSNull(),
+            "tags": item.tags,
+            "review_status": item.reviewStatus ?? NSNull(),
+            "metadata": metadata
         ]
+    }
+
+    private static func mediaLibraryInspectionPayload(_ inspection: MediaLibraryAssetInspection) -> [String: Any] {
+        [
+            "item_id": inspection.itemID ?? NSNull(),
+            "file_path": inspection.filePath,
+            "exists": inspection.exists,
+            "playable": inspection.playable,
+            "duration": inspection.durationSeconds ?? NSNull(),
+            "duration_seconds": inspection.durationSeconds ?? NSNull(),
+            "width": inspection.width ?? NSNull(),
+            "height": inspection.height ?? NSNull(),
+            "orientation": inspection.orientation ?? NSNull(),
+            "video_codec": inspection.videoCodec ?? NSNull(),
+            "audio_codec": inspection.audioCodec ?? NSNull(),
+            "errors": inspection.errors
+        ]
+    }
+
+    private static func mediaLibraryImportMetadata(from args: [String: Any]) -> MediaLibraryImportMetadata? {
+        let metadata = dictionaryArg(args, "metadata")
+        let manualFlags = stringDictionaryArg(args, "manual_flags").merging(stringDictionaryArg(metadata, "manual_flags")) { _, new in new }
+        let tags = (stringArrayArg(args, "tags") ?? []) + (stringArrayArg(metadata, "tags") ?? [])
+        let value = MediaLibraryImportMetadata(
+            projectID: stringArg(args, "project_id") ?? stringArg(metadata, "project_id"),
+            runID: stringArg(args, "run_id") ?? stringArg(metadata, "run_id"),
+            sourceURL: stringArg(args, "source_url") ?? stringArg(metadata, "source_url") ?? stringArg(metadata, "url"),
+            platform: stringArg(args, "platform") ?? stringArg(metadata, "platform"),
+            sourceTaskID: stringArg(args, "source_task_id") ?? stringArg(metadata, "source_task_id"),
+            beatID: stringArg(args, "beat_id") ?? stringArg(metadata, "beat_id"),
+            intendedUse: stringArg(args, "intended_use") ?? stringArg(metadata, "intended_use"),
+            reviewStatus: stringArg(args, "review_status") ?? stringArg(metadata, "review_status"),
+            tags: tags,
+            manualFlags: manualFlags,
+            notes: stringArg(args, "notes") ?? stringArg(metadata, "notes")
+        )
+        let hasValue = [
+            value.projectID,
+            value.runID,
+            value.sourceURL,
+            value.platform,
+            value.sourceTaskID,
+            value.beatID,
+            value.intendedUse,
+            value.reviewStatus,
+            value.notes
+        ].contains { $0?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false } || !value.tags.isEmpty || !value.manualFlags.isEmpty
+        return hasValue ? value : nil
+    }
+
+    private static func mediaLibrarySearchItems(
+        _ items: [MediaLibraryItem],
+        projectID: String?,
+        runID: String?,
+        filters: [String: Any],
+        limit: Int
+    ) -> [MediaLibraryItem] {
+        let reviewStatuses = Set(stringArrayArg(filters, "review_status") ?? stringArg(filters, "review_status").map { [$0] } ?? [])
+        let beatID = stringArg(filters, "beat_id")
+        let mediaType = stringArg(filters, "media_type") ?? stringArg(filters, "kind")
+        let orientation = stringArg(filters, "orientation")
+        let requiredTags = Set((stringArrayArg(filters, "tags") ?? []).map { $0.lowercased() })
+        let clampedLimit = min(max(limit, 1), 200)
+        return Array(items.filter { item in
+            if let projectID, !projectID.isEmpty, item.projectID != projectID { return false }
+            if let runID, !runID.isEmpty, item.runID != runID { return false }
+            if let beatID, !beatID.isEmpty, item.beatID != beatID { return false }
+            if !reviewStatuses.isEmpty, !reviewStatuses.contains(item.reviewStatus ?? "") { return false }
+            if let mediaType, !mediaType.isEmpty, mediaType != "all", item.mediaKind.rawValue != mediaType { return false }
+            if let orientation, !orientation.isEmpty, orientation != "any",
+               mediaLibraryOrientation(width: item.width, height: item.height) != orientation
+            {
+                return false
+            }
+            if !requiredTags.isEmpty {
+                let itemTags = Set(item.tags.map { $0.lowercased() })
+                if !requiredTags.isSubset(of: itemTags) { return false }
+            }
+            return true
+        }.prefix(clampedLimit))
+    }
+
+    private static func mediaLibraryOrientation(width: Int?, height: Int?) -> String? {
+        guard let width, let height, width > 0, height > 0 else { return nil }
+        if width == height { return "square" }
+        return width > height ? "horizontal" : "vertical"
+    }
+
+    private static func mediaLibraryErrorOutcome(
+        toolID: String,
+        capabilityID: String,
+        error: MediaLibraryAgentImportError
+    ) -> WorkbenchToolOutcome {
+        switch error {
+        case .authorizationRequired(let pendingPaths):
+            return mediaLibraryAuthorizationRequiredPayload(
+                toolID: toolID,
+                capabilityID: capabilityID,
+                requestedPaths: pendingPaths,
+                pendingPaths: pendingPaths,
+                missingPaths: []
+            )
+        case .libraryLoading:
+            return .error(toolID: toolID, code: "gear.media.library_loading", message: error.localizedDescription)
+        case .libraryMissing:
+            return mediaLibraryAuthorizationRequiredPayload(
+                toolID: toolID,
+                capabilityID: capabilityID,
+                requestedPaths: [],
+                pendingPaths: [],
+                missingPaths: []
+            )
+        case .noReadableFiles:
+            return .error(toolID: toolID, code: "gear.media.no_readable_files", message: error.localizedDescription)
+        }
     }
 
     private static func mediaLibraryUnavailableOutcome(
@@ -1119,6 +1402,45 @@ enum GeeHostToolRouter {
                     "url": ["type": "string", "format": "uri"]
                 ]
             ]
+        case (SmartYTMediaGearDescriptor.gearID, "smartyt.search_candidates"):
+            return [
+                "type": "object",
+                "required": ["query"],
+                "additionalProperties": false,
+                "properties": [
+                    "project_id": ["type": "string"],
+                    "run_id": ["type": "string"],
+                    "task_label": ["type": "string"],
+                    "query": ["type": "string"],
+                    "platforms": [
+                        "type": "array",
+                        "items": ["type": "string"],
+                        "description": "Search platforms. Current host execution supports youtube search and returns explicit warnings for unsupported platforms."
+                    ],
+                    "filters": [
+                        "type": "object",
+                        "additionalProperties": ["type": ["string", "number", "boolean"]]
+                    ],
+                    "limit": ["type": "integer", "minimum": 1, "maximum": 50]
+                ]
+            ]
+        case (SmartYTMediaGearDescriptor.gearID, "smartyt.get_task"):
+            return [
+                "type": "object",
+                "required": ["task_id"],
+                "additionalProperties": false,
+                "properties": [
+                    "task_id": ["type": "string"]
+                ]
+            ]
+        case (SmartYTMediaGearDescriptor.gearID, "smartyt.list_tasks"):
+            return [
+                "type": "object",
+                "additionalProperties": false,
+                "properties": [
+                    "limit": ["type": "integer", "minimum": 1, "maximum": 200]
+                ]
+            ]
         case (SmartYTMediaGearDescriptor.gearID, "smartyt.download"):
             return [
                 "type": "object",
@@ -1142,17 +1464,6 @@ enum GeeHostToolRouter {
                         "type": "string",
                         "description": "Optional local directory for completed artifacts. Defaults to ~/Downloads/SmartYT/<job-id>."
                     ]
-                ]
-            ]
-        case (SmartYTMediaGearDescriptor.gearID, "smartyt.transcribe"):
-            return [
-                "type": "object",
-                "required": ["url"],
-                "additionalProperties": false,
-                "properties": [
-                    "url": ["type": "string", "format": "uri"],
-                    "language": ["type": "string"],
-                    "output_dir": ["type": "string"]
                 ]
             ]
         case (TwitterCaptureGearDescriptor.gearID, "twitter.fetch_tweet"):
@@ -1410,7 +1721,49 @@ enum GeeHostToolRouter {
                         "type": "array",
                         "items": ["type": "string"],
                         "description": "Local media file paths to import into the currently open media library."
+                    ],
+                    "project_id": ["type": "string"],
+                    "run_id": ["type": "string"],
+                    "metadata": [
+                        "type": "object",
+                        "additionalProperties": true,
+                        "description": "Optional explicit source/review metadata to store on imported or duplicate media items."
                     ]
+                ]
+            ]
+        case (MediaLibraryGearDescriptor.gearID, "media.inspect_assets"):
+            return [
+                "type": "object",
+                "additionalProperties": false,
+                "properties": [
+                    "item_ids": ["type": "array", "items": ["type": "string"]],
+                    "paths": ["type": "array", "items": ["type": "string"]]
+                ]
+            ]
+        case (MediaLibraryGearDescriptor.gearID, "media.update_review_state"):
+            return [
+                "type": "object",
+                "required": ["item_ids", "review_status"],
+                "additionalProperties": false,
+                "properties": [
+                    "item_ids": ["type": "array", "items": ["type": "string"]],
+                    "review_status": [
+                        "type": "string",
+                        "enum": ["pending_review", "draft_usable", "final_usable", "not_suitable", "needs_replacement"]
+                    ],
+                    "manual_flags": ["type": "object", "additionalProperties": ["type": "string"]],
+                    "notes": ["type": "string"]
+                ]
+            ]
+        case (MediaLibraryGearDescriptor.gearID, "media.search_assets"):
+            return [
+                "type": "object",
+                "additionalProperties": false,
+                "properties": [
+                    "project_id": ["type": "string"],
+                    "run_id": ["type": "string"],
+                    "filters": ["type": "object", "additionalProperties": true],
+                    "limit": ["type": "integer", "minimum": 1, "maximum": 200]
                 ]
             ]
         case (AppIconForgeGearDescriptor.gearID, "app_icon.generate"):
@@ -1507,8 +1860,36 @@ enum GeeHostToolRouter {
         return nil
     }
 
+    private static func intArg(_ args: [String: Any], _ key: String) -> Int? {
+        if let int = args[key] as? Int {
+            return int
+        }
+        if let double = args[key] as? Double {
+            return Int(double)
+        }
+        if let string = args[key] as? String {
+            return Int(string)
+        }
+        return nil
+    }
+
     private static func stringArrayArg(_ args: [String: Any], _ key: String) -> [String]? {
         args[key] as? [String]
+    }
+
+    private static func dictionaryArg(_ args: [String: Any], _ key: String) -> [String: Any] {
+        args[key] as? [String: Any] ?? [:]
+    }
+
+    private static func stringDictionaryArg(_ args: [String: Any], _ key: String) -> [String: String] {
+        guard let dictionary = args[key] as? [String: Any] else {
+            return [:]
+        }
+        return dictionary.reduce(into: [String: String]()) { output, entry in
+            if let string = entry.value as? String {
+                output[entry.key] = string
+            }
+        }
     }
 
     private static func stringArray(_ value: Any?) -> [String] {

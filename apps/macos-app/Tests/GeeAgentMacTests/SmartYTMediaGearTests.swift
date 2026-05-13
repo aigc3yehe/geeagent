@@ -66,6 +66,27 @@ final class SmartYTMediaGearTests: XCTestCase {
         XCTAssertEqual(info.webpageURL?.absoluteString, "https://example.com/watch?v=1")
     }
 
+    func testYTDLPSearchCandidateParsingKeepsStableCandidateShape() throws {
+        let stdout = """
+        {"id":"abc123","title":"Evening walk","extractor_key":"Youtube","uploader":"Gee","duration":38.2,"webpage_url":"https://youtube.com/watch?v=abc123","thumbnail":"https://example.com/t.jpg","width":1920,"height":1080,"upload_date":"20260501"}
+        """
+
+        let candidates = SmartYTSearchCandidate.parseYTDLPJSONLines(
+            stdout,
+            platform: "youtube",
+            taskID: "smartyt-search-test",
+            startingIndex: 0
+        )
+
+        XCTAssertEqual(candidates.count, 1)
+        XCTAssertEqual(candidates.first?.id, "cand-001")
+        XCTAssertEqual(candidates.first?.platform, "youtube")
+        XCTAssertEqual(candidates.first?.title, "Evening walk")
+        XCTAssertEqual(candidates.first?.sourceURL, "https://youtube.com/watch?v=abc123")
+        XCTAssertEqual(candidates.first?.orientation, "horizontal")
+        XCTAssertEqual(candidates.first?.publishedAt, "2026-05-01T00:00:00Z")
+    }
+
     @MainActor
     func testDirectImageURLsDefaultToImageDownloads() throws {
         let extensionURL = "https://pbs.twimg.com/media/HHFx7HsbsAEQHuH.jpg?name=large"

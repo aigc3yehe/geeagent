@@ -44,6 +44,10 @@ const GEAR_CAPABILITY_CONTRACTS: RuntimeCapabilityContract[] = [
   gearContract("media.library", "media.import_files", [
     requiredStringArray("paths", ["paths", "file_paths"]),
   ]),
+  gearContract("media.library", "media.update_review_state", [
+    requiredStringArray("item_ids", ["item_ids", "ids"]),
+    requiredString("review_status", ["review_status"]),
+  ]),
   gearContract("telegram.bridge", "telegram_push.upsert_channel", [
     requiredString("channel_id", ["channel_id", "channelId"]),
     requiredString("account_id", ["account_id", "accountId"]),
@@ -75,8 +79,13 @@ const GEAR_CAPABILITY_CONTRACTS: RuntimeCapabilityContract[] = [
   ]),
   gearContract("smartyt.media", "smartyt.download", [requiredString("url", ["url"])]),
   gearContract("smartyt.media", "smartyt.download_now", [requiredString("url", ["url"])]),
+  gearContract("smartyt.media", "smartyt.get_task", [
+    requiredString("task_id", ["task_id", "job_id", "search_task_id"]),
+  ]),
+  gearContract("smartyt.media", "smartyt.search_candidates", [
+    requiredString("query", ["query"]),
+  ]),
   gearContract("smartyt.media", "smartyt.sniff", [requiredString("url", ["url"])]),
-  gearContract("smartyt.media", "smartyt.transcribe", [requiredString("url", ["url"])]),
   gearContract("twitter.capture", "twitter.fetch_list", [
     requiredString("url", ["url", "list_url"]),
   ]),

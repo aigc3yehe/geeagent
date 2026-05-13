@@ -1811,6 +1811,60 @@ private struct MediaLibraryInspector: View {
                     }
                 }
 
+                if hasProductionMetadata {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Production")
+                            .font(.geeBodyMedium(11))
+                            .foregroundStyle(.secondary)
+                        if let projectID = item.projectID {
+                            inspectorRow("Project", projectID)
+                        }
+                        if let runID = item.runID {
+                            inspectorRow("Run", runID)
+                        }
+                        if let beatID = item.beatID {
+                            inspectorRow("Beat", beatID)
+                        }
+                        if let intendedUse = item.intendedUse {
+                            inspectorRow("Use", intendedUse)
+                        }
+                    }
+                }
+
+                if hasReviewMetadata {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Review")
+                            .font(.geeBodyMedium(11))
+                            .foregroundStyle(.secondary)
+                        if let reviewStatus = item.reviewStatus {
+                            inspectorRow("Status", reviewStatus.replacingOccurrences(of: "_", with: " "))
+                        }
+                        if !item.manualFlags.isEmpty {
+                            inspectorRow("Flags", item.manualFlags.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value)" }.joined(separator: ", "))
+                        }
+                        if let reviewNotes = item.reviewNotes {
+                            inspectorRow("Notes", reviewNotes)
+                        }
+                    }
+                }
+
+                if hasSourceMetadata {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Source")
+                            .font(.geeBodyMedium(11))
+                            .foregroundStyle(.secondary)
+                        if let platform = item.platform {
+                            inspectorRow("Platform", platform)
+                        }
+                        if let sourceTaskID = item.sourceTaskID {
+                            inspectorRow("Task", sourceTaskID)
+                        }
+                        if let sourceURL = item.sourceURL {
+                            inspectorRow("URL", sourceURL)
+                        }
+                    }
+                }
+
                 if let annotation = item.annotation, !annotation.isEmpty {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("Notes")
@@ -1824,6 +1878,18 @@ private struct MediaLibraryInspector: View {
             }
             .padding(14)
         }
+    }
+
+    private var hasProductionMetadata: Bool {
+        item.projectID != nil || item.runID != nil || item.beatID != nil || item.intendedUse != nil
+    }
+
+    private var hasReviewMetadata: Bool {
+        item.reviewStatus != nil || !item.manualFlags.isEmpty || item.reviewNotes != nil
+    }
+
+    private var hasSourceMetadata: Bool {
+        item.platform != nil || item.sourceTaskID != nil || item.sourceURL != nil
     }
 
     private func inspectorRow(_ label: String, _ value: String) -> some View {
