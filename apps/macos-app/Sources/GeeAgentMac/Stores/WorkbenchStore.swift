@@ -2340,6 +2340,25 @@ final class WorkbenchStore {
         }
     }
 
+    /// The active persona's Live2D bundle path, independent of the currently selected Home visual.
+    ///
+    /// Desktop companion presentation can use the Live2D asset even when the Home background is
+    /// temporarily switched to image, video, or abstract mode.
+    var activeLive2DBundlePath: String? {
+        guard let profile = activeAgentProfile else { return nil }
+
+        if let path = activeProfileAppearancePreference.live2DBundlePath?.nilIfBlank {
+            return path
+        }
+        if let path = profile.visualOptions.live2DBundlePath?.nilIfBlank {
+            return path
+        }
+        if case let .live2D(bundlePath) = profile.appearance {
+            return bundlePath.nilIfBlank
+        }
+        return nil
+    }
+
     /// Preference record describing how the user has customized the active persona's appearance.
     var activeProfileAppearancePreference: ProfileAppearancePreference {
         guard let profile = activeAgentProfile else { return .abstractDefault }

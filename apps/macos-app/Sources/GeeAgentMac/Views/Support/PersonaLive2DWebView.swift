@@ -464,11 +464,12 @@ struct PersonaLive2DWebView: NSViewRepresentable {
             let fm = FileManager.default
 
             do {
-                if fm.fileExists(atPath: stagedHostDir.path) {
+                var isDirectory: ObjCBool = false
+                if fm.fileExists(atPath: stagedHostDir.path, isDirectory: &isDirectory), !isDirectory.boolValue {
                     try fm.removeItem(at: stagedHostDir)
                 }
                 try fm.createDirectory(at: stagedHostDir, withIntermediateDirectories: true)
-                try copyDirectoryContents(from: bundledHostDir, to: stagedHostDir)
+                try syncDirectoryContents(from: bundledHostDir, to: stagedHostDir)
                 return stagedIndex
             } catch {
                 return bundledIndex
@@ -558,16 +559,56 @@ struct PersonaLive2DWebView: NSViewRepresentable {
             }
         }
 
-        nonisolated private static func copyDirectoryContents(from source: URL, to destination: URL) throws {
+        nonisolated private static func syncDirectoryContents(from source: URL, to destination: URL) throws {
             let fm = FileManager.default
             let entries = try fm.contentsOfDirectory(at: source, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
             for entry in entries {
                 let target = destination.appendingPathComponent(entry.lastPathComponent, isDirectory: true)
-                if fm.fileExists(atPath: target.path) {
-                    try fm.removeItem(at: target)
+                var sourceIsDirectory: ObjCBool = false
+                var targetIsDirectory: ObjCBool = false
+                let sourceExists = fm.fileExists(atPath: entry.path, isDirectory: &sourceIsDirectory)
+                guard sourceExists else { continue }
+
+                if sourceIsDirectory.boolValue {
+                    if fm.fileExists(atPath: target.path, isDirectory: &targetIsDirectory), !targetIsDirectory.boolValue {
+                        try fm.removeItem(at: target)
+                    }
+                    try fm.createDirectory(at: target, withIntermediateDirectories: true)
+                    try syncDirectoryContents(from: entry, to: target)
+                    continue
+                }
+
+                if fm.fileExists(atPath: target.path, isDirectory: &targetIsDirectory) {
+                    if targetIsDirectory.boolValue || !filesMatch(source: entry, target: target) {
+                        try fm.removeItem(at: target)
+                    } else {
+                        continue
+                    }
                 }
                 try fm.copyItem(at: entry, to: target)
             }
+        }
+
+        nonisolated private static func filesMatch(source: URL, target: URL) -> Bool {
+            guard
+                let sourceValues = try? source.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+                let targetValues = try? target.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+                sourceValues.fileSize == targetValues.fileSize
+            else {
+                return false
+            }
+
+            if sourceValues.contentModificationDate == targetValues.contentModificationDate {
+                return true
+            }
+
+            guard
+                let sourceData = try? Data(contentsOf: source),
+                let targetData = try? Data(contentsOf: target)
+            else {
+                return false
+            }
+            return sourceData == targetData
         }
 
         nonisolated private static func locateBundledHostIndex() -> URL? {

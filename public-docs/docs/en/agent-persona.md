@@ -130,6 +130,8 @@ If a Live2D persona does not declare `global_background`, GeeAgent renders Live2
 
 Live2D personas can expose poses, actions, expressions, viewport position, and scale through the local UI. On the Home surface, clicking the visible character can trigger available actions or expression changes. Action discovery only scans top-level motion assets unless a model or companion descriptor explicitly references nested files, and temporary actions stop or return to the selected pose afterward. The local interaction layer remains aligned after viewport position or scale adjustments, and GeeAgent keeps no-layout Live2D bundles contained to the visible Home frame across wide and tall window ratios while also keeping viewport translation in a recoverable visible range as scale changes so zooming back out can bring edge-clipped content back into view.
 
+When the active persona has a Live2D bundle, the Home visual switcher can open a desktop Live2D companion window. The companion renders the same persona in a transparent floating macOS panel, can be dragged by holding the visible character, keeps its own desktop position across displays, plays the selected idle pose automatically, and triggers a tap/click-style action or expression when clicked. Right-clicking the character opens the Live2D action menu with a Close command for the companion window. Double-clicking the character opens Quick Input with focus in the prompt field, and triple-clicking opens the Audio Capture panel. The desktop companion uses the persona's Live2D asset even if the Home visual is currently switched to video, image, or abstract mode.
+
 ## Runtime Influence
 
 Persona influence is intentionally light.

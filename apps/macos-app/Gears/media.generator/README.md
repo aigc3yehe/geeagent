@@ -24,6 +24,15 @@ Current Xenodia video models:
   generation through `/v1/videos/generations`. `REFERENCE_2_VIDEO` requires
   `veo3.1_fast`; `TEXT_2_VIDEO` accepts no `imageUrls`; first/last frame mode
   accepts 1-2 image URLs; reference mode accepts 1-3 image URLs.
+- `veo3.1-4k-t`, `veo3.1-components-4k-t`, `veo3.1-pro-4k-t`,
+  `veo3.1-pro-t`, `veo3.1-t`, `veo3.1-components-t`, `veo3-pro-t`,
+  `veo3-t`: alternate-route Veo public models through the same
+  `/v1/videos/generations` endpoint. These models use the documented `-t`
+  payload shape: `model`, `prompt`, optional public http(s) `imageUrls` up to
+  3, `aspect_ratio` of `16:9` or `9:16`, `resolution` of `720p`, `1080p`, or
+  `4k`, optional `duration=8`, and optional boolean `watermark`. They do not
+  send the legacy Veo `generationType`, `seeds`, `enableTranslation`, or
+  callback fields.
 - `seedance-2`, `seedance-2-fast`: task-only Seedance 2.0 generation through
   `/v1/videos/generations`. Seedance supports 4-15 second durations,
   `first_frame_url` / `last_frame_url`, and multimodal reference image, video,
@@ -61,12 +70,15 @@ to this reference history automatically.
 Task Apply restores the prompt, model, supported parameters, and references from
 an existing task; reuse-as-reference remains a separate image action.
 Displayable reference thumbnails can be clicked to open a fit-to-window preview;
-`asset://` references remain non-previewable until they resolve to a displayable
-URL.
+that preview includes a Download action for saving the reference image to a
+user-selected local path. `asset://` references remain non-previewable until
+they resolve to a displayable URL.
 Video results render with native playback in the task workbench: hovering a
 video result starts looping preview with sound muted by default, each video
 task exposes a sound toggle, and opening the large preview plays the generated
 video in place within the preview window.
+When the task list is scrolled away from the newest tasks, a floating circular
+button appears in the lower-right corner to jump back to the top.
 
 Audio remains a Xenodia-channel placeholder so future media models can land
 without adding Gear-local provider configuration.

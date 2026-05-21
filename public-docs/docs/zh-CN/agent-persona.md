@@ -130,6 +130,8 @@ global background 的优先级是 video 优先，然后 image。
 
 Live2D persona 可以通过本地 UI 暴露姿势、动作、表情、viewport 位置和缩放。在 Home surface 上，点击可见角色可以触发可用动作或表情变化。动作发现只扫描顶层 motion 资源，除非 model 或 companion descriptor 显式引用了子目录文件；临时动作结束后会停止或回到当前选中的姿势。本地交互层会在 viewport 位置或缩放调整后保持对齐，并且 GeeAgent 会让缺少 Cubism Layout 的 Live2D bundle 在宽窗和高窄窗口里都优先完整落在可见 Home 画面内，同时在缩放变化时把 viewport 平移维持在可恢复的可见范围内，这样把被边缘截断的内容再缩小时可以重新回到视野里。
 
+当 active persona 拥有 Live2D bundle 时，Home visual switcher 可以打开桌面 Live2D companion window。companion 会在透明的浮动 macOS panel 中渲染同一个 persona，用户可以按住可见角色在多显示器之间拖动，GeeAgent 会记住它的桌面位置，自动播放选中的 idle pose，并在点击时触发 tap/click 风格的动作或表情。右键点击角色会打开 Live2D action menu，其中包含用于关闭 companion window 的 Close 命令。双击角色会打开 Quick Input 并自动聚焦 prompt field，三击角色会打开 Audio Capture panel。即使 Home visual 当前切换到了 video、image 或 abstract mode，桌面 companion 仍会使用该 persona 的 Live2D 资源。
+
 ## 运行时影响
 
 persona 的影响被刻意保持为轻量。

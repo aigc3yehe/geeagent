@@ -7,7 +7,11 @@ struct Live2DInteractionSurface: NSViewRepresentable {
     var activePosePath: String?
     var activeExpressionPath: String?
     var excludedRects: [CGRect] = []
+    var dragCoordinateSpace: Live2DDragCoordinateSpace = .view
+    var defersPrimaryClickForMultipleClicks = false
     var onPrimaryClick: () -> Void
+    var onDoubleClick: () -> Void = {}
+    var onTripleClick: () -> Void = {}
     var onSelectPose: (Live2DMotionRecord?) -> Void
     var onSelectExpression: (Live2DExpressionRecord?) -> Void
     var onPlayAction: (Live2DMotionRecord) -> Void
@@ -15,6 +19,7 @@ struct Live2DInteractionSurface: NSViewRepresentable {
     var onDrag: (CGSize) -> Void
     var onScale: (Double) -> Void
     var onResetViewport: () -> Void
+    var onClose: (() -> Void)? = nil
 
     func makeNSView(context: Context) -> InteractionView {
         let view = InteractionView()
@@ -24,14 +29,19 @@ struct Live2DInteractionSurface: NSViewRepresentable {
             activePosePath: activePosePath,
             activeExpressionPath: activeExpressionPath,
             excludedRects: excludedRects,
+            dragCoordinateSpace: dragCoordinateSpace,
+            defersPrimaryClickForMultipleClicks: defersPrimaryClickForMultipleClicks,
             onPrimaryClick: onPrimaryClick,
+            onDoubleClick: onDoubleClick,
+            onTripleClick: onTripleClick,
             onSelectPose: onSelectPose,
             onSelectExpression: onSelectExpression,
             onPlayAction: onPlayAction,
             onResetExpression: onResetExpression,
             onDrag: onDrag,
             onScale: onScale,
-            onResetViewport: onResetViewport
+            onResetViewport: onResetViewport,
+            onClose: onClose
         )
         return view
     }
@@ -43,16 +53,32 @@ struct Live2DInteractionSurface: NSViewRepresentable {
             activePosePath: activePosePath,
             activeExpressionPath: activeExpressionPath,
             excludedRects: excludedRects,
+            dragCoordinateSpace: dragCoordinateSpace,
+            defersPrimaryClickForMultipleClicks: defersPrimaryClickForMultipleClicks,
             onPrimaryClick: onPrimaryClick,
+            onDoubleClick: onDoubleClick,
+            onTripleClick: onTripleClick,
             onSelectPose: onSelectPose,
             onSelectExpression: onSelectExpression,
             onPlayAction: onPlayAction,
             onResetExpression: onResetExpression,
             onDrag: onDrag,
             onScale: onScale,
-            onResetViewport: onResetViewport
+            onResetViewport: onResetViewport,
+            onClose: onClose
         )
     }
+}
+
+enum Live2DDragCoordinateSpace {
+    case view
+    case screen
+}
+
+enum Live2DInteractionClickIntent: Equatable {
+    case primary
+    case doubleClick
+    case tripleClick
 }
 
 final class InteractionView: NSView {
@@ -61,7 +87,11 @@ final class InteractionView: NSView {
     private var activePosePath: String?
     private var activeExpressionPath: String?
     private var excludedRects: [CGRect] = []
+    private var dragCoordinateSpace: Live2DDragCoordinateSpace = .view
+    private var defersPrimaryClickForMultipleClicks = false
     private var onPrimaryClick: (() -> Void)?
+    private var onDoubleClick: (() -> Void)?
+    private var onTripleClick: (() -> Void)?
     private var onSelectPose: ((Live2DMotionRecord?) -> Void)?
     private var onSelectExpression: ((Live2DExpressionRecord?) -> Void)?
     private var onPlayAction: ((Live2DMotionRecord) -> Void)?
@@ -69,10 +99,12 @@ final class InteractionView: NSView {
     private var onDrag: ((CGSize) -> Void)?
     private var onScale: ((Double) -> Void)?
     private var onResetViewport: (() -> Void)?
+    private var onClose: (() -> Void)?
 
     private var initialMouseDownPoint: NSPoint?
     private var lastDragPoint: NSPoint?
     private var draggedDuringMouseDown = false
+    private var pendingClickWorkItem: DispatchWorkItem?
 
     override var isFlipped: Bool { false }
     override var mouseDownCanMoveWindow: Bool { false }
@@ -92,16 +124,18 @@ final class InteractionView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
+        let point = dragReferencePoint(for: event)
         initialMouseDownPoint = point
         lastDragPoint = point
         draggedDuringMouseDown = false
+        pendingClickWorkItem?.cancel()
+        pendingClickWorkItem = nil
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard let lastDragPoint else { return }
-        let point = convert(event.locationInWindow, from: nil)
-        let delta = CGSize(width: point.x - lastDragPoint.x, height: -(point.y - lastDragPoint.y))
+        let point = dragReferencePoint(for: event)
+        let delta = Self.dragDelta(from: lastDragPoint, to: point)
         if abs(delta.width) > 0.5 || abs(delta.height) > 0.5 {
             draggedDuringMouseDown = true
             onDrag?(delta)
@@ -120,7 +154,7 @@ final class InteractionView: NSView {
             presentContextMenu(at: convert(event.locationInWindow, from: nil))
             return
         }
-        onPrimaryClick?()
+        handleClick(count: event.clickCount)
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -145,21 +179,30 @@ final class InteractionView: NSView {
         activePosePath: String?,
         activeExpressionPath: String?,
         excludedRects: [CGRect],
+        dragCoordinateSpace: Live2DDragCoordinateSpace = .view,
+        defersPrimaryClickForMultipleClicks: Bool = false,
         onPrimaryClick: @escaping () -> Void,
+        onDoubleClick: @escaping () -> Void = {},
+        onTripleClick: @escaping () -> Void = {},
         onSelectPose: @escaping (Live2DMotionRecord?) -> Void,
         onSelectExpression: @escaping (Live2DExpressionRecord?) -> Void,
         onPlayAction: @escaping (Live2DMotionRecord) -> Void,
         onResetExpression: @escaping () -> Void,
         onDrag: @escaping (CGSize) -> Void,
         onScale: @escaping (Double) -> Void,
-        onResetViewport: @escaping () -> Void
+        onResetViewport: @escaping () -> Void,
+        onClose: (() -> Void)? = nil
     ) {
         self.viewportState = viewportState
         self.catalog = catalog
         self.activePosePath = activePosePath
         self.activeExpressionPath = activeExpressionPath
         self.excludedRects = excludedRects
+        self.dragCoordinateSpace = dragCoordinateSpace
+        self.defersPrimaryClickForMultipleClicks = defersPrimaryClickForMultipleClicks
         self.onPrimaryClick = onPrimaryClick
+        self.onDoubleClick = onDoubleClick
+        self.onTripleClick = onTripleClick
         self.onSelectPose = onSelectPose
         self.onSelectExpression = onSelectExpression
         self.onPlayAction = onPlayAction
@@ -167,12 +210,64 @@ final class InteractionView: NSView {
         self.onDrag = onDrag
         self.onScale = onScale
         self.onResetViewport = onResetViewport
+        self.onClose = onClose
         needsDisplay = true
     }
 
     nonisolated static func contains(_ point: CGPoint, inExcludedRects excludedRects: [CGRect]) -> Bool {
         excludedRects.contains { rect in
             rect.insetBy(dx: -4, dy: -4).contains(point)
+        }
+    }
+
+    nonisolated static func dragDelta(from previous: CGPoint, to current: CGPoint) -> CGSize {
+        CGSize(width: current.x - previous.x, height: -(current.y - previous.y))
+    }
+
+    nonisolated static func clickIntent(forClickCount clickCount: Int) -> Live2DInteractionClickIntent {
+        if clickCount >= 3 { return .tripleClick }
+        if clickCount == 2 { return .doubleClick }
+        return .primary
+    }
+
+    private func dragReferencePoint(for event: NSEvent) -> CGPoint {
+        switch dragCoordinateSpace {
+        case .view:
+            return convert(event.locationInWindow, from: nil)
+        case .screen:
+            if let window = event.window ?? self.window {
+                return window.convertPoint(toScreen: event.locationInWindow)
+            }
+            return NSEvent.mouseLocation
+        }
+    }
+
+    private func handleClick(count: Int) {
+        pendingClickWorkItem?.cancel()
+        pendingClickWorkItem = nil
+
+        switch Self.clickIntent(forClickCount: count) {
+        case .primary:
+            guard defersPrimaryClickForMultipleClicks else {
+                onPrimaryClick?()
+                return
+            }
+
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.onPrimaryClick?()
+                self?.pendingClickWorkItem = nil
+            }
+            pendingClickWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + NSEvent.doubleClickInterval, execute: workItem)
+        case .doubleClick:
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.onDoubleClick?()
+                self?.pendingClickWorkItem = nil
+            }
+            pendingClickWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + NSEvent.doubleClickInterval, execute: workItem)
+        case .tripleClick:
+            onTripleClick?()
         }
     }
 
@@ -265,6 +360,13 @@ final class InteractionView: NSView {
         resetViewportItem.target = self
         menu.addItem(resetViewportItem)
 
+        if onClose != nil {
+            menu.addItem(.separator())
+            let closeItem = NSMenuItem(title: "Close", action: #selector(handleClose), keyEquivalent: "")
+            closeItem.target = self
+            menu.addItem(closeItem)
+        }
+
         return menu
     }
 
@@ -310,5 +412,10 @@ final class InteractionView: NSView {
     @objc
     private func handleResetViewport() {
         onResetViewport?()
+    }
+
+    @objc
+    private func handleClose() {
+        onClose?()
     }
 }

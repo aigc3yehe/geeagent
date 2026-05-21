@@ -8,16 +8,23 @@ struct WorkbenchRootView: View {
     }
 
     @State var store: WorkbenchStore
+    let live2DDesktopCompanionController: Live2DDesktopCompanionController?
     @Environment(\.openWindow) private var openWindow
     @State private var presentedSection: WorkbenchSection = .home
     @State private var transitionCoverOpacity = 0.0
     @State private var transitionTask: Task<Void, Never>?
     @AppStorage("geeagent.home.widget.positions") private var storedHomeWidgetPositions = "{}"
 
-    init(store: WorkbenchStore? = nil) {
+    init(
+        store: WorkbenchStore? = nil,
+        live2DDesktopCompanionController: Live2DDesktopCompanionController? = nil
+    ) {
+        let resolvedStore = store ?? WorkbenchStore(runtimeClient: NativeWorkbenchRuntimeClient())
         _store = State(
-            initialValue: store ?? WorkbenchStore(runtimeClient: NativeWorkbenchRuntimeClient())
+            initialValue: resolvedStore
         )
+        self.live2DDesktopCompanionController = live2DDesktopCompanionController
+            ?? Live2DDesktopCompanionController(store: resolvedStore)
     }
 
     private var isHomeFocused: Bool {
@@ -143,6 +150,12 @@ struct WorkbenchRootView: View {
         .onChange(of: store.selectedSection) { oldValue, newValue in
             coordinateTransition(from: oldValue, to: newValue)
         }
+        .onChange(of: store.activeLive2DBundlePath) { _, _ in
+            live2DDesktopCompanionController?.refreshFromStoreOrHide()
+        }
+        .onChange(of: store.activeProfileAppearancePreference) { _, _ in
+            live2DDesktopCompanionController?.refreshFromStoreOrHide()
+        }
         .onChange(of: store.pendingGearWindowRequest) { _, request in
             guard let request else {
                 return
@@ -174,7 +187,10 @@ struct WorkbenchRootView: View {
     private var contentStage: some View {
         ZStack {
             if presentedSection == .home {
-                HomeStageModule(store: store)
+                HomeStageModule(
+                    store: store,
+                    live2DDesktopCompanionController: live2DDesktopCompanionController
+                )
                     .transition(homeStageTransition)
             } else if presentedSection == .apps {
                 AppsView(store: store)

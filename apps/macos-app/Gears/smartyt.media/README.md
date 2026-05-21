@@ -20,6 +20,32 @@ Gee checks the dependencies when the Gear is opened from the Gears catalog. If
 Homebrew is available, Gee can install missing `yt-dlp` and `ffmpeg`
 dependencies with the registered recipes.
 
+Before `yt-dlp` operations, SmartYT checks the Homebrew stable `yt-dlp` update
+path at most once per day. If YouTube returns bot-verification login errors,
+SmartYT reports a structured cookie-required failure instead of treating a
+version update as recovery.
+
+## Cookie Configuration
+
+YouTube and other extractor-backed sites may require authenticated cookies.
+Use the native SmartYT UI to choose a browser-exported Netscape `cookies.txt`
+file or a common browser JSON cookie export. SmartYT normalizes the selected
+file into the Gear data directory as:
+
+```text
+~/Library/Application Support/GeeAgent/gear-data/smartyt.media/cookies/yt-dlp-cookies.txt
+```
+
+The saved Netscape-format file is reused for later `yt-dlp` metadata, search,
+subtitle, audio, and video operations. Agent calls may pass `cookie_file`
+explicitly to use a different local cookies file for that call. Cookie contents
+are never included in structured result payloads. SmartYT passes a per-command
+temporary cookie copy to `yt-dlp` so extractor cookie-jar writes do not mutate
+the saved source file. If YouTube reports that saved account cookies were
+rotated or are no longer valid, SmartYT refreshes its saved cookie file from the
+active Chrome profile and retries the same `yt-dlp` command once. The UI also
+offers a manual Chrome refresh button for preemptive renewal.
+
 ## Data Locations
 
 Job state is written outside the Gear package:
@@ -37,6 +63,16 @@ Downloaded media and extracted platform subtitle files default to:
 Agent calls may pass an explicit `output_dir` for download jobs. If no output
 directory is specified, Gee uses `~/Downloads/SmartYT`. The Gear package itself
 remains copy-installable and should not store user downloads.
+
+Queued and running jobs surface native progress updates in the SmartYT UI. A
+queued or running job can be cancelled from the jobs list or inspector, and the
+structured task payload exposes `progress_fraction`, `progress_label`, and
+`can_cancel` for polling surfaces.
+
+Completed, failed, and cancelled job records can be deleted from the native UI.
+Deleting a job also removes the Gear-owned downloaded files, transcript files,
+and task output directory associated with that job. Queued or running jobs must
+be cancelled or finished before deletion.
 
 ## Agent Capabilities
 

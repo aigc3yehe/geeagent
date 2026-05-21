@@ -3,6 +3,7 @@ import SwiftUI
 
 struct HomeView: View {
     @Bindable var store: WorkbenchStore
+    var live2DDesktopCompanionController: Live2DDesktopCompanionController?
     @State private var draftMessage = ""
     @State private var draftAttachments: [ChatAttachmentDraft] = []
     @State private var editingConversationTitle = false
@@ -205,6 +206,28 @@ struct HomeView: View {
                 }
                 .buttonStyle(.plain)
                 .help(mode.homeSwitcherHelpText)
+            }
+
+            if let live2DDesktopCompanionController, store.activeLive2DBundlePath != nil {
+                Divider()
+                    .frame(height: 20)
+                    .overlay(Color.white.opacity(0.16))
+
+                Button {
+                    live2DDesktopCompanionController.toggle()
+                } label: {
+                    Image(systemName: "rectangle.on.rectangle")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white.opacity(live2DDesktopCompanionController.isPresented ? 0.96 : 0.72))
+                        .frame(width: 28, height: 28)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(live2DDesktopCompanionController.isPresented ? Color.white.opacity(0.16) : Color.white.opacity(0.06))
+                        )
+                }
+                .buttonStyle(.plain)
+                .help(live2DDesktopCompanionController.isPresented ? "Hide desktop Live2D companion" : "Show Live2D companion on desktop")
+                .disabled(!live2DDesktopCompanionController.canPresent)
             }
         }
         .padding(.horizontal, 10)
@@ -1136,7 +1159,7 @@ private struct HomeCanvasMetrics {
 
 private enum HomeDisplayModeSwitcherMetrics {
     static let topInset: CGFloat = 18
-    static let activationWidth: CGFloat = 286
+    static let activationWidth: CGFloat = 330
     static let activationHeight: CGFloat = 76
 }
 

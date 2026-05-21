@@ -71,6 +71,83 @@ final class Live2DInteractionSurfaceTests: XCTestCase {
         XCTAssertTrue(bootstrap.contains("projection.scale(height / width, 1);"))
     }
 
+    func testDesktopCompanionPrefersTapLikeClickMotion() {
+        let idle = Live2DMotionRecord(
+            id: "idle.motion3.json",
+            title: "Idle",
+            relativePath: "idle.motion3.json",
+            source: .model3,
+            category: .pose,
+            isLoop: true
+        )
+        let wave = Live2DMotionRecord(
+            id: "wave.motion3.json",
+            title: "Wave",
+            relativePath: "motions/wave.motion3.json",
+            source: .model3,
+            category: .action,
+            isLoop: false
+        )
+        let tap = Live2DMotionRecord(
+            id: "tap.motion3.json",
+            title: "Tap Body",
+            relativePath: "motions/tap_body.motion3.json",
+            source: .model3,
+            category: .action,
+            isLoop: false
+        )
+
+        let catalog = Live2DActionCatalog(
+            defaultPose: idle,
+            fallbackPose: nil,
+            poses: [idle],
+            actions: [wave, tap],
+            expressions: []
+        )
+
+        XCTAssertEqual(
+            Live2DDesktopCompanionController.preferredClickMotion(in: catalog)?.relativePath,
+            tap.relativePath
+        )
+    }
+
+    func testDesktopCompanionHitTestingYieldsTransparentPanelArea() {
+        let bounds = CGRect(x: 0, y: 0, width: 420, height: 620)
+
+        XCTAssertFalse(
+            Live2DDesktopCompanionHitTesting.accepts(
+                point: CGPoint(x: 24, y: 24),
+                in: bounds,
+                viewportState: .default
+            ),
+            "transparent panel corners should pass mouse events through to the desktop"
+        )
+        XCTAssertTrue(
+            Live2DDesktopCompanionHitTesting.accepts(
+                point: CGPoint(x: bounds.midX, y: bounds.midY + 40),
+                in: bounds,
+                viewportState: .default
+            ),
+            "the visible character body should stay clickable and draggable"
+        )
+    }
+
+    func testDesktopDragDeltaUsesScreenCoordinateDirection() {
+        let previous = CGPoint(x: -1480, y: 820)
+        let current = CGPoint(x: -1436, y: 856)
+        let delta = InteractionView.dragDelta(from: previous, to: current)
+
+        XCTAssertEqual(delta.width, 44, accuracy: 0.001)
+        XCTAssertEqual(delta.height, -36, accuracy: 0.001)
+    }
+
+    func testClickCountRoutesToDesktopCompanionIntent() {
+        XCTAssertEqual(InteractionView.clickIntent(forClickCount: 1), .primary)
+        XCTAssertEqual(InteractionView.clickIntent(forClickCount: 2), .doubleClick)
+        XCTAssertEqual(InteractionView.clickIntent(forClickCount: 3), .tripleClick)
+        XCTAssertEqual(InteractionView.clickIntent(forClickCount: 4), .tripleClick)
+    }
+
     @MainActor
     func testExcludedRectYieldsHitTestingToHomeWidgets() {
         let view = InteractionView(frame: CGRect(x: 0, y: 0, width: 1200, height: 800))

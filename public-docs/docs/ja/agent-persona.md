@@ -130,6 +130,8 @@ Live2D persona が `global_background` を宣言していない場合、GeeAgent
 
 Live2D persona はローカル UI から poses、actions、expressions、viewport position、scale を扱えます。Home surface では、表示されている character をクリックすると利用可能な actions や expression changes を発火できます。Action discovery は top-level motion assets だけを scan し、model または companion descriptor が nested files を明示的に参照している場合だけそれらを使います。Temporary action は終了後に stop するか、選択中の pose に戻ります。local interaction layer は viewport position や scale の調整後も整合し、GeeAgent は Cubism Layout を持たない Live2D bundle でも wide / tall の window ratio をまたいで character 全体を Home の可視 frame に収めつつ、scale の変化に合わせて viewport translation を回復可能な可視範囲に保つため、端で切れた content も縮小すると再び view 内へ戻せます。
 
+active persona が Live2D bundle を持つ場合、Home visual switcher から desktop Live2D companion window を開けます。companion は同じ persona を transparent floating macOS panel に描画し、表示中の character を押したまま複数 display 間で drag できます。GeeAgent は desktop position を保持し、選択中の idle pose を自動再生し、click 時には tap/click 系の action または expression を発火します。character を右クリックすると Live2D action menu が開き、companion window を閉じる Close command も表示されます。character を double-click すると Quick Input が prompt field に focus された状態で開き、triple-click すると Audio Capture panel が開きます。Home visual が video、image、abstract mode に切り替わっていても、desktop companion はその persona の Live2D asset を使用します。
+
 ## Runtime Influence
 
 persona の影響は意図的に軽量です。

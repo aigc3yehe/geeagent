@@ -123,6 +123,10 @@ final class MenuBarController {
         toggleQuickInput()
     }
 
+    func presentQuickInput() {
+        showQuickInputPanel()
+    }
+
     @objc private func showAudioCapture() {
         menuPanel?.dismiss()
         quickInputPanel?.dismiss()
@@ -248,6 +252,7 @@ final class MenuBarController {
         positionQuickInputPanel(panel)
         panel.present(at: panel.frame.origin)
         NSApp.activate(ignoringOtherApps: true)
+        focusQuickInputField(in: panel)
     }
 
     private func positionQuickInputPanel(_ panel: FloatingPanelWindow) {
@@ -262,6 +267,14 @@ final class MenuBarController {
         panel.setFrameOrigin(CGPoint(x: x, y: y))
     }
 
+    private func focusQuickInputField(in panel: FloatingPanelWindow) {
+        DispatchQueue.main.async { [weak panel] in
+            guard let panel, panel.isVisible else { return }
+            guard let textField = panel.contentView?.firstDescendantTextField() else { return }
+            panel.makeFirstResponder(textField)
+        }
+    }
+
     // MARK: bundled icon
 
     private static func statusIcon() -> NSImage {
@@ -271,6 +284,20 @@ final class MenuBarController {
         }
         // Fallback to a plain square if the symbol isn't available.
         return NSImage(size: NSSize(width: 18, height: 18))
+    }
+}
+
+private extension NSView {
+    func firstDescendantTextField() -> NSTextField? {
+        if let textField = self as? NSTextField {
+            return textField
+        }
+        for subview in subviews {
+            if let textField = subview.firstDescendantTextField() {
+                return textField
+            }
+        }
+        return nil
     }
 }
 

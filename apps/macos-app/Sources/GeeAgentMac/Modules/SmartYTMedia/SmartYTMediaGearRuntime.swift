@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 
 enum SmartYTMediaAction: String, Codable, CaseIterable, Identifiable {
     case sniff
@@ -47,6 +48,7 @@ enum SmartYTJobStatus: String, Codable, Hashable {
     case queued
     case running
     case completed
+    case cancelled
     case failed
 
     var title: String {
@@ -54,6 +56,7 @@ enum SmartYTJobStatus: String, Codable, Hashable {
         case .queued: "Queued"
         case .running: "Running"
         case .completed: "Completed"
+        case .cancelled: "Cancelled"
         case .failed: "Failed"
         }
     }
@@ -306,6 +309,8 @@ struct SmartYTMediaJob: Codable, Identifiable, Hashable {
     var transcriptPath: String?
     var transcriptPreview: String?
     var artifactDirectoryPath: String?
+    var progressFraction: Double?
+    var progressLabel: String?
     var log: String
     var errorMessage: String?
 
@@ -316,12 +321,28 @@ struct SmartYTMediaJob: Codable, Identifiable, Hashable {
     var transcriptURL: URL? {
         transcriptPath.map { URL(fileURLWithPath: $0) }
     }
+
+    var canCancel: Bool {
+        status == .queued || status == .running
+    }
+
+    var normalizedProgressFraction: Double? {
+        guard let progressFraction else {
+            return nil
+        }
+        return min(max(progressFraction, 0), 1)
+    }
 }
 
 enum SmartYTMediaError: LocalizedError {
     case invalidURL
     case invalidMetadata(String)
     case commandFailed(command: String, detail: String)
+    case youtubeAuthenticationRequired(command: String, detail: String)
+    case dependencyMaintenanceFailed(String)
+    case missingCookieFile(String)
+    case invalidCookieFile(String)
+    case browserCookieRefreshFailed(String)
     case missingArtifact(String)
     case transcriptionUnavailable(String)
 
@@ -333,10 +354,430 @@ enum SmartYTMediaError: LocalizedError {
             message
         case let .commandFailed(command, detail):
             "`\(command)` failed. \(detail)"
+        case let .youtubeAuthenticationRequired(command, detail):
+            "`\(command)` needs authenticated YouTube cookies. \(detail)"
+        case let .dependencyMaintenanceFailed(message):
+            message
+        case let .missingCookieFile(path):
+            "Configured yt-dlp cookie file is missing: \(path)"
+        case let .invalidCookieFile(message):
+            message
+        case let .browserCookieRefreshFailed(message):
+            message
         case let .missingArtifact(message):
             message
         case let .transcriptionUnavailable(message):
             message
+        }
+    }
+
+    var code: String {
+        switch self {
+        case .invalidURL:
+            "gear.smartyt.invalid_url"
+        case .invalidMetadata:
+            "gear.smartyt.invalid_metadata"
+        case .commandFailed:
+            "gear.smartyt.command_failed"
+        case .youtubeAuthenticationRequired:
+            "gear.smartyt.youtube_auth_required"
+        case .dependencyMaintenanceFailed:
+            "gear.smartyt.dependency_maintenance_failed"
+        case .missingCookieFile:
+            "gear.smartyt.cookie_file_missing"
+        case .invalidCookieFile:
+            "gear.smartyt.cookie_file_invalid"
+        case .browserCookieRefreshFailed:
+            "gear.smartyt.browser_cookie_refresh_failed"
+        case .missingArtifact:
+            "gear.smartyt.missing_artifact"
+        case .transcriptionUnavailable:
+            "gear.smartyt.transcription_unavailable"
+        }
+    }
+
+    var recovery: String? {
+        switch self {
+        case .youtubeAuthenticationRequired:
+            "Choose and save an authenticated YouTube cookies.txt file in SmartYT, or pass `cookie_file` explicitly, then retry the same URL. Updating yt-dlp alone does not fix this bot-verification response."
+        case .dependencyMaintenanceFailed:
+            "Check that Homebrew and yt-dlp are available, then retry SmartYT after dependency maintenance succeeds."
+        case .missingCookieFile:
+            "Choose and save a fresh cookies.txt file in SmartYT, or clear the saved cookie configuration before retrying public media."
+        case .invalidCookieFile:
+            "Choose a browser-exported Netscape cookies.txt file or a supported JSON cookie export from SmartYT, then retry the same URL."
+        case .browserCookieRefreshFailed:
+            "Open Chrome with an authenticated YouTube session, allow local cookie access if macOS prompts, then refresh cookies from SmartYT or retry the download."
+        case .commandFailed:
+            "Inspect the command output for the provider-specific reason, then retry after correcting that dependency or provider state."
+        default:
+            nil
+        }
+    }
+}
+
+struct SmartYTYTDLPMaintenanceReport: Hashable {
+    var checkedAt: Date
+    var versionBefore: String?
+    var versionAfter: String?
+    var output: String
+    var warning: String?
+
+    var summary: String {
+        if let warning {
+            return warning
+        }
+        let before = versionBefore ?? "unknown"
+        let after = versionAfter ?? "unknown"
+        if before == after {
+            return "yt-dlp is current at \(after)."
+        }
+        return "yt-dlp refreshed from \(before) to \(after)."
+    }
+}
+
+enum SmartYTYTDLPCookieFile {
+    private struct BrowserCookie: Decodable {
+        var domain: String?
+        var expirationDate: Double?
+        var hostOnly: Bool?
+        var httpOnly: Bool?
+        var name: String?
+        var path: String?
+        var secure: Bool?
+        var session: Bool?
+        var value: String?
+    }
+
+    static func normalizedNetscapeData(from data: Data) throws -> Data {
+        if let text = String(data: data, encoding: .utf8),
+           isLikelyNetscape(text)
+        {
+            return data
+        }
+
+        guard let cookies = try? JSONDecoder().decode([BrowserCookie].self, from: data) else {
+            throw SmartYTMediaError.invalidCookieFile(
+                "Cookie file must be a Netscape cookies.txt file or a browser JSON cookie export."
+            )
+        }
+
+        let lines = try cookies.compactMap(netscapeLine)
+        guard !lines.isEmpty else {
+            throw SmartYTMediaError.invalidCookieFile("Cookie export did not contain any usable cookies.")
+        }
+
+        let text = (["# Netscape HTTP Cookie File"] + lines).joined(separator: "\n") + "\n"
+        return Data(text.utf8)
+    }
+
+    static func isLikelyNetscape(_ text: String) -> Bool {
+        if text.hasPrefix("# Netscape HTTP Cookie File") {
+            return true
+        }
+        return text
+            .split(whereSeparator: \.isNewline)
+            .contains { line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else {
+                    return false
+                }
+                return trimmed.split(separator: "\t", omittingEmptySubsequences: false).count == 7
+            }
+    }
+
+    private static func netscapeLine(_ cookie: BrowserCookie) throws -> String? {
+        guard let rawDomain = cookie.domain?.nilIfBlank,
+              let name = cookie.name,
+              let value = cookie.value
+        else {
+            return nil
+        }
+
+        let domain = (cookie.httpOnly == true ? "#HttpOnly_" : "") + rawDomain
+        let includeSubdomains = cookie.hostOnly == true ? "FALSE" : "TRUE"
+        let path = cookie.path?.nilIfBlank ?? "/"
+        let secure = cookie.secure == true ? "TRUE" : "FALSE"
+        let expiration = cookie.session == true ? 0 : Int64(cookie.expirationDate ?? 0)
+        return try [
+            domain,
+            includeSubdomains,
+            path,
+            secure,
+            String(expiration),
+            name,
+            value
+        ]
+        .map(sanitizeField)
+        .joined(separator: "\t")
+    }
+
+    private static func sanitizeField(_ field: String) throws -> String {
+        if field.rangeOfCharacter(from: CharacterSet(charactersIn: "\t\r\n")) != nil {
+            throw SmartYTMediaError.invalidCookieFile("Cookie export contains unsupported tab or newline characters.")
+        }
+        return field
+    }
+}
+
+protocol SmartYTCommandCancellable: Sendable {
+    func cancel()
+}
+
+protocol SmartYTStreamingCommandRunning: GearCommandRunning {
+    func runStreaming(
+        _ command: String,
+        arguments: [String],
+        timeoutSeconds: TimeInterval?,
+        onStart: @escaping @Sendable (any SmartYTCommandCancellable) -> Void,
+        onLine: @escaping @Sendable (String) -> Void
+    ) async -> GearCommandResult
+}
+
+extension GearShellCommandRunner: SmartYTStreamingCommandRunning {
+    func runStreaming(
+        _ command: String,
+        arguments: [String],
+        timeoutSeconds: TimeInterval?,
+        onStart: @escaping @Sendable (any SmartYTCommandCancellable) -> Void,
+        onLine: @escaping @Sendable (String) -> Void
+    ) async -> GearCommandResult {
+        await Task.detached(priority: .utility) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            process.arguments = ["-lc", Self.smartYTShellCommand(command, arguments: arguments)]
+            process.environment = Self.smartYTProcessEnvironment()
+
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
+
+            let stdoutBuffer = SmartYTCommandOutputBuffer()
+            let stderrBuffer = SmartYTCommandOutputBuffer()
+            let stdoutLines = SmartYTCommandLineBuffer()
+            let stderrLines = SmartYTCommandLineBuffer()
+            let processHandle = SmartYTProcessHandle(process: process)
+            onStart(processHandle)
+
+            stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                stdoutBuffer.append(data)
+                stdoutLines.append(data, onLine: onLine)
+            }
+            stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                stderrBuffer.append(data)
+                stderrLines.append(data, onLine: onLine)
+            }
+
+            let timeoutTask = timeoutSeconds.map { timeoutSeconds in
+                Task.detached(priority: .utility) {
+                    let nanoseconds = UInt64(max(timeoutSeconds, 0.1) * 1_000_000_000)
+                    try? await Task.sleep(nanoseconds: nanoseconds)
+                    guard !Task.isCancelled else {
+                        return
+                    }
+                    processHandle.terminateForTimeout()
+                }
+            }
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                timeoutTask?.cancel()
+                stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                stderrPipe.fileHandleForReading.readabilityHandler = nil
+                return GearCommandResult(exitCode: 127, stdout: "", stderr: error.localizedDescription)
+            }
+
+            timeoutTask?.cancel()
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+
+            let stdoutTail = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            stdoutBuffer.append(stdoutTail)
+            stdoutLines.append(stdoutTail, onLine: onLine)
+            stdoutLines.flush(onLine: onLine)
+
+            let stderrTail = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            stderrBuffer.append(stderrTail)
+            stderrLines.append(stderrTail, onLine: onLine)
+            stderrLines.flush(onLine: onLine)
+
+            var stderr = stderrBuffer.string()
+            if processHandle.didTimeOut {
+                let timeoutMessage = "Command timed out after \(Int(timeoutSeconds ?? 0))s: \(command)"
+                stderr = [stderr, timeoutMessage].filter { !$0.isEmpty }.joined(separator: "\n")
+                return GearCommandResult(exitCode: 124, stdout: stdoutBuffer.string(), stderr: stderr)
+            }
+
+            return GearCommandResult(
+                exitCode: process.terminationStatus,
+                stdout: stdoutBuffer.string(),
+                stderr: stderr
+            )
+        }.value
+    }
+
+    private static func smartYTShellCommand(_ command: String, arguments: [String]) -> String {
+        ([command] + arguments)
+            .map(smartYTShellQuote)
+            .joined(separator: " ")
+    }
+
+    private static func smartYTShellQuote(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
+    private static func smartYTProcessEnvironment() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        environment["HYPERFRAMES_NO_UPDATE_CHECK"] = "1"
+        environment["CI"] = environment["CI"] ?? "1"
+
+        let commonPaths = [
+            environment["PATH"],
+            "\(NSHomeDirectory())/.local/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin"
+        ]
+        environment["PATH"] = commonPaths.compactMap(\.self).joined(separator: ":")
+        return environment
+    }
+}
+
+private final class SmartYTProcessHandle: @unchecked Sendable, SmartYTCommandCancellable {
+    let process: Process
+    private let lock = NSLock()
+    private var timedOut = false
+
+    init(process: Process) {
+        self.process = process
+    }
+
+    var didTimeOut: Bool {
+        lock.lock()
+        let value = timedOut
+        lock.unlock()
+        return value
+    }
+
+    func cancel() {
+        terminate(markTimedOut: false)
+    }
+
+    func terminateForTimeout() {
+        terminate(markTimedOut: true)
+    }
+
+    private func terminate(markTimedOut: Bool) {
+        lock.lock()
+        if markTimedOut {
+            timedOut = true
+        }
+        lock.unlock()
+        guard process.isRunning else {
+            return
+        }
+        process.interrupt()
+        Task.detached(priority: .utility) { [process] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard process.isRunning else {
+                return
+            }
+            process.terminate()
+        }
+    }
+}
+
+private final class SmartYTCommandOutputBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func append(_ chunk: Data) {
+        guard !chunk.isEmpty else {
+            return
+        }
+        lock.lock()
+        data.append(chunk)
+        lock.unlock()
+    }
+
+    func string() -> String {
+        lock.lock()
+        let snapshot = data
+        lock.unlock()
+        return String(data: snapshot, encoding: .utf8) ?? ""
+    }
+}
+
+private final class SmartYTCommandLineBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffer = ""
+
+    func append(_ data: Data, onLine: @escaping @Sendable (String) -> Void) {
+        guard !data.isEmpty,
+              let chunk = String(data: data, encoding: .utf8),
+              !chunk.isEmpty
+        else {
+            return
+        }
+
+        let lines: [String]
+        lock.lock()
+        buffer.append(chunk)
+        lines = extractLinesLocked()
+        lock.unlock()
+
+        for line in lines where !line.isEmpty {
+            onLine(line)
+        }
+    }
+
+    func flush(onLine: @escaping @Sendable (String) -> Void) {
+        let trailing: String?
+        lock.lock()
+        let value = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
+        trailing = value.isEmpty ? nil : buffer
+        buffer = ""
+        lock.unlock()
+
+        if let trailing {
+            onLine(trailing)
+        }
+    }
+
+    private func extractLinesLocked() -> [String] {
+        var lines: [String] = []
+        while let boundary = buffer.firstIndex(where: { $0 == "\n" || $0 == "\r" }) {
+            lines.append(String(buffer[..<boundary]))
+            var next = buffer.index(after: boundary)
+            while next < buffer.endIndex, buffer[next] == "\n" || buffer[next] == "\r" {
+                next = buffer.index(after: next)
+            }
+            buffer = String(buffer[next...])
+        }
+        return lines
+    }
+}
+
+private final class SmartYTProgressLineSink: @unchecked Sendable {
+    weak var store: SmartYTMediaGearStore?
+    let jobID: String
+
+    init(store: SmartYTMediaGearStore, jobID: String) {
+        self.store = store
+        self.jobID = jobID
+    }
+
+    func handle(_ line: String) {
+        Task { @MainActor [weak store] in
+            store?.handleYTDLPOutputLine(line, for: jobID)
         }
     }
 }
@@ -354,20 +795,53 @@ final class SmartYTMediaGearStore: ObservableObject {
     @Published var selectedJobID: SmartYTMediaJob.ID?
     @Published private(set) var statusMessage = "Ready"
     @Published private(set) var isBusy = false
+    @Published private(set) var cookieFilePath = ""
 
     private let runner: GearCommandRunning
     private let fileManager: FileManager
+    private let defaults: UserDefaults
+    private let dataRootOverride: URL?
+    private var jobTasks: [String: Task<Void, Never>] = [:]
+    private var activeCommandHandles: [String: any SmartYTCommandCancellable] = [:]
+    private var ytdlpMaintenanceTask: Task<SmartYTYTDLPMaintenanceReport, Error>?
+    private var lastPersistedProgressStep: [String: Int] = [:]
+    private var lastProgressLabelByJobID: [String: String] = [:]
+    static let cookieFileDefaultsKey = "geeagent.smartyt.cookies.file"
+    private static let ytdlpMaintenanceDefaultsKey = "geeagent.smartyt.ytdlp.lastMaintenanceAt"
+    private static let ytdlpMaintenanceInterval: TimeInterval = 24 * 60 * 60
+    private static let savedCookieFileName = "yt-dlp-cookies.txt"
+    private static let browserCookieRefreshProbeURL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
     var selectedJob: SmartYTMediaJob? {
         jobs.first { $0.id == selectedJobID } ?? jobs.first
     }
 
+    var cookieStatusTitle: String {
+        guard let path = cookieFilePath.nilIfBlank else {
+            return "No cookies saved"
+        }
+        return fileManager.fileExists(atPath: path) ? "Cookies saved" : "Cookie file missing"
+    }
+
+    var cookieStatusDetail: String {
+        guard let path = cookieFilePath.nilIfBlank else {
+            return "Optional for YouTube bot checks"
+        }
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        return fileManager.fileExists(atPath: path) ? name : "Choose cookies.txt again"
+    }
+
     init(
         runner: GearCommandRunning = GearShellCommandRunner(),
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        defaults: UserDefaults = .standard,
+        dataRoot: URL? = nil
     ) {
         self.runner = runner
         self.fileManager = fileManager
+        self.defaults = defaults
+        self.dataRootOverride = dataRoot
+        self.cookieFilePath = defaults.string(forKey: Self.cookieFileDefaultsKey) ?? ""
         loadJobs()
         loadSearchTasks()
     }
@@ -387,6 +861,51 @@ final class SmartYTMediaGearStore: ObservableObject {
             selectedJobID = selectedJobID ?? jobs.first?.id
         } catch {
             statusMessage = "Could not load SmartYT jobs: \(error.localizedDescription)"
+        }
+    }
+
+    func chooseCookieFile() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose yt-dlp Cookies File"
+        panel.message = "Choose a browser-exported cookies.txt or JSON cookie file for YouTube and other yt-dlp sites."
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.text, .json, .data]
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+        do {
+            let savedURL = try saveCookieFile(from: url)
+            cookieFilePath = savedURL.path
+            defaults.set(savedURL.path, forKey: Self.cookieFileDefaultsKey)
+            statusMessage = "Saved yt-dlp cookies."
+        } catch {
+            statusMessage = "Could not save cookies: \(error.localizedDescription)"
+        }
+    }
+
+    func clearCookieFile() {
+        if let path = cookieFilePath.nilIfBlank {
+            let savedPath = try? savedCookieFileURL().path
+            if path == savedPath {
+                try? fileManager.removeItem(atPath: path)
+            }
+        }
+        cookieFilePath = ""
+        defaults.removeObject(forKey: Self.cookieFileDefaultsKey)
+        statusMessage = "Cleared saved yt-dlp cookies."
+    }
+
+    func refreshCookieFileFromBrowser() {
+        let probeURL = normalizedURL(urlString) ?? Self.browserCookieRefreshProbeURL
+        Task {
+            await runBusy("Refreshing YouTube cookies from Chrome...") {
+                let savedURL = try await refreshSavedCookieFileFromBrowser(for: probeURL)
+                cookieFilePath = savedURL.path
+                defaults.set(savedURL.path, forKey: Self.cookieFileDefaultsKey)
+                statusMessage = "Refreshed YouTube cookies from Chrome."
+            }
         }
     }
 
@@ -430,7 +949,8 @@ final class SmartYTMediaGearStore: ObservableObject {
                         query: query,
                         limit: remaining,
                         taskID: taskID,
-                        startingIndex: candidates.count
+                        startingIndex: candidates.count,
+                        cookieFilePath: Self.stringArg(args, "cookie_file") ?? Self.stringArg(args, "cookies_file")
                     )
                     candidates.append(contentsOf: results)
                 } catch {
@@ -502,7 +1022,7 @@ final class SmartYTMediaGearStore: ObservableObject {
             return
         }
         await runBusy("Sniffing media...") {
-            let info = try await sniff(url: cleanURL)
+            let info = try await sniff(url: cleanURL, cookieFilePath: nil)
             mediaInfo = info
             statusMessage = "Sniffed \(info.title)."
         }
@@ -524,12 +1044,87 @@ final class SmartYTMediaGearStore: ObservableObject {
         _ = enqueue(action: .transcribe, url: cleanURL, downloadKind: .audio, language: languagePreference.nilIfBlank, outputDirectory: nil)
     }
 
+    func cancelSelectedJob() {
+        guard let selectedJob else {
+            return
+        }
+        cancel(jobID: selectedJob.id)
+    }
+
+    func cancel(jobID: String) {
+        guard let job = jobs.first(where: { $0.id == jobID }), job.canCancel else {
+            return
+        }
+        activeCommandHandles[jobID]?.cancel()
+        jobTasks[jobID]?.cancel()
+        cleanupActiveExecution(for: jobID)
+        updateJob(jobID) { current in
+            current.status = .cancelled
+            current.updatedAt = Date()
+            current.progressLabel = "Cancelled"
+            current.errorMessage = nil
+            current.log.append("\nCancelled at \(Date().formatted()).")
+        }
+        statusMessage = "Cancelled \(job.title)."
+    }
+
+    @discardableResult
+    func deleteSelectedJob() -> Bool {
+        guard let selectedJob else {
+            return false
+        }
+        return deleteJob(id: selectedJob.id)
+    }
+
+    @discardableResult
+    func deleteJob(id: String) -> Bool {
+        guard let job = jobs.first(where: { $0.id == id }) else {
+            return false
+        }
+        guard !job.canCancel else {
+            statusMessage = "Cancel or finish the active SmartYT job before deleting it."
+            return false
+        }
+
+        do {
+            try deleteAssociatedJobData(for: job)
+            try deletePersistedJobRecord(id)
+            jobs.removeAll { $0.id == id }
+            cleanupActiveExecution(for: id)
+            if selectedJobID == id {
+                selectedJobID = jobs.first?.id
+            }
+            isBusy = jobs.contains { $0.status == .running || $0.status == .queued }
+            statusMessage = "Deleted SmartYT job record."
+            return true
+        } catch {
+            statusMessage = "Could not delete SmartYT job: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    @discardableResult
+    func deleteCompletedAndFailedJobs() -> Int {
+        let removableIDs = jobs
+            .filter { $0.status == .completed || $0.status == .failed }
+            .map(\.id)
+        var deletedCount = 0
+        for id in removableIDs where deleteJob(id: id) {
+            deletedCount += 1
+        }
+        statusMessage = deletedCount == 0
+            ? "No completed or failed SmartYT jobs to delete."
+            : "Deleted \(deletedCount) completed or failed SmartYT job record\(deletedCount == 1 ? "" : "s")."
+        return deletedCount
+    }
+
     func enqueueAgentAction(
         capabilityID: String,
         url: String,
         downloadKind: SmartYTDownloadKind?,
         language: String?,
-        outputDirectory: String?
+        outputDirectory: String?,
+        cookieFilePath: String? = nil
     ) -> [String: Any] {
         guard let cleanURL = normalizedURL(url) else {
             return [
@@ -565,7 +1160,8 @@ final class SmartYTMediaGearStore: ObservableObject {
             url: cleanURL,
             downloadKind: downloadKind ?? actionDefaultKind,
             language: language?.nilIfBlank,
-            outputDirectory: outputDirectory
+            outputDirectory: outputDirectory,
+            cookieFilePath: cookieFilePath
         )
 
         return [
@@ -584,7 +1180,8 @@ final class SmartYTMediaGearStore: ObservableObject {
     func runImmediateAgentDownload(
         url: String,
         downloadKind: SmartYTDownloadKind?,
-        outputDirectory: String?
+        outputDirectory: String?,
+        cookieFilePath: String? = nil
     ) async -> [String: Any] {
         guard let cleanURL = normalizedURL(url) else {
             return [
@@ -628,6 +1225,8 @@ final class SmartYTMediaGearStore: ObservableObject {
             transcriptPath: nil,
             transcriptPreview: nil,
             artifactDirectoryPath: artifactDirectory.path,
+            progressFraction: 0,
+            progressLabel: "Preparing download...",
             log: "Started immediate workflow download for \(cleanURL)",
             errorMessage: nil
         )
@@ -640,8 +1239,8 @@ final class SmartYTMediaGearStore: ObservableObject {
 
         do {
             let jobRoot = try ensureArtifactDirectory(for: job)
-            let info = try? await sniff(url: cleanURL)
-            let outputs = try await download(url: cleanURL, kind: kind, into: jobRoot)
+            let info = Self.isDirectImageURL(cleanURL) ? nil : try? await sniff(url: cleanURL, cookieFilePath: cookieFilePath)
+            let outputs = try await download(url: cleanURL, kind: kind, into: jobRoot, cookieFilePath: cookieFilePath, trackedJobID: nil)
             updateJob(id) { current in
                 current.mediaInfo = info
                 current.title = info?.title ?? "Downloaded Media"
@@ -672,7 +1271,8 @@ final class SmartYTMediaGearStore: ObservableObject {
                 job: failed,
                 status: "failed",
                 outputPaths: [],
-                error: error.localizedDescription
+                error: error.localizedDescription,
+                smartYTError: error as? SmartYTMediaError
             )
         }
     }
@@ -693,7 +1293,8 @@ final class SmartYTMediaGearStore: ObservableObject {
         url: String,
         downloadKind: SmartYTDownloadKind,
         language: String?,
-        outputDirectory: String?
+        outputDirectory: String?,
+        cookieFilePath: String? = nil
     ) -> SmartYTMediaJob {
         let now = Date()
         let id = "smartyt-\(Self.timestamp())-\(UUID().uuidString.prefix(8))"
@@ -712,6 +1313,8 @@ final class SmartYTMediaGearStore: ObservableObject {
             transcriptPath: nil,
             transcriptPreview: nil,
             artifactDirectoryPath: artifactDirectory.path,
+            progressFraction: action == .download || action == .transcribe ? 0 : nil,
+            progressLabel: action == .download ? "Queued for download." : action == .transcribe ? "Queued for transcript." : nil,
             log: "Queued \(action.rawValue) for \(url)",
             errorMessage: nil
         )
@@ -720,9 +1323,13 @@ final class SmartYTMediaGearStore: ObservableObject {
         statusMessage = "\(action.title) queued."
         persist(job)
 
-        Task { [weak self] in
-            await self?.run(jobID: job.id, language: language)
+        let task: Task<Void, Never> = Task { [weak self] in
+            guard let self else {
+                return
+            }
+            await self.run(jobID: job.id, language: language, cookieFilePath: cookieFilePath)
         }
+        jobTasks[job.id] = task
         return job
     }
 
@@ -732,6 +1339,7 @@ final class SmartYTMediaGearStore: ObservableObject {
         status: String,
         outputPaths: [String],
         error: String? = nil,
+        smartYTError: SmartYTMediaError? = nil,
         reused: Bool = false
     ) -> [String: Any] {
         var payload: [String: Any] = [
@@ -762,6 +1370,15 @@ final class SmartYTMediaGearStore: ObservableObject {
         }
         if let error {
             payload["error"] = error
+            if let smartYTError = smartYTError
+                ?? Self.smartYTErrorFromMessage(error)
+                ?? job.errorMessage.flatMap(Self.smartYTErrorFromMessage)
+            {
+                payload["error_code"] = smartYTError.code
+                if let recovery = smartYTError.recovery {
+                    payload["recovery"] = recovery
+                }
+            }
         }
         return payload
     }
@@ -858,62 +1475,98 @@ final class SmartYTMediaGearStore: ObservableObject {
         ["mp4", "mov", "mkv", "webm"].contains(URL(fileURLWithPath: path).pathExtension.lowercased())
     }
 
-    private func run(jobID: String, language: String?) async {
+    private func run(jobID: String, language: String?, cookieFilePath: String?) async {
         guard let job = jobs.first(where: { $0.id == jobID }) else {
+            cleanupActiveExecution(for: jobID)
+            return
+        }
+        guard job.status != .cancelled else {
+            cleanupActiveExecution(for: jobID)
             return
         }
 
         updateJob(jobID) { current in
             current.status = .running
             current.updatedAt = Date()
+            current.progressFraction = current.action == .sniff || current.action == .download || current.action == .transcribe ? 0 : current.progressFraction
+            current.progressLabel = current.action == .sniff
+                ? "Fetching metadata..."
+                : current.action == .download
+                    ? "Preparing download..."
+                    : current.action == .transcribe
+                        ? "Checking subtitles..."
+                        : current.progressLabel
             current.log.append("\nStarted at \(Date().formatted()).")
         }
         isBusy = true
-        defer { isBusy = jobs.contains { $0.status == .running || $0.status == .queued } }
+        defer {
+            cleanupActiveExecution(for: jobID)
+            isBusy = jobs.contains { $0.status == .running || $0.status == .queued }
+        }
 
         do {
             let jobRoot = try ensureArtifactDirectory(for: job)
+            try Task.checkCancellation()
             switch job.action {
             case .sniff:
-                let info = try await sniff(url: job.url)
+                let info = try await sniff(url: job.url, cookieFilePath: cookieFilePath, trackedJobID: jobID)
                 mediaInfo = info
                 updateJob(jobID) { current in
                     current.mediaInfo = info
                     current.title = info.title
                     current.status = .completed
                     current.updatedAt = Date()
+                    current.progressFraction = 1
+                    current.progressLabel = "Metadata extracted."
                     current.log.append("\nMetadata extracted.")
                 }
                 statusMessage = "Sniffed \(info.title)."
             case .download:
-                let outputs = try await download(url: job.url, kind: job.downloadKind, into: jobRoot)
+                let outputs = try await download(url: job.url, kind: job.downloadKind, into: jobRoot, cookieFilePath: cookieFilePath, trackedJobID: jobID)
                 updateJob(jobID) { current in
                     current.outputPaths = outputs.map(\.path)
                     current.status = .completed
                     current.updatedAt = Date()
+                    current.progressFraction = 1
+                    current.progressLabel = "Download completed."
                     current.log.append("\nDownloaded \(outputs.count) artifact(s).")
                 }
                 statusMessage = "Download completed."
             case .transcribe:
-                let result = try await transcribe(url: job.url, language: language, into: jobRoot)
+                let result = try await transcribe(url: job.url, language: language, into: jobRoot, cookieFilePath: cookieFilePath, trackedJobID: jobID)
                 updateJob(jobID) { current in
                     current.outputPaths = result.artifacts.map(\.path)
                     current.transcriptPath = result.transcriptURL.path
                     current.transcriptPreview = Self.preview(result.text)
                     current.status = .completed
                     current.updatedAt = Date()
+                    current.progressFraction = 1
+                    current.progressLabel = "Transcript completed."
                     current.log.append("\nTranscript created via \(result.source).")
                 }
                 statusMessage = "Transcript completed."
             }
         } catch {
-            updateJob(jobID) { current in
-                current.status = .failed
-                current.errorMessage = error.localizedDescription
-                current.updatedAt = Date()
-                current.log.append("\nFailed: \(error.localizedDescription)")
+            if Task.isCancelled || jobs.first(where: { $0.id == jobID })?.status == .cancelled {
+                updateJob(jobID) { current in
+                    current.status = .cancelled
+                    current.updatedAt = Date()
+                    current.progressLabel = "Cancelled"
+                    current.errorMessage = nil
+                    if !current.log.contains("Cancelled at") {
+                        current.log.append("\nCancelled at \(Date().formatted()).")
+                    }
+                }
+                statusMessage = "Cancelled job."
+            } else {
+                updateJob(jobID) { current in
+                    current.status = .failed
+                    current.errorMessage = error.localizedDescription
+                    current.updatedAt = Date()
+                    current.log.append("\nFailed: \(error.localizedDescription)")
+                }
+                statusMessage = error.localizedDescription
             }
-            statusMessage = error.localizedDescription
         }
 
         if let updated = jobs.first(where: { $0.id == jobID }) {
@@ -921,19 +1574,25 @@ final class SmartYTMediaGearStore: ObservableObject {
         }
     }
 
-    private func sniff(url: String) async throws -> SmartYTMediaInfo {
-        let result = await runner.run(
-            "yt-dlp",
-            arguments: [
+    private func sniff(
+        url: String,
+        cookieFilePath: String?,
+        trackedJobID: String? = nil
+    ) async throws -> SmartYTMediaInfo {
+        _ = try await refreshYTDLPIfNeeded(reason: "sniff")
+        let result = try await runYTDLP(
+            [
                 "--dump-single-json",
                 "--no-warnings",
                 "--skip-download",
                 url
             ],
+            cookieFilePath: cookieFilePath,
+            trackedJobID: trackedJobID,
             timeoutSeconds: 90
         )
         guard result.exitCode == 0 else {
-            throw SmartYTMediaError.commandFailed(command: "yt-dlp --dump-single-json", detail: result.combinedOutput)
+            throw Self.ytdlpFailure(command: "yt-dlp --dump-single-json", result: result)
         }
         return try SmartYTMediaInfo.parse(from: result.stdout, fallbackURL: url)
     }
@@ -942,20 +1601,22 @@ final class SmartYTMediaGearStore: ObservableObject {
         query: String,
         limit: Int,
         taskID: String,
-        startingIndex: Int
+        startingIndex: Int,
+        cookieFilePath: String?
     ) async throws -> [SmartYTSearchCandidate] {
-        let result = await runner.run(
-            "yt-dlp",
-            arguments: [
+        _ = try await refreshYTDLPIfNeeded(reason: "search")
+        let result = try await runYTDLP(
+            [
                 "--dump-json",
                 "--no-warnings",
                 "--skip-download",
                 "ytsearch\(limit):\(query)"
             ],
+            cookieFilePath: cookieFilePath,
             timeoutSeconds: 120
         )
         guard result.exitCode == 0 else {
-            throw SmartYTMediaError.commandFailed(command: "yt-dlp ytsearch", detail: result.combinedOutput)
+            throw Self.ytdlpFailure(command: "yt-dlp ytsearch", result: result)
         }
         return SmartYTSearchCandidate.parseYTDLPJSONLines(
             result.stdout,
@@ -965,7 +1626,13 @@ final class SmartYTMediaGearStore: ObservableObject {
         )
     }
 
-    private func download(url: String, kind: SmartYTDownloadKind, into directory: URL) async throws -> [URL] {
+    private func download(
+        url: String,
+        kind: SmartYTDownloadKind,
+        into directory: URL,
+        cookieFilePath: String?,
+        trackedJobID: String? = nil
+    ) async throws -> [URL] {
         if Self.isDirectImageURL(url) {
             switch kind {
             case .audio:
@@ -977,24 +1644,30 @@ final class SmartYTMediaGearStore: ObservableObject {
         var outputs: [URL] = []
         switch kind {
         case .audio:
-            outputs.append(try await downloadAudio(url: url, into: directory))
+            outputs.append(try await downloadAudio(url: url, into: directory, cookieFilePath: cookieFilePath, trackedJobID: trackedJobID))
         case .image:
             outputs.append(try await downloadImage(url: url, into: directory))
         case .video:
-            outputs.append(try await downloadVideo(url: url, into: directory))
+            outputs.append(try await downloadVideo(url: url, into: directory, cookieFilePath: cookieFilePath, trackedJobID: trackedJobID))
         case .both:
-            outputs.append(try await downloadVideo(url: url, into: directory))
-            outputs.append(try await downloadAudio(url: url, into: directory))
+            outputs.append(try await downloadVideo(url: url, into: directory, cookieFilePath: cookieFilePath, trackedJobID: trackedJobID))
+            outputs.append(try await downloadAudio(url: url, into: directory, cookieFilePath: cookieFilePath, trackedJobID: trackedJobID))
         }
         return outputs
     }
 
-    private func transcribe(url: String, language: String?, into directory: URL) async throws -> SmartYTTranscriptionResult {
-        if let subtitle = try await extractSubtitle(url: url, language: language, into: directory) {
+    private func transcribe(
+        url: String,
+        language: String?,
+        into directory: URL,
+        cookieFilePath: String?,
+        trackedJobID: String? = nil
+    ) async throws -> SmartYTTranscriptionResult {
+        if let subtitle = try await extractSubtitle(url: url, language: language, into: directory, cookieFilePath: cookieFilePath, trackedJobID: trackedJobID) {
             return subtitle
         }
 
-        let audioURL = try await downloadAudio(url: url, into: directory)
+        let audioURL = try await downloadAudio(url: url, into: directory, cookieFilePath: cookieFilePath, trackedJobID: trackedJobID)
         guard let whisperCommand = await findWhisperCommand() else {
             throw SmartYTMediaError.transcriptionUnavailable(
                 "No platform subtitles were found, and no local Whisper CLI was detected. Install `whisper` or provide a future STT provider to convert downloaded audio to text."
@@ -1003,6 +1676,14 @@ final class SmartYTMediaGearStore: ObservableObject {
 
         let transcriptURL = directory.appendingPathComponent("transcript.txt")
         let result: GearCommandResult
+        if let trackedJobID {
+            updateJobProgress(
+                trackedJobID,
+                fraction: 0.95,
+                label: "Transcribing audio...",
+                persistence: .phase
+            )
+        }
         switch whisperCommand {
         case "whisper":
             var args = [
@@ -1014,21 +1695,27 @@ final class SmartYTMediaGearStore: ObservableObject {
             if let language {
                 args.append(contentsOf: ["--language", language])
             }
-            result = await runner.run("whisper", arguments: args, timeoutSeconds: nil)
+            result = try await runCommand(
+                "whisper",
+                arguments: args,
+                timeoutSeconds: nil,
+                trackedJobID: trackedJobID
+            )
             if !fileManager.fileExists(atPath: transcriptURL.path),
                let generated = firstFile(in: directory, extensions: ["txt"])
             {
                 try? fileManager.copyItem(at: generated, to: transcriptURL)
             }
         default:
-            result = await runner.run(
+            result = try await runCommand(
                 whisperCommand,
                 arguments: [
                     "-f", audioURL.path,
                     "-otxt",
                     "-of", directory.appendingPathComponent("transcript").path
                 ],
-                timeoutSeconds: nil
+                timeoutSeconds: nil,
+                trackedJobID: trackedJobID
             )
         }
 
@@ -1052,12 +1739,18 @@ final class SmartYTMediaGearStore: ObservableObject {
         )
     }
 
-    private func extractSubtitle(url: String, language: String?, into directory: URL) async throws -> SmartYTTranscriptionResult? {
+    private func extractSubtitle(
+        url: String,
+        language: String?,
+        into directory: URL,
+        cookieFilePath: String?,
+        trackedJobID: String? = nil
+    ) async throws -> SmartYTTranscriptionResult? {
+        _ = try await refreshYTDLPIfNeeded(reason: "subtitle")
         let template = directory.appendingPathComponent("subtitle.%(ext)s").path
         let languageList = subtitleLanguageList(preferred: language)
-        let result = await runner.run(
-            "yt-dlp",
-            arguments: [
+        let result = try await runYTDLP(
+            [
                 "--write-sub",
                 "--write-auto-sub",
                 "--sub-langs", languageList,
@@ -1069,6 +1762,8 @@ final class SmartYTMediaGearStore: ObservableObject {
                 "-o", template,
                 url
             ],
+            cookieFilePath: cookieFilePath,
+            trackedJobID: trackedJobID,
             timeoutSeconds: 90
         )
         if result.exitCode != 0,
@@ -1096,22 +1791,30 @@ final class SmartYTMediaGearStore: ObservableObject {
         )
     }
 
-    private func downloadAudio(url: String, into directory: URL) async throws -> URL {
+    private func downloadAudio(
+        url: String,
+        into directory: URL,
+        cookieFilePath: String?,
+        trackedJobID: String? = nil
+    ) async throws -> URL {
+        _ = try await refreshYTDLPIfNeeded(reason: "audio")
         let template = directory.appendingPathComponent("audio.%(ext)s").path
-        let result = await runner.run(
-            "yt-dlp",
-            arguments: [
+        let result = try await runYTDLP(
+            [
                 "-x",
                 "--audio-format", "mp3",
                 "--audio-quality", "0",
+                "--newline",
                 "--no-playlist",
                 "-o", template,
                 url
             ],
+            cookieFilePath: cookieFilePath,
+            trackedJobID: trackedJobID,
             timeoutSeconds: nil
         )
         guard result.exitCode == 0 else {
-            throw SmartYTMediaError.commandFailed(command: "yt-dlp audio download", detail: result.combinedOutput)
+            throw Self.ytdlpFailure(command: "yt-dlp audio download", result: result)
         }
         guard let output = firstFile(in: directory, extensions: ["mp3", "m4a", "wav", "aac", "opus"]) else {
             throw SmartYTMediaError.missingArtifact("Audio download finished but no audio artifact was found.")
@@ -1119,21 +1822,29 @@ final class SmartYTMediaGearStore: ObservableObject {
         return output
     }
 
-    private func downloadVideo(url: String, into directory: URL) async throws -> URL {
+    private func downloadVideo(
+        url: String,
+        into directory: URL,
+        cookieFilePath: String?,
+        trackedJobID: String? = nil
+    ) async throws -> URL {
+        _ = try await refreshYTDLPIfNeeded(reason: "video")
         let template = directory.appendingPathComponent("video.%(ext)s").path
-        let result = await runner.run(
-            "yt-dlp",
-            arguments: [
+        let result = try await runYTDLP(
+            [
                 "-f", "bv*+ba/best",
+                "--newline",
                 "--merge-output-format", "mp4",
                 "--no-playlist",
                 "-o", template,
                 url
             ],
+            cookieFilePath: cookieFilePath,
+            trackedJobID: trackedJobID,
             timeoutSeconds: nil
         )
         guard result.exitCode == 0 else {
-            throw SmartYTMediaError.commandFailed(command: "yt-dlp video download", detail: result.combinedOutput)
+            throw Self.ytdlpFailure(command: "yt-dlp video download", result: result)
         }
         guard let output = firstFile(in: directory, extensions: ["mp4", "mov", "mkv", "webm"]) else {
             throw SmartYTMediaError.missingArtifact("Video download finished but no video artifact was found.")
@@ -1142,12 +1853,14 @@ final class SmartYTMediaGearStore: ObservableObject {
     }
 
     private func downloadImage(url: String, into directory: URL) async throws -> URL {
+        try Task.checkCancellation()
         guard let sourceURL = URL(string: url) else {
             throw SmartYTMediaError.invalidURL
         }
         var request = URLRequest(url: sourceURL)
         request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await URLSession.shared.data(for: request)
+        try Task.checkCancellation()
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw SmartYTMediaError.commandFailed(
                 command: "image download",
@@ -1166,6 +1879,365 @@ final class SmartYTMediaGearStore: ObservableObject {
             if result.exitCode == 0 {
                 return command
             }
+        }
+        return nil
+    }
+
+    private func saveCookieFile(from sourceURL: URL) throws -> URL {
+        let targetURL = try savedCookieFileURL()
+        let sourcePath = NSString(string: sourceURL.path).expandingTildeInPath
+        let sourceData = try Data(contentsOf: URL(fileURLWithPath: sourcePath))
+        let normalizedData = try SmartYTYTDLPCookieFile.normalizedNetscapeData(from: sourceData)
+        if sourcePath != targetURL.path {
+            if fileManager.fileExists(atPath: targetURL.path) {
+                try fileManager.removeItem(at: targetURL)
+            }
+        }
+        try normalizedData.write(to: targetURL, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: targetURL.path)
+        return targetURL
+    }
+
+    private func runYTDLP(
+        _ baseArguments: [String],
+        cookieFilePath explicitPath: String?,
+        trackedJobID: String? = nil,
+        timeoutSeconds: TimeInterval?
+    ) async throws -> GearCommandResult {
+        let firstResult = try await runYTDLPOnce(
+            baseArguments,
+            cookieFilePath: explicitPath,
+            trackedJobID: trackedJobID,
+            timeoutSeconds: timeoutSeconds
+        )
+        guard shouldRefreshBrowserCookies(after: firstResult, explicitCookiePath: explicitPath),
+              let probeURL = ytdlpCookieRefreshProbeURL(from: baseArguments)
+        else {
+            return firstResult
+        }
+
+        if let trackedJobID {
+            updateJobProgress(
+                trackedJobID,
+                fraction: nil,
+                label: "Refreshing YouTube cookies from Chrome...",
+                persistence: .phase
+            )
+        }
+        do {
+            _ = try await refreshSavedCookieFileFromBrowser(for: probeURL)
+        } catch {
+            let detail = [
+                firstResult.combinedOutput,
+                "Automatic Chrome cookie refresh failed: \(error.localizedDescription)"
+            ]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+            return GearCommandResult(exitCode: firstResult.exitCode, stdout: firstResult.stdout, stderr: detail)
+        }
+
+        return try await runYTDLPOnce(
+            baseArguments,
+            cookieFilePath: explicitPath,
+            trackedJobID: trackedJobID,
+            timeoutSeconds: timeoutSeconds
+        )
+    }
+
+    private func runYTDLPOnce(
+        _ baseArguments: [String],
+        cookieFilePath explicitPath: String?,
+        trackedJobID: String? = nil,
+        timeoutSeconds: TimeInterval?
+    ) async throws -> GearCommandResult {
+        let invocation = try ytdlpArguments(baseArguments, cookieFilePath: explicitPath)
+        let lineSink = trackedJobID.map { SmartYTProgressLineSink(store: self, jobID: $0) }
+        let onLineHandler: (@Sendable (String) -> Void)?
+        if let lineSink {
+            onLineHandler = { line in
+                lineSink.handle(line)
+            }
+        } else {
+            onLineHandler = nil
+        }
+        defer {
+            if let temporaryCookieURL = invocation.temporaryCookieURL {
+                try? fileManager.removeItem(at: temporaryCookieURL)
+            }
+        }
+        return try await runCommand(
+            "yt-dlp",
+            arguments: invocation.arguments,
+            timeoutSeconds: timeoutSeconds,
+            trackedJobID: trackedJobID,
+            onLine: onLineHandler
+        )
+    }
+
+    private func shouldRefreshBrowserCookies(after result: GearCommandResult, explicitCookiePath: String?) -> Bool {
+        guard explicitCookiePath?.nilIfBlank == nil else {
+            return false
+        }
+        guard case .youtubeAuthenticationRequired = Self.ytdlpFailure(command: "yt-dlp", result: result) else {
+            return false
+        }
+        return true
+    }
+
+    private func ytdlpCookieRefreshProbeURL(from arguments: [String]) -> String? {
+        arguments.reversed().first { value in
+            value.hasPrefix("http://")
+                || value.hasPrefix("https://")
+                || value.hasPrefix("ytsearch")
+        }
+    }
+
+    private func runCommand(
+        _ command: String,
+        arguments: [String],
+        timeoutSeconds: TimeInterval?,
+        trackedJobID: String?,
+        onLine: (@Sendable (String) -> Void)? = nil
+    ) async throws -> GearCommandResult {
+        try Task.checkCancellation()
+        guard let trackedJobID else {
+            let result = await runner.run(command, arguments: arguments, timeoutSeconds: timeoutSeconds)
+            try Task.checkCancellation()
+            return result
+        }
+        if let streamingRunner = runner as? SmartYTStreamingCommandRunning {
+            let result = await streamingRunner.runStreaming(
+                command,
+                arguments: arguments,
+                timeoutSeconds: timeoutSeconds,
+                onStart: { handle in
+                    Task { @MainActor [weak self] in
+                        self?.activeCommandHandles[trackedJobID] = handle
+                    }
+                },
+                onLine: { line in
+                    Task { @MainActor in
+                        onLine?(line)
+                    }
+                }
+            )
+            if activeCommandHandles[trackedJobID] != nil {
+                activeCommandHandles.removeValue(forKey: trackedJobID)
+            }
+            try Task.checkCancellation()
+            return result
+        }
+        let result = await runner.run(command, arguments: arguments, timeoutSeconds: timeoutSeconds)
+        try Task.checkCancellation()
+        return result
+    }
+
+    private func ytdlpArguments(_ baseArguments: [String], cookieFilePath explicitPath: String?) throws -> (arguments: [String], temporaryCookieURL: URL?) {
+        guard let cookiePath = try resolvedCookieFilePath(explicitPath) else {
+            return (baseArguments, nil)
+        }
+        let temporaryCookieURL = try temporaryYTDLPCookieFile(copying: cookiePath)
+        return (["--cookies", temporaryCookieURL.path] + baseArguments, temporaryCookieURL)
+    }
+
+    private func temporaryYTDLPCookieFile(copying sourcePath: String) throws -> URL {
+        let sourceURL = URL(fileURLWithPath: sourcePath)
+        let data = try Data(contentsOf: sourceURL)
+        let temporaryURL = fileManager.temporaryDirectory
+            .appendingPathComponent("geeagent-smartyt-ytdlp-cookies-\(UUID().uuidString).txt", isDirectory: false)
+        try data.write(to: temporaryURL, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporaryURL.path)
+        return temporaryURL
+    }
+
+    private func refreshSavedCookieFileFromBrowser(for url: String) async throws -> URL {
+        let targetURL = try savedCookieFileURL()
+        let temporaryURL = fileManager.temporaryDirectory
+            .appendingPathComponent("geeagent-smartyt-browser-cookies-\(UUID().uuidString).txt", isDirectory: false)
+        try Data("# Netscape HTTP Cookie File\n".utf8).write(to: temporaryURL, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporaryURL.path)
+        defer {
+            try? fileManager.removeItem(at: temporaryURL)
+        }
+
+        let result = await runner.run(
+            "yt-dlp",
+            arguments: [
+                "--cookies-from-browser", "chrome",
+                "--cookies", temporaryURL.path,
+                "--no-warnings",
+                "--skip-download",
+                "--simulate",
+                url
+            ],
+            timeoutSeconds: 180
+        )
+        guard result.exitCode == 0 else {
+            throw SmartYTMediaError.browserCookieRefreshFailed(
+                "Could not refresh YouTube cookies from Chrome. \(result.combinedOutput)"
+            )
+        }
+
+        let data = try Data(contentsOf: temporaryURL)
+        _ = try SmartYTYTDLPCookieFile.normalizedNetscapeData(from: data)
+        if fileManager.fileExists(atPath: targetURL.path) {
+            try fileManager.removeItem(at: targetURL)
+        }
+        try data.write(to: targetURL, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: targetURL.path)
+        cookieFilePath = targetURL.path
+        defaults.set(targetURL.path, forKey: Self.cookieFileDefaultsKey)
+        return targetURL
+    }
+
+    private func resolvedCookieFilePath(_ explicitPath: String?) throws -> String? {
+        let candidate = explicitPath?.nilIfBlank
+            ?? cookieFilePath.nilIfBlank
+            ?? defaults.string(forKey: Self.cookieFileDefaultsKey)?.nilIfBlank
+        guard let candidate else {
+            return nil
+        }
+        let expanded = NSString(string: candidate).expandingTildeInPath
+        guard fileManager.fileExists(atPath: expanded) else {
+            throw SmartYTMediaError.missingCookieFile(expanded)
+        }
+        try normalizeSavedCookieFileIfNeeded(atPath: expanded)
+        return expanded
+    }
+
+    private func normalizeSavedCookieFileIfNeeded(atPath path: String) throws {
+        let url = URL(fileURLWithPath: path)
+        let data = try Data(contentsOf: url)
+        if let text = String(data: data, encoding: .utf8),
+           SmartYTYTDLPCookieFile.isLikelyNetscape(text)
+        {
+            return
+        }
+
+        let savedPath = try savedCookieFileURL().path
+        guard path == savedPath else {
+            throw SmartYTMediaError.invalidCookieFile(
+                "Configured yt-dlp cookie file is not Netscape formatted. Re-import it in SmartYT so JSON exports can be converted."
+            )
+        }
+
+        let normalizedData = try SmartYTYTDLPCookieFile.normalizedNetscapeData(from: data)
+        try normalizedData.write(to: url, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    private func refreshYTDLPIfNeeded(reason: String) async throws -> SmartYTYTDLPMaintenanceReport? {
+        let now = Date()
+        if let last = defaults.object(forKey: Self.ytdlpMaintenanceDefaultsKey) as? Date,
+           now.timeIntervalSince(last) < Self.ytdlpMaintenanceInterval
+        {
+            return nil
+        }
+
+        if let task = ytdlpMaintenanceTask {
+            return try await task.value
+        }
+
+        let task = Task { @MainActor [self] in
+            defer {
+                ytdlpMaintenanceTask = nil
+            }
+            return try await performYTDLPMaintenance(reason: reason, checkedAt: now)
+        }
+        ytdlpMaintenanceTask = task
+        return try await task.value
+    }
+
+    private func performYTDLPMaintenance(reason: String, checkedAt now: Date) async throws -> SmartYTYTDLPMaintenanceReport {
+        let versionBefore = await ytdlpVersion()
+        let brewCheck = await runner.run("command", arguments: ["-v", "brew"], timeoutSeconds: 20)
+        guard brewCheck.exitCode == 0 else {
+            throw SmartYTMediaError.dependencyMaintenanceFailed(
+                "Could not refresh yt-dlp before \(reason): Homebrew is not available. \(brewCheck.combinedOutput)"
+            )
+        }
+
+        let upgrade = await runner.run("brew", arguments: ["upgrade", "yt-dlp"], timeoutSeconds: 600)
+        let maintenanceWarning: String?
+        if upgrade.exitCode == 0 {
+            maintenanceWarning = nil
+        } else if await canContinueAfterBrewYTDLPLinkWarning(upgrade) {
+            maintenanceWarning = "yt-dlp maintenance completed with a Homebrew link warning; continuing with the available yt-dlp binary."
+        } else {
+            throw SmartYTMediaError.dependencyMaintenanceFailed(
+                "Could not refresh yt-dlp before \(reason): \(upgrade.combinedOutput)"
+            )
+        }
+
+        defaults.set(now, forKey: Self.ytdlpMaintenanceDefaultsKey)
+        let versionAfter = await ytdlpVersion()
+        let report = SmartYTYTDLPMaintenanceReport(
+            checkedAt: now,
+            versionBefore: versionBefore,
+            versionAfter: versionAfter,
+            output: upgrade.combinedOutput,
+            warning: maintenanceWarning
+        )
+        statusMessage = report.summary
+        return report
+    }
+
+    private func canContinueAfterBrewYTDLPLinkWarning(_ result: GearCommandResult) async -> Bool {
+        let normalized = result.combinedOutput.lowercased()
+        guard normalized.contains("brew link")
+            && normalized.contains("yt-dlp")
+            && normalized.contains("already exists")
+        else {
+            return false
+        }
+        return await ytdlpVersion() != nil
+    }
+
+    private func ytdlpVersion() async -> String? {
+        let result = await runner.run("yt-dlp", arguments: ["--version"], timeoutSeconds: 20)
+        guard result.exitCode == 0 else {
+            return nil
+        }
+        return result.combinedOutput.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+    }
+
+    private static func ytdlpFailure(command: String, result: GearCommandResult) -> SmartYTMediaError {
+        let detail = result.combinedOutput
+        let normalized = detail.lowercased()
+        if normalized.contains("sign in to confirm")
+            && normalized.contains("not a bot")
+            && normalized.contains("cookies")
+        {
+            return .youtubeAuthenticationRequired(command: command, detail: detail)
+        }
+        return .commandFailed(command: command, detail: detail)
+    }
+
+    private static func smartYTErrorFromMessage(_ message: String) -> SmartYTMediaError? {
+        let normalized = message.lowercased()
+        if normalized.contains("needs authenticated youtube cookies") || (
+            normalized.contains("sign in to confirm")
+                && normalized.contains("not a bot")
+                && normalized.contains("cookies")
+        ) {
+            return .youtubeAuthenticationRequired(command: "yt-dlp", detail: message)
+        }
+        if normalized.contains("could not refresh yt-dlp") {
+            return .dependencyMaintenanceFailed(message)
+        }
+        if normalized.contains("configured yt-dlp cookie file is missing") {
+            return .missingCookieFile(message)
+        }
+        if normalized.contains("cookie file must be")
+            || normalized.contains("cookie file is not netscape")
+            || normalized.contains("cookie export")
+        {
+            return .invalidCookieFile(message)
+        }
+        if normalized.contains("could not refresh youtube cookies from chrome")
+            || normalized.contains("automatic chrome cookie refresh failed")
+        {
+            return .browserCookieRefreshFailed(message)
         }
         return nil
     }
@@ -1315,12 +2387,186 @@ final class SmartYTMediaGearStore: ObservableObject {
 
     private static let imageExtensions = ["jpg", "jpeg", "png", "webp", "gif"]
 
-    private func updateJob(_ id: String, mutate: (inout SmartYTMediaJob) -> Void) {
+    private enum SmartYTProgressPersistenceKind {
+        case none
+        case phase
+        case step
+    }
+
+    private struct SmartYTProgressEvent {
+        var fraction: Double?
+        var label: String
+        var persistence: SmartYTProgressPersistenceKind
+        var logLine: String?
+    }
+
+    private func cleanupActiveExecution(for jobID: String) {
+        activeCommandHandles.removeValue(forKey: jobID)
+        jobTasks.removeValue(forKey: jobID)
+        lastPersistedProgressStep.removeValue(forKey: jobID)
+        lastProgressLabelByJobID.removeValue(forKey: jobID)
+    }
+
+    private func updateJobProgress(
+        _ jobID: String,
+        fraction: Double?,
+        label: String,
+        persistence: SmartYTProgressPersistenceKind,
+        logLine: String? = nil
+    ) {
+        let shouldPersist = shouldPersistProgress(
+            jobID: jobID,
+            fraction: fraction,
+            label: label,
+            persistence: persistence
+        )
+        updateJob(jobID, persist: shouldPersist) { current in
+            if let fraction {
+                current.progressFraction = max(current.normalizedProgressFraction ?? 0, min(max(fraction, 0), 1))
+            }
+            current.progressLabel = label
+            current.updatedAt = Date()
+            if let logLine, !current.log.contains(logLine) {
+                current.log.append("\n\(logLine)")
+            }
+        }
+    }
+
+    private func shouldPersistProgress(
+        jobID: String,
+        fraction: Double?,
+        label: String,
+        persistence: SmartYTProgressPersistenceKind
+    ) -> Bool {
+        switch persistence {
+        case .none:
+            return false
+        case .phase:
+            if lastProgressLabelByJobID[jobID] != label {
+                lastProgressLabelByJobID[jobID] = label
+                return true
+            }
+            return false
+        case .step:
+            let step = Int(floor((fraction ?? 0) * 20))
+            if step > (lastPersistedProgressStep[jobID] ?? -1) {
+                lastPersistedProgressStep[jobID] = step
+                return true
+            }
+            return false
+        }
+    }
+
+    fileprivate func handleYTDLPOutputLine(_ line: String, for jobID: String) {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return
+        }
+        let currentFraction = jobs.first(where: { $0.id == jobID })?.normalizedProgressFraction
+        guard let event = Self.progressEvent(fromYTDLPLine: trimmed, currentFraction: currentFraction) else {
+            return
+        }
+        updateJobProgress(
+            jobID,
+            fraction: event.fraction,
+            label: event.label,
+            persistence: event.persistence,
+            logLine: event.logLine
+        )
+    }
+
+    private static func progressEvent(
+        fromYTDLPLine line: String,
+        currentFraction: Double?
+    ) -> SmartYTProgressEvent? {
+        if line.hasPrefix("[download]"),
+           let percentRange = line.range(of: #"[0-9]+(?:\.[0-9]+)?%"#, options: .regularExpression)
+        {
+            let percentString = String(line[percentRange].dropLast())
+            if let percentValue = Double(percentString) {
+                let fraction = max(currentFraction ?? 0, percentValue / 100)
+                let label = line
+                    .replacingOccurrences(of: "[download]", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return SmartYTProgressEvent(
+                    fraction: fraction,
+                    label: label,
+                    persistence: .step,
+                    logLine: nil
+                )
+            }
+        }
+        if line.hasPrefix("[download] Destination:") {
+            return SmartYTProgressEvent(
+                fraction: max(currentFraction ?? 0, 0.01),
+                label: "Preparing download...",
+                persistence: .phase,
+                logLine: line
+            )
+        }
+        if line.hasPrefix("[download] Got error:") {
+            return SmartYTProgressEvent(
+                fraction: currentFraction,
+                label: "Retrying download...",
+                persistence: .phase,
+                logLine: line
+            )
+        }
+        if line.hasPrefix("[Merger]") {
+            return SmartYTProgressEvent(
+                fraction: max(currentFraction ?? 0, 0.98),
+                label: "Merging video and audio...",
+                persistence: .phase,
+                logLine: line
+            )
+        }
+        if line.hasPrefix("[ExtractAudio]") {
+            return SmartYTProgressEvent(
+                fraction: max(currentFraction ?? 0, 0.96),
+                label: "Extracting audio...",
+                persistence: .phase,
+                logLine: line
+            )
+        }
+        if line.contains("Downloading webpage") {
+            return SmartYTProgressEvent(
+                fraction: currentFraction,
+                label: "Fetching video page...",
+                persistence: .phase,
+                logLine: line
+            )
+        }
+        if line.contains("Downloading player")
+            || line.contains("Downloading android")
+            || line.contains("Downloading tv")
+            || line.contains("Downloading m3u8")
+        {
+            return SmartYTProgressEvent(
+                fraction: max(currentFraction ?? 0, 0.02),
+                label: "Preparing media stream...",
+                persistence: .phase,
+                logLine: line
+            )
+        }
+        if line.hasPrefix("[info]"), line.contains("format(s):") {
+            return SmartYTProgressEvent(
+                fraction: max(currentFraction ?? 0, 0.03),
+                label: "Starting media transfer...",
+                persistence: .phase,
+                logLine: line
+            )
+        }
+        return nil
+    }
+
+    private func updateJob(_ id: String, persist shouldPersist: Bool = true, mutate: (inout SmartYTMediaJob) -> Void) {
         guard let index = jobs.firstIndex(where: { $0.id == id }) else {
             return
         }
         mutate(&jobs[index])
-        persist(jobs[index])
+        if shouldPersist {
+            persist(jobs[index])
+        }
     }
 
     private func persist(_ job: SmartYTMediaJob) {
@@ -1344,6 +2590,46 @@ final class SmartYTMediaGearStore: ObservableObject {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return try? decoder.decode(SmartYTMediaJob.self, from: data)
+    }
+
+    private func deletePersistedJobRecord(_ id: String) throws {
+        let directory = try stateJobDirectory(id)
+        if fileManager.fileExists(atPath: directory.path) {
+            try fileManager.removeItem(at: directory)
+        }
+    }
+
+    private func deleteAssociatedJobData(for job: SmartYTMediaJob) throws {
+        let artifactURL = artifactDirectory(for: job).standardizedFileURL
+        let filePaths = Set((job.outputPaths + [job.transcriptPath].compactMap(\.self))
+            .map { URL(fileURLWithPath: $0).standardizedFileURL.path })
+        for path in filePaths where fileManager.fileExists(atPath: path) {
+            try fileManager.removeItem(atPath: path)
+        }
+
+        if shouldDeleteWholeArtifactDirectory(artifactURL, for: job) {
+            if fileManager.fileExists(atPath: artifactURL.path) {
+                try fileManager.removeItem(at: artifactURL)
+            }
+            return
+        }
+
+        try removeDirectoryIfEmpty(artifactURL)
+    }
+
+    private func shouldDeleteWholeArtifactDirectory(_ directory: URL, for job: SmartYTMediaJob) -> Bool {
+        let defaultDirectory = defaultArtifactDirectory(jobID: job.id).standardizedFileURL
+        return directory.path == defaultDirectory.path || directory.lastPathComponent == job.id
+    }
+
+    private func removeDirectoryIfEmpty(_ directory: URL) throws {
+        guard fileManager.fileExists(atPath: directory.path) else {
+            return
+        }
+        let contents = try fileManager.contentsOfDirectory(atPath: directory.path)
+        if contents.isEmpty {
+            try fileManager.removeItem(at: directory)
+        }
     }
 
     private func persist(_ task: SmartYTSearchTask) throws {
@@ -1383,6 +2669,10 @@ final class SmartYTMediaGearStore: ObservableObject {
     }
 
     private func dataRoot() throws -> URL {
+        if let dataRootOverride {
+            try fileManager.createDirectory(at: dataRootOverride, withIntermediateDirectories: true)
+            return dataRootOverride
+        }
         let root = try fileManager.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -1404,6 +2694,16 @@ final class SmartYTMediaGearStore: ObservableObject {
         let root = try dataRoot().appendingPathComponent("searches", isDirectory: true)
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
         return root
+    }
+
+    private func cookiesRoot() throws -> URL {
+        let root = try dataRoot().appendingPathComponent("cookies", isDirectory: true)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private func savedCookieFileURL() throws -> URL {
+        try cookiesRoot().appendingPathComponent(Self.savedCookieFileName, isDirectory: false)
     }
 
     static func defaultArtifactRoot(fileManager: FileManager = .default) throws -> URL {
@@ -1477,7 +2777,7 @@ final class SmartYTMediaGearStore: ObservableObject {
     }
 
     private func searchTaskPayload(_ task: SmartYTSearchTask) -> [String: Any] {
-        [
+        var payload: [String: Any] = [
             "gear_id": SmartYTMediaGearDescriptor.gearID,
             "capability_id": "smartyt.search_candidates",
             "status": task.status,
@@ -1487,6 +2787,15 @@ final class SmartYTMediaGearStore: ObservableObject {
             "warnings": task.warnings,
             "error": task.error ?? NSNull()
         ]
+        if let error = task.error,
+           let smartYTError = Self.smartYTErrorFromMessage(error)
+        {
+            payload["error_code"] = smartYTError.code
+            if let recovery = smartYTError.recovery {
+                payload["recovery"] = recovery
+            }
+        }
+        return payload
     }
 
     private func searchTaskSummaryPayload(_ task: SmartYTSearchTask) -> [String: Any] {
@@ -1504,7 +2813,7 @@ final class SmartYTMediaGearStore: ObservableObject {
     }
 
     private func jobPayload(_ job: SmartYTMediaJob) -> [String: Any] {
-        [
+        var payload: [String: Any] = [
             "task_id": job.id,
             "job_id": job.id,
             "kind": job.action.rawValue,
@@ -1513,10 +2822,22 @@ final class SmartYTMediaGearStore: ObservableObject {
             "download_kind": job.downloadKind.rawValue,
             "output_files": job.outputPaths.map { ["path": $0] },
             "artifact_root": artifactDirectory(for: job).path,
+            "progress_fraction": job.normalizedProgressFraction ?? NSNull(),
+            "progress_label": job.progressLabel ?? NSNull(),
+            "can_cancel": job.canCancel,
             "created_at": Self.iso8601(job.createdAt),
             "updated_at": Self.iso8601(job.updatedAt),
             "error": job.errorMessage ?? NSNull()
         ]
+        if let error = job.errorMessage,
+           let smartYTError = Self.smartYTErrorFromMessage(error)
+        {
+            payload["error_code"] = smartYTError.code
+            if let recovery = smartYTError.recovery {
+                payload["recovery"] = recovery
+            }
+        }
+        return payload
     }
 
     private func candidatePayload(_ candidate: SmartYTSearchCandidate) -> [String: Any] {

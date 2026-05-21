@@ -886,12 +886,12 @@ Capability 示例：
 `media.generator`：
 
 - 目标是从 Dailystarter 生成器模块改造来的 native media generation Gear。
-- Gear 支持通过全局 Xenodia 渠道进行图片和视频生成。当前启用的图片模型是 `nano-banana-pro` 和 `gpt-image-2`；`image-2` 会作为 `gpt-image-2` 的用户侧别名被接受。当前启用的视频模型是 `veo3.1`、`veo3.1_fast`、`veo3.1_lite`、`seedance-2` 和 `seedance-2-fast`。
+- Gear 支持通过全局 Xenodia 渠道进行图片和视频生成。当前启用的图片模型是 `nano-banana-pro` 和 `gpt-image-2`；`image-2` 会作为 `gpt-image-2` 的用户侧别名被接受。当前启用的视频模型是 `veo3.1`、`veo3.1_fast`、`veo3.1_lite`、`veo3.1-4k-t`、`veo3.1-components-4k-t`、`veo3.1-pro-4k-t`、`veo3.1-pro-t`、`veo3.1-t`、`veo3.1-components-t`、`veo3-pro-t`、`veo3-t`、`seedance-2` 和 `seedance-2-fast`。
 - Nano Banana Pro 暴露 `n=1`、`response_format=url`、`aspect_ratio`、`resolution`、`output_format` 和参考图。GPT Image-2 暴露 `n=1`、`response_format=url`、`aspect_ratio`、`resolution` 和参考图；图片和视频创建都只走 Xenodia task retrieval。不要为 GPT Image-2 发送 `output_format` 或 `nsfw_checker`。
 - `media_generator.list_models` 会返回每个模型顶层支持值的全集，并额外返回 `resolution_by_aspect_ratio` 来描述按比例变化的分辨率约束；因此 GPT Image-2 会展示 `1K`、`2K` 和 `4K`，同时仍明确 `auto` 只接受 `1K`。
 - 多结果生成使用 Gear 级 `batch_count`，图片和视频任务都支持 1 到 4。Gee 会为每个结果创建一个持久化的 Xenodia 子任务，用同一个 `batch_id` 聚合，并在原生任务列表中用一条 batch row 和结果网格展示。
 - 参考图数量按模型限制：Nano Banana Pro 最多 8 个，GPT Image-2 最多 16 个，Veo 最多 3 个图片参考，Seedance 最多 9 个图片参考。Local reference 必须是 JPEG、PNG 或 WebP，并且单个文件不超过 30MB。
-- Veo3.1 视频通过 Xenodia `/v1/videos/generations` 执行：`REFERENCE_2_VIDEO` 必须使用 `veo3.1_fast`；text-to-video 不接受图片参考；首尾帧模式接受 1-2 个图片 URL；reference 模式接受 1-3 个图片 URL。Seedance 2.0 视频使用同一 endpoint，支持 4-15 秒时长、首尾帧 URL、多模态 reference URL 数组、可选音频生成、web search 和 NSFW 检查。音频生成仍是结构化 unsupported-category 占位。
+- Veo3.1 视频通过 Xenodia `/v1/videos/generations` 执行：`REFERENCE_2_VIDEO` 必须使用 `veo3.1_fast`；text-to-video 不接受图片参考；首尾帧模式接受 1-2 个图片 URL；reference 模式接受 1-3 个图片 URL。Veo `-t` alternate-route 模型使用同一 endpoint，但使用独立 payload 形状：只接受 public http(s) `imageUrls`，最多 3 张参考图，`aspect_ratio` 仅限 `16:9` 或 `9:16`，`resolution` 仅限 `720p`、`1080p` 或 `4k`，可选固定 `duration=8`，以及可选 boolean `watermark`；不能发送旧 Veo 的 `generationType`、`seeds`、translation、fallback 或 callback 字段。Seedance 2.0 视频使用同一 endpoint，支持 4-15 秒时长、首尾帧 URL、多模态 reference URL 数组、可选音频生成、web search 和 NSFW 检查。音频生成仍是结构化 unsupported-category 占位。
 - 参考图上传不能使用参考项目里的七牛。图片任务会把 local reference 通过 Xenodia image request 发送；视频任务会先通过已配置的全局 Xenodia `storage_upload_url` 上传 local reference，再把返回的 public URL 或 `asset://` ID 传给视频请求。缺少上传配置时必须结构化失败，不能回退成 local path。
 - Task state 写入 `~/Library/Application Support/GeeAgent/gear-data/media.generator/tasks/<task-id>/task.json`。Batch row 是多个子任务记录上的投影，不替代 task 存储路径。Gear 会在 task 目录旁维护 `tasks-index.json`，因此原生历史列表可以先打开最新一页，再按需增量加载更旧任务，而不是每次刷新都解码完整历史。当前 batch task record 使用 schema version 2；这次 schema 切换可以清空旧 task history。
 - 生成结果应尽可能缓存到 `~/Library/Application Support/GeeAgent/gear-data/media.generator/tasks/<task-id>/outputs/`。预览和下载优先使用 Gear-owned 本地 artifact，同时保留远端 URL 作为降级 fallback。
@@ -900,7 +900,7 @@ Capability 示例：
 - Task polling 必须在 Gear 打开或重新加载历史时恢复 `running` / `queued` 任务。轮询应把 Xenodia `success` 视为完成、`fail` 视为失败，并从 normalized `result` payload 读取生成 URL。
 - Xenodia 图片和视频生成都是长任务：create、multipart 图片上传、video create 和 task-status 请求必须使用至少 30 分钟的 timeout 下限。status 请求超时时，本地 task 应保持 `running` 并继续轮询，不能在供应商仍在生成时标记为 failed。
 - 原生 Generate 按钮必须在 task row 本地入队后继续可用于新 prompt。Provider 创建、结果缓存和轮询都作为后台 task state 继续，不能长期占用创建控件。
-- 原生任务工作台支持状态筛选、模型筛选、搜索、收藏结果、本地缓存标记、Finder 定位、适配窗口的大图预览、可显示参考图缩略图点击预览、生成视频默认静音的 hover 自动播放和手动声音开关、复制 URL、用户选择位置下载、按任务 Apply 回填 prompt/model/parameters/references、单独复用为参考图，以及任务行直接删除历史记录。
+- 原生任务工作台支持状态筛选、模型筛选、搜索、收藏结果、本地缓存标记、Finder 定位、适配窗口的大图预览、可显示参考图缩略图点击预览并在参考图大预览里直接下载、任务列表滚动后右下角悬浮返回顶部按钮、生成视频默认静音的 hover 自动播放和手动声音开关、复制 URL、用户选择位置下载、按任务 Apply 回填 prompt/model/parameters/references、单独复用为参考图，以及任务行直接删除历史记录。
 - Agent capabilities 是 `media_generator.list_models`、`media_generator.create_task` 和 `media_generator.get_task`。`media_generator.create_task` 可以由 GeeAgent root-agent 对话和 Codex 对话触发；图片和视频的多结果请求都使用 `batch_count` 1-4，图片 provider `n` 仍保持 1；每个 capability 都返回结构化 task 或 batch/model 数据，由 active agent/LLM 生成最终回复。
 
 `smartyt.media`：
@@ -908,7 +908,10 @@ Capability 示例：
 - 目标是从 SmartYT 参考项目改造来的 native URL media acquisition gear。
 - Gear 接收明确的 URL 或媒体搜索 query，嗅探媒体 metadata，搜索候选素材，并且只在候选或 URL 被明确选中后下载音频、视频或直链图片 artifact。
 - V1 使用 `yt-dlp` 处理候选搜索、metadata、下载，以及平台已有字幕文件；使用 `ffmpeg` / `ffprobe` 支撑媒体转换。语音转写和语音互转不属于当前 Codex-exported 采集工作流。
+- 在执行依赖 `yt-dlp` 的操作前，SmartYT 会做有边界的依赖维护：每天最多一次通过 Homebrew 的 `yt-dlp` upgrade 路径刷新 stable 版本。并发的 SmartYT 操作会共享同一个进程内维护任务，避免同时启动互相竞争的 Homebrew upgrade。如果维护路径不可用，Gear 会返回结构化失败，而不是隐藏问题。YouTube bot verification 或 cookie 要求会以 `gear.smartyt.youtube_auth_required` 报告；单纯更新 `yt-dlp` 不会被当成这种状态的恢复方式。
+- SmartYT 原生 UI 可以长期保存浏览器导出的 Netscape `cookies.txt` 文件，或常见的浏览器 JSON cookie 导出。SmartYT 会把用户选择的文件规范化保存到 `~/Library/Application Support/GeeAgent/gear-data/smartyt.media/cookies/yt-dlp-cookies.txt`，之后通过每次命令的临时 cookie 副本自动用于后续 `yt-dlp` 操作；agent call 也可以通过 `cookie_file` 显式传入单次覆盖路径。保存的 cookie 源文件不能被 extractor 的 cookie-jar 写回修改。如果 YouTube 报告保存的账号 cookie 已轮换或不再有效，SmartYT 会从当前 Chrome profile 刷新自己的保存 cookie 文件，并对同一个 `yt-dlp` 命令自动重试一次；UI 也提供手动从 Chrome 刷新的操作。
 - Job state 应写入 `~/Library/Application Support/GeeAgent/gear-data/smartyt.media/`；下载媒体和平台已有字幕文件在 agent call 未提供 `output_dir` 时默认写入 `~/Downloads/SmartYT/<job-id>/`。
+- SmartYT 原生任务界面会为 queued/running job 显示逐项进度，并允许取消 queued 或 running 状态的 job。已完成、失败、已取消的 job record 可以从 UI 删除；删除时也会移除该 job 关联的 Gear-owned 下载文件、转写文件和任务输出目录。Queued 或 running job 必须先取消或结束后才能删除。结构化 task payload 会暴露 `progress_fraction`、`progress_label` 和 `can_cancel`，方便轮询界面渲染相同状态。
 - Codex-exported agent capabilities 是 `smartyt.search_candidates`、`smartyt.sniff`、`smartyt.download`、`smartyt.download_now`、`smartyt.get_task` 和 `smartyt.list_tasks`。`smartyt.search_candidates` 会保存 search task 并返回候选 metadata，不下载任何文件。`smartyt.download` 面向 UI 排队执行，`smartyt.download_now` 会等到 artifact 真正生成后返回 `output_paths`，供多 Gear 工作流使用。下载文件会留在 SmartYT task output directory，不会自动导入 Media Library；只有用户另外明确要求入库时才调用导入。直链图片 URL，包括带图片扩展名或 `format=` query hint 的 Twitter/X 图片 URL，会按图片下载处理，而不是误走视频下载。最终给用户看的自然语言回复由 active agent/LLM 生成。
 
 `twitter.capture`：

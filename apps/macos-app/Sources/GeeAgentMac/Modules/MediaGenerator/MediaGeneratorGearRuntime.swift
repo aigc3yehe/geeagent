@@ -68,6 +68,14 @@ enum MediaGeneratorModelID: String, Codable, CaseIterable, Identifiable {
     case veo31 = "veo3.1"
     case veo31Fast = "veo3.1_fast"
     case veo31Lite = "veo3.1_lite"
+    case veo314KT = "veo3.1-4k-t"
+    case veo31Components4KT = "veo3.1-components-4k-t"
+    case veo31Pro4KT = "veo3.1-pro-4k-t"
+    case veo31ProT = "veo3.1-pro-t"
+    case veo31T = "veo3.1-t"
+    case veo31ComponentsT = "veo3.1-components-t"
+    case veo3ProT = "veo3-pro-t"
+    case veo3T = "veo3-t"
     case seedance2 = "seedance-2"
     case seedance2Fast = "seedance-2-fast"
 
@@ -77,7 +85,10 @@ enum MediaGeneratorModelID: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .nanoBananaPro, .gptImage2:
             .image
-        case .veo31, .veo31Fast, .veo31Lite, .seedance2, .seedance2Fast:
+        case .veo31, .veo31Fast, .veo31Lite,
+             .veo314KT, .veo31Components4KT, .veo31Pro4KT, .veo31ProT,
+             .veo31T, .veo31ComponentsT, .veo3ProT, .veo3T,
+             .seedance2, .seedance2Fast:
             .video
         }
     }
@@ -89,6 +100,14 @@ enum MediaGeneratorModelID: String, Codable, CaseIterable, Identifiable {
         case .veo31: "Veo3.1"
         case .veo31Fast: "Veo3.1 Fast"
         case .veo31Lite: "Veo3.1 Lite"
+        case .veo314KT: "Veo3.1 4K T"
+        case .veo31Components4KT: "Veo3.1 Components 4K T"
+        case .veo31Pro4KT: "Veo3.1 Pro 4K T"
+        case .veo31ProT: "Veo3.1 Pro T"
+        case .veo31T: "Veo3.1 T"
+        case .veo31ComponentsT: "Veo3.1 Components T"
+        case .veo3ProT: "Veo3 Pro T"
+        case .veo3T: "Veo3 T"
         case .seedance2: "Seedance 2.0"
         case .seedance2Fast: "Seedance 2.0 Fast"
         }
@@ -101,6 +120,14 @@ enum MediaGeneratorModelID: String, Codable, CaseIterable, Identifiable {
         case .veo31: "Xenodia Veo3.1 quality video model with task-only polling."
         case .veo31Fast: "Xenodia Veo3.1 fast video model and default for reference-to-video."
         case .veo31Lite: "Xenodia Veo3.1 lite video model for lower-cost drafts."
+        case .veo314KT: "Xenodia Veo alternate route 4K model with public imageUrls references."
+        case .veo31Components4KT: "Xenodia Veo alternate route components 4K model with public imageUrls references."
+        case .veo31Pro4KT: "Xenodia Veo alternate route Pro 4K model with public imageUrls references."
+        case .veo31ProT: "Xenodia Veo alternate route Pro model with public imageUrls references."
+        case .veo31T: "Xenodia Veo alternate route 3.1 model with public imageUrls references."
+        case .veo31ComponentsT: "Xenodia Veo alternate route components model with public imageUrls references."
+        case .veo3ProT: "Xenodia Veo alternate route Veo3 Pro model with public imageUrls references."
+        case .veo3T: "Xenodia Veo alternate route Veo3 model with public imageUrls references."
         case .seedance2: "Xenodia Seedance 2.0 video model with 480p, 720p, and 1080p output."
         case .seedance2Fast: "Xenodia Seedance 2.0 fast video model with multimodal reference support."
         }
@@ -109,6 +136,25 @@ enum MediaGeneratorModelID: String, Codable, CaseIterable, Identifiable {
     var isVeo: Bool {
         switch self {
         case .veo31, .veo31Fast, .veo31Lite:
+            true
+        default:
+            false
+        }
+    }
+
+    var isVeoAlternateRoute: Bool {
+        switch self {
+        case .veo314KT, .veo31Components4KT, .veo31Pro4KT, .veo31ProT,
+             .veo31T, .veo31ComponentsT, .veo3ProT, .veo3T:
+            true
+        default:
+            false
+        }
+    }
+
+    var isVeoAlternateRoute4KDefault: Bool {
+        switch self {
+        case .veo314KT, .veo31Components4KT, .veo31Pro4KT:
             true
         default:
             false
@@ -1016,7 +1062,7 @@ struct XenodiaImageGenerationClient {
         references: [MediaGeneratorReference],
         parameters: [String: String]
     ) async throws -> String {
-        let fields = try videoRequestFields(
+        let fields = try Self.videoRequestFields(
             modelID: modelID,
             prompt: prompt,
             aspectRatio: aspectRatio,
@@ -1105,13 +1151,16 @@ struct XenodiaImageGenerationClient {
         case .gptImage2:
             fields["aspect_ratio"] = aspectRatio.rawValue
             fields["resolution"] = resolution.rawValue
-        case .veo31, .veo31Fast, .veo31Lite, .seedance2, .seedance2Fast:
+        case .veo31, .veo31Fast, .veo31Lite,
+             .veo314KT, .veo31Components4KT, .veo31Pro4KT, .veo31ProT,
+             .veo31T, .veo31ComponentsT, .veo3ProT, .veo3T,
+             .seedance2, .seedance2Fast:
             break
         }
         return fields
     }
 
-    private func videoRequestFields(
+    static func videoRequestFields(
         modelID: MediaGeneratorModelID,
         prompt: String,
         aspectRatio: MediaGeneratorAspectRatio,
@@ -1126,6 +1175,18 @@ struct XenodiaImageGenerationClient {
             "resolution": resolution.rawValue
         ]
 
+        if modelID.isVeoAlternateRoute {
+            if !imageURLs.isEmpty {
+                fields["imageUrls"] = imageURLs
+            }
+            fields["aspect_ratio"] = aspectRatio.rawValue
+            fields["duration"] = Self.intParameter(parameters["duration"]) ?? 8
+            if let watermark = Self.boolParameter(parameters["watermark"]) {
+                fields["watermark"] = watermark
+            }
+            return fields
+        }
+
         if modelID.isVeo {
             let generationType = parameters["generation_type"]
                 .flatMap(MediaGeneratorVideoGenerationType.init(rawValue:))
@@ -1135,16 +1196,16 @@ struct XenodiaImageGenerationClient {
             if !imageURLs.isEmpty {
                 fields["imageUrls"] = imageURLs
             }
-            if let seed = intParameter(parameters["seed"]) {
+            if let seed = Self.intParameter(parameters["seed"]) {
                 fields["seeds"] = seed
             }
-            if let enableTranslation = boolParameter(parameters["enable_translation"]) {
+            if let enableTranslation = Self.boolParameter(parameters["enable_translation"]) {
                 fields["enableTranslation"] = enableTranslation
             }
-            if let watermark = nonEmptyParameter(parameters["watermark"]) {
+            if let watermark = Self.nonEmptyParameter(parameters["watermark"]) {
                 fields["watermark"] = watermark
             }
-            if let callbackURL = nonEmptyParameter(parameters["callback_url"]) {
+            if let callbackURL = Self.nonEmptyParameter(parameters["callback_url"]) {
                 fields["callBackUrl"] = callbackURL
             }
             return fields
@@ -1152,39 +1213,39 @@ struct XenodiaImageGenerationClient {
 
         if modelID.isSeedance {
             fields["aspect_ratio"] = aspectRatio.rawValue
-            fields["duration"] = intParameter(parameters["duration"]) ?? 5
-            if let generateAudio = boolParameter(parameters["generate_audio"]) {
+            fields["duration"] = Self.intParameter(parameters["duration"]) ?? 5
+            if let generateAudio = Self.boolParameter(parameters["generate_audio"]) {
                 fields["generate_audio"] = generateAudio
             }
-            let hasFrameMode = nonEmptyParameter(parameters["first_frame_url"]) != nil
-                || nonEmptyParameter(parameters["last_frame_url"]) != nil
-            if let firstFrameURL = nonEmptyParameter(parameters["first_frame_url"]) {
+            let hasFrameMode = Self.nonEmptyParameter(parameters["first_frame_url"]) != nil
+                || Self.nonEmptyParameter(parameters["last_frame_url"]) != nil
+            if let firstFrameURL = Self.nonEmptyParameter(parameters["first_frame_url"]) {
                 fields["first_frame_url"] = firstFrameURL
             }
-            if let lastFrameURL = nonEmptyParameter(parameters["last_frame_url"]) {
+            if let lastFrameURL = Self.nonEmptyParameter(parameters["last_frame_url"]) {
                 fields["last_frame_url"] = lastFrameURL
             }
-            let referenceImageURLs = stringArrayParameter(parameters["reference_image_urls"])
+            let referenceImageURLs = Self.stringArrayParameter(parameters["reference_image_urls"])
             if !hasFrameMode, !referenceImageURLs.isEmpty {
                 fields["reference_image_urls"] = referenceImageURLs
             } else if !hasFrameMode, !imageURLs.isEmpty {
                 fields["reference_image_urls"] = imageURLs
             }
-            let referenceVideoURLs = stringArrayParameter(parameters["reference_video_urls"])
+            let referenceVideoURLs = Self.stringArrayParameter(parameters["reference_video_urls"])
             if !referenceVideoURLs.isEmpty {
                 fields["reference_video_urls"] = referenceVideoURLs
             }
-            let referenceAudioURLs = stringArrayParameter(parameters["reference_audio_urls"])
+            let referenceAudioURLs = Self.stringArrayParameter(parameters["reference_audio_urls"])
             if !referenceAudioURLs.isEmpty {
                 fields["reference_audio_urls"] = referenceAudioURLs
             }
-            if let webSearch = boolParameter(parameters["web_search"]) {
+            if let webSearch = Self.boolParameter(parameters["web_search"]) {
                 fields["web_search"] = webSearch
             }
-            if let nsfwChecker = boolParameter(parameters["nsfw_checker"]) {
+            if let nsfwChecker = Self.boolParameter(parameters["nsfw_checker"]) {
                 fields["nsfw_checker"] = nsfwChecker
             }
-            if let callbackURL = nonEmptyParameter(parameters["callback_url"]) {
+            if let callbackURL = Self.nonEmptyParameter(parameters["callback_url"]) {
                 fields["callBackUrl"] = callbackURL
             }
             return fields
@@ -1334,12 +1395,12 @@ struct XenodiaImageGenerationClient {
         }
     }
 
-    private func nonEmptyParameter(_ value: String?) -> String? {
+    private static func nonEmptyParameter(_ value: String?) -> String? {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed?.isEmpty == false ? trimmed : nil
     }
 
-    private func boolParameter(_ value: String?) -> Bool? {
+    private static func boolParameter(_ value: String?) -> Bool? {
         guard let value else {
             return nil
         }
@@ -1353,14 +1414,14 @@ struct XenodiaImageGenerationClient {
         }
     }
 
-    private func intParameter(_ value: String?) -> Int? {
+    private static func intParameter(_ value: String?) -> Int? {
         guard let value else {
             return nil
         }
         return Int(value.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    private func stringArrayParameter(_ value: String?) -> [String] {
+    private static func stringArrayParameter(_ value: String?) -> [String] {
         guard let value,
               let data = value.data(using: .utf8),
               let decoded = try? JSONDecoder().decode([String].self, from: data)
@@ -1703,6 +1764,10 @@ final class MediaGeneratorGearStore: ObservableObject {
             statusMessage = "\(selectedModel.title) references are limited to \(selectedModelReferenceLimit)."
             return
         }
+        if category == .video, selectedModel.isVeoAlternateRoute {
+            statusMessage = "\(selectedModel.title) accepts public http(s) reference URLs only."
+            return
+        }
         do {
             try Self.validateLocalReferenceFile(url)
             let reference = MediaGeneratorReference(
@@ -1726,11 +1791,13 @@ final class MediaGeneratorGearStore: ObservableObject {
         }
         guard let parsed = URL(string: trimmed),
               (category == .video
-                  ? (parsed.scheme?.hasPrefix("http") == true || parsed.scheme == "asset")
+                  ? (parsed.scheme?.hasPrefix("http") == true || (parsed.scheme == "asset" && !selectedModel.isVeoAlternateRoute))
                   : parsed.scheme?.hasPrefix("http") == true)
         else {
             statusMessage = category == .video
-                ? "Paste a valid public media URL or Xenodia asset:// reference."
+                ? (selectedModel.isVeoAlternateRoute
+                    ? "Paste a valid public http(s) image URL."
+                    : "Paste a valid public media URL or Xenodia asset:// reference.")
                 : "Paste a valid image URL. \(selectedModel.title) references are limited to \(selectedModelReferenceLimit)."
             return
         }
@@ -1946,6 +2013,26 @@ final class MediaGeneratorGearStore: ObservableObject {
         }
     }
 
+    func downloadReference(_ reference: MediaGeneratorReference) {
+        guard reference.previewURL != nil else {
+            statusMessage = "No downloadable reference image."
+            return
+        }
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = Self.referenceDownloadFileName(for: reference)
+        panel.allowedContentTypes = Self.supportedReferenceContentTypes
+        if panel.runModal() != .OK {
+            return
+        }
+        guard let destinationURL = panel.url else {
+            return
+        }
+        Task { [weak self] in
+            await self?.saveReference(reference, to: destinationURL)
+        }
+    }
+
     func generateCurrentPrompt() {
         let prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         Task { [weak self] in
@@ -1966,7 +2053,7 @@ final class MediaGeneratorGearStore: ObservableObject {
     private func currentVideoOptions() -> MediaGeneratorVideoOptions {
         MediaGeneratorVideoOptions(
             generationType: videoGenerationType,
-            duration: min(max(videoDuration, 4), 15),
+            duration: selectedModel.isVeoAlternateRoute ? 8 : min(max(videoDuration, 4), 15),
             generateAudio: generateAudio,
             webSearch: webSearch,
             nsfwChecker: nsfwChecker,
@@ -2006,6 +2093,31 @@ final class MediaGeneratorGearStore: ObservableObject {
         }
     }
 
+    func saveReference(_ reference: MediaGeneratorReference, to destinationURL: URL) async {
+        guard let sourceURL = reference.previewURL else {
+            statusMessage = "No downloadable reference image."
+            return
+        }
+        do {
+            if sourceURL.isFileURL {
+                if FileManager.default.fileExists(atPath: destinationURL.path) {
+                    try FileManager.default.removeItem(at: destinationURL)
+                }
+                try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+            } else {
+                let (data, response) = try await URLSession.shared.data(from: sourceURL)
+                if let http = response as? HTTPURLResponse,
+                   !(200..<300).contains(http.statusCode) {
+                    throw MediaGeneratorError.requestFailed(http.statusCode, String(data: data, encoding: .utf8) ?? "<non-utf8 response>")
+                }
+                try data.write(to: destinationURL, options: .atomic)
+            }
+            statusMessage = "Downloaded reference image to \(destinationURL.lastPathComponent)."
+        } catch {
+            statusMessage = "Reference download failed: \(error.localizedDescription)"
+        }
+    }
+
     func createAgentTask(args: [String: Any]) async -> [String: Any] {
         let prompt = (args["prompt"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let requestedModel = Self.modelIDArg(args["model"])
@@ -2029,7 +2141,7 @@ final class MediaGeneratorGearStore: ObservableObject {
             for: model
         ) ?? Self.defaultResolution(for: model, aspectRatio: aspectRatio)
         let outputFormat = Self.outputFormatArg(args["output_format"]) ?? .png
-        let videoOptions = Self.videoOptionsArg(args)
+        let videoOptions = Self.videoOptionsArg(args, defaultDuration: model.isVeoAlternateRoute ? 8 : 5)
         let providerImageCount: Int
         let batchCount: Int
         do {
@@ -2136,18 +2248,15 @@ final class MediaGeneratorGearStore: ObservableObject {
                 "n": ["minimum": 1, "maximum": 1, "default": 1],
                 "batch_count": ["minimum": 1, "maximum": 4, "default": 1],
                 "response_format": ["enum": ["url"], "default": "url"],
-                "max_total_references_by_model": [
-                    MediaGeneratorModelID.nanoBananaPro.rawValue: Self.maxReferenceCount(for: .nanoBananaPro),
-                    MediaGeneratorModelID.gptImage2.rawValue: Self.maxReferenceCount(for: .gptImage2),
-                    MediaGeneratorModelID.veo31.rawValue: Self.maxReferenceCount(for: .veo31),
-                    MediaGeneratorModelID.veo31Fast.rawValue: Self.maxReferenceCount(for: .veo31Fast),
-                    MediaGeneratorModelID.veo31Lite.rawValue: Self.maxReferenceCount(for: .veo31Lite),
-                    MediaGeneratorModelID.seedance2.rawValue: Self.maxReferenceCount(for: .seedance2),
-                    MediaGeneratorModelID.seedance2Fast.rawValue: Self.maxReferenceCount(for: .seedance2Fast)
-                ],
+                "max_total_references_by_model": Dictionary(
+                    uniqueKeysWithValues: MediaGeneratorModelID.allCases.map { model in
+                        (model.rawValue, Self.maxReferenceCount(for: model))
+                    }
+                ),
                 "max_reference_file_bytes": MediaGeneratorError.maxReferenceFileBytes,
                 "accepted_mime_types": ["image/jpeg", "image/png", "image/webp"],
                 "video_reference_url_schemes": ["http", "https", "asset"],
+                "veo_alternate_route_reference_url_schemes": ["http", "https"],
                 "video_local_reference_upload": "requires configured Xenodia storage_upload_url"
             ],
             "placeholders": [
@@ -2607,6 +2716,14 @@ final class MediaGeneratorGearStore: ObservableObject {
             if let callbackURL = videoOptions.callbackURL {
                 parameters["callback_url"] = callbackURL
             }
+        case .veo314KT, .veo31Components4KT, .veo31Pro4KT, .veo31ProT,
+             .veo31T, .veo31ComponentsT, .veo3ProT, .veo3T:
+            parameters["aspect_ratio"] = aspectRatio.rawValue
+            parameters["resolution"] = resolution.rawValue
+            parameters["duration"] = "\(videoOptions.duration)"
+            if let watermark = videoOptions.watermark {
+                parameters["watermark"] = watermark
+            }
         case .seedance2, .seedance2Fast:
             parameters["aspect_ratio"] = aspectRatio.rawValue
             parameters["resolution"] = resolution.rawValue
@@ -2739,6 +2856,19 @@ final class MediaGeneratorGearStore: ObservableObject {
         }
     }
 
+    private static func referenceDownloadFileName(for reference: MediaGeneratorReference) -> String {
+        let rawName = reference.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackName = reference.previewURL?.lastPathComponent ?? "reference-image.png"
+        let fileName = rawName.isEmpty ? fallbackName : rawName
+        guard URL(fileURLWithPath: fileName).pathExtension.isEmpty else {
+            return fileName
+        }
+        let ext = reference.previewURL?.pathExtension.isEmpty == false
+            ? reference.previewURL?.pathExtension
+            : "png"
+        return "\(fileName).\(ext ?? "png")"
+    }
+
     private static func defaultModel(for category: MediaGeneratorCategory) -> MediaGeneratorModelID {
         switch category {
         case .image:
@@ -2754,7 +2884,10 @@ final class MediaGeneratorGearStore: ObservableObject {
         switch modelID {
         case .gptImage2:
             return .auto
-        case .veo31, .veo31Fast, .veo31Lite, .seedance2, .seedance2Fast:
+        case .veo31, .veo31Fast, .veo31Lite,
+             .veo314KT, .veo31Components4KT, .veo31Pro4KT, .veo31ProT,
+             .veo31T, .veo31ComponentsT, .veo3ProT, .veo3T,
+             .seedance2, .seedance2Fast:
             return .landscape
         case .nanoBananaPro:
             return .square
@@ -2765,7 +2898,10 @@ final class MediaGeneratorGearStore: ObservableObject {
         for modelID: MediaGeneratorModelID,
         aspectRatio: MediaGeneratorAspectRatio
     ) -> MediaGeneratorResolution {
-        supportedResolutions(for: modelID, aspectRatio: aspectRatio).first
+        if modelID.isVeoAlternateRoute4KDefault {
+            return .video4K
+        }
+        return supportedResolutions(for: modelID, aspectRatio: aspectRatio).first
             ?? (modelID.category == .video ? .p720 : .oneK)
     }
 
@@ -2783,7 +2919,9 @@ final class MediaGeneratorGearStore: ObservableObject {
             return MediaGeneratorVideoGenerationType.allCases
         case .seedance2, .seedance2Fast:
             return [.textToVideo, .firstAndLastFrames, .referenceToVideo]
-        case .nanoBananaPro, .gptImage2:
+        case .veo314KT, .veo31Components4KT, .veo31Pro4KT, .veo31ProT,
+             .veo31T, .veo31ComponentsT, .veo3ProT, .veo3T,
+             .nanoBananaPro, .gptImage2:
             return []
         }
     }
@@ -2817,6 +2955,22 @@ final class MediaGeneratorGearStore: ObservableObject {
             return .veo31Fast
         case "veo3.1-lite", "veo-3.1-lite", "veo31-lite":
             return .veo31Lite
+        case "veo3.1-4k-t", "veo-3.1-4k-t", "veo31-4k-t":
+            return .veo314KT
+        case "veo3.1-components-4k-t", "veo-3.1-components-4k-t", "veo31-components-4k-t":
+            return .veo31Components4KT
+        case "veo3.1-pro-4k-t", "veo-3.1-pro-4k-t", "veo31-pro-4k-t":
+            return .veo31Pro4KT
+        case "veo3.1-pro-t", "veo-3.1-pro-t", "veo31-pro-t":
+            return .veo31ProT
+        case "veo3.1-t", "veo-3.1-t", "veo31-t":
+            return .veo31T
+        case "veo3.1-components-t", "veo-3.1-components-t", "veo31-components-t":
+            return .veo31ComponentsT
+        case "veo3-pro-t", "veo-3-pro-t":
+            return .veo3ProT
+        case "veo3-t", "veo-3-t":
+            return .veo3T
         case "seedance-2", "seedance2", "seedance-2.0", "seedance2.0":
             return .seedance2
         case "seedance-2-fast", "seedance2-fast", "seedance-2.0-fast", "seedance2.0-fast":
@@ -2901,6 +3055,9 @@ final class MediaGeneratorGearStore: ObservableObject {
             return [.auto, .square, .story, .landscape, .classicLandscape, .classicPortrait]
         case .veo31, .veo31Fast, .veo31Lite:
             return [.landscape, .story, .auto]
+        case .veo314KT, .veo31Components4KT, .veo31Pro4KT, .veo31ProT,
+             .veo31T, .veo31ComponentsT, .veo3ProT, .veo3T:
+            return [.landscape, .story]
         case .seedance2, .seedance2Fast:
             return [.square, .classicLandscape, .classicPortrait, .landscape, .story, .cinema, .adaptive]
         }
@@ -2922,6 +3079,9 @@ final class MediaGeneratorGearStore: ObservableObject {
             return [.p720, .p1080, .video4K]
         case .veo31Lite:
             return [.p720, .p1080]
+        case .veo314KT, .veo31Components4KT, .veo31Pro4KT, .veo31ProT,
+             .veo31T, .veo31ComponentsT, .veo3ProT, .veo3T:
+            return [.p720, .p1080, .video4K]
         case .seedance2:
             return [.p720, .p480, .p1080]
         case .seedance2Fast:
@@ -2960,6 +3120,9 @@ final class MediaGeneratorGearStore: ObservableObject {
             return 16
         case .veo31, .veo31Fast, .veo31Lite:
             return 3
+        case .veo314KT, .veo31Components4KT, .veo31Pro4KT, .veo31ProT,
+             .veo31T, .veo31ComponentsT, .veo3ProT, .veo3T:
+            return 3
         case .seedance2, .seedance2Fast:
             return 9
         }
@@ -2975,6 +3138,12 @@ final class MediaGeneratorGearStore: ObservableObject {
             [
                 "model", "prompt", "batch_count", "generation_type", "aspect_ratio", "resolution",
                 "image_urls", "seed", "enable_translation", "watermark", "callback_url"
+            ]
+        case .veo314KT, .veo31Components4KT, .veo31Pro4KT, .veo31ProT,
+             .veo31T, .veo31ComponentsT, .veo3ProT, .veo3T:
+            [
+                "model", "prompt", "batch_count", "imageUrls", "channel_id",
+                "aspect_ratio", "resolution", "duration", "watermark"
             ]
         case .seedance2, .seedance2Fast:
             [
@@ -3021,7 +3190,11 @@ final class MediaGeneratorGearStore: ObservableObject {
         if modelID == .nanoBananaPro {
             payload["output_format"] = MediaGeneratorOutputFormat.allCases.map(\.rawValue)
         }
-        if modelID.category == .video {
+        if modelID.isVeoAlternateRoute {
+            payload["duration"] = [8]
+            payload["watermark"] = [true, false]
+            payload["reference_url_schemes"] = ["http", "https"]
+        } else if modelID.category == .video {
             payload["generation_type"] = supportedVideoGenerationTypes(for: modelID).map(\.rawValue)
             payload["reference_url_schemes"] = ["http", "https", "asset"]
         }
@@ -3053,6 +3226,12 @@ final class MediaGeneratorGearStore: ObservableObject {
             payload["resolution"] = MediaGeneratorResolution.p720.rawValue
             payload["generation_type"] = MediaGeneratorVideoGenerationType.textToVideo.rawValue
             payload["enable_translation"] = true
+        case .veo314KT, .veo31Components4KT, .veo31Pro4KT, .veo31ProT,
+             .veo31T, .veo31ComponentsT, .veo3ProT, .veo3T:
+            payload["batch_count"] = 1
+            payload["resolution"] = defaultResolution(for: modelID, aspectRatio: defaultAspectRatio(for: modelID)).rawValue
+            payload["duration"] = 8
+            payload["watermark"] = false
         case .seedance2, .seedance2Fast:
             payload["batch_count"] = 1
             payload["resolution"] = MediaGeneratorResolution.p720.rawValue
@@ -3084,7 +3263,7 @@ final class MediaGeneratorGearStore: ObservableObject {
             statusMessage = "\(selectedModel.title) accepts at most \(Self.maxReferenceCount(for: selectedModel)) references."
         }
         if selectedModel.category == .video {
-            videoDuration = min(max(videoDuration, 4), 15)
+            videoDuration = selectedModel.isVeoAlternateRoute ? 8 : min(max(videoDuration, 4), 15)
         }
         imageCount = min(max(imageCount, 1), 4)
     }
@@ -3127,6 +3306,13 @@ final class MediaGeneratorGearStore: ObservableObject {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    private static func boolStringArg(_ value: Any?) -> String? {
+        if let bool = value as? Bool {
+            return bool ? "true" : "false"
+        }
+        return stringArg(value)
+    }
+
     private static func stringArrayArg(_ value: Any?) -> [String] {
         if let strings = value as? [String] {
             return strings.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -3148,7 +3334,7 @@ final class MediaGeneratorGearStore: ObservableObject {
         }
     }
 
-    private static func videoOptionsArg(_ args: [String: Any]) -> MediaGeneratorVideoOptions {
+    private static func videoOptionsArg(_ args: [String: Any], defaultDuration: Int = 5) -> MediaGeneratorVideoOptions {
         let firstFrameURL = stringArg(args["first_frame_url"])
             ?? stringArg(args["firstFrameUrl"])
             ?? stringArg(args["firstFrameURL"])
@@ -3181,7 +3367,7 @@ final class MediaGeneratorGearStore: ObservableObject {
         }
         return MediaGeneratorVideoOptions(
             generationType: inferredGenerationType,
-            duration: intArg(args["duration"]).map { min(max($0, 4), 15) } ?? 5,
+            duration: intArg(args["duration"]).map { min(max($0, 4), 15) } ?? defaultDuration,
             generateAudio: boolArg(args["generate_audio"], defaultValue: false),
             webSearch: boolArg(args["web_search"], defaultValue: false),
             nsfwChecker: boolArg(args["nsfw_checker"], defaultValue: false),
@@ -3190,7 +3376,7 @@ final class MediaGeneratorGearStore: ObservableObject {
                 args["enable_translation"] ?? args["enableTranslation"],
                 defaultValue: true
             ),
-            watermark: stringArg(args["watermark"]),
+            watermark: boolStringArg(args["watermark"]),
             firstFrameURL: firstFrameURL,
             lastFrameURL: lastFrameURL,
             referenceVideoURLs: referenceVideoURLs,
@@ -3355,6 +3541,21 @@ final class MediaGeneratorGearStore: ObservableObject {
             if let url = reference.url {
                 try validateReferenceURL(url, allowedSchemes: ["http", "https", "asset"], label: "Video reference")
             }
+        }
+
+        if modelID.isVeoAlternateRoute {
+            guard videoOptions.duration == 8 else {
+                throw MediaGeneratorError.invalidOption("\(modelID.title) duration must be 8 seconds when provided.")
+            }
+            for reference in references {
+                if reference.localPath != nil {
+                    throw MediaGeneratorError.invalidReference("\(modelID.title) imageUrls must use public http, https URL schemes.")
+                }
+                if let url = reference.url {
+                    try validateReferenceURL(url, allowedSchemes: ["http", "https"], label: "\(modelID.title) imageUrls")
+                }
+            }
+            return
         }
 
         if modelID.isVeo {

@@ -16,6 +16,23 @@ struct MediaGeneratorGearWindow: View {
     }
 }
 
+struct MediaGeneratorTaskListScrollState {
+    static let coordinateSpaceName = "media-generator-task-list-scroll"
+    private static let buttonThreshold: CGFloat = 72
+
+    static func shouldShowScrollToTopButton(topOffset: CGFloat) -> Bool {
+        topOffset < -buttonThreshold
+    }
+}
+
+private struct MediaGeneratorTaskListTopOffsetPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 private struct MediaGeneratorGearRootView: View {
     @StateObject private var store = MediaGeneratorGearStore.shared
     @State private var pastedReferenceURL = ""
@@ -25,6 +42,9 @@ private struct MediaGeneratorGearRootView: View {
     @State private var unmutedVideoTaskIDs: Set<MediaGeneratorTask.ID> = []
     @State private var isQuickPromptEditorPresented = false
     @State private var isImageHistoryPresented = false
+    @State private var taskListTopOffset: CGFloat = 0
+
+    private let taskListTopAnchorID = "media-generator-task-list-top"
 
     var body: some View {
         ZStack {
@@ -56,6 +76,9 @@ private struct MediaGeneratorGearRootView: View {
                 MediaGeneratorReferencePreviewOverlay(
                     reference: previewReference,
                     url: previewURL,
+                    onDownload: {
+                        store.downloadReference(previewReference)
+                    },
                     onClose: {
                         self.previewReference = nil
                     }
@@ -220,14 +243,15 @@ private struct MediaGeneratorGearRootView: View {
                         selection: $store.imageCount
                     )
                 }
-                if store.category == .video {
+                if store.category == .video,
+                   !MediaGeneratorGearStore.supportedVideoGenerationTypes(for: store.selectedModel).isEmpty {
                     MediaGeneratorVideoModeField(
                         selection: videoGenerationTypeBinding,
                         options: MediaGeneratorGearStore.supportedVideoGenerationTypes(for: store.selectedModel)
                     )
-                    if store.selectedModel.isSeedance {
-                        MediaGeneratorVideoDurationField(selection: $store.videoDuration)
-                    }
+                }
+                if store.category == .video, store.selectedModel.isSeedance {
+                    MediaGeneratorVideoDurationField(selection: $store.videoDuration)
                 }
             }
             if store.selectedModel.isSeedance {
@@ -425,7 +449,7 @@ private struct MediaGeneratorGearRootView: View {
             }
 
             HStack(spacing: 8) {
-                TextField(store.category == .video ? "Paste image URL or asset://" : "Paste image URL", text: $pastedReferenceURL)
+                TextField(referenceURLPlaceholder, text: $pastedReferenceURL)
                     .textFieldStyle(.plain)
                     .font(.caption)
                     .padding(.horizontal, 10)
@@ -560,116 +584,176 @@ private struct MediaGeneratorGearRootView: View {
                     .frame(height: 1)
             }
 
-            ScrollView {
-                if store.visibleTaskGroups.isEmpty {
-                    VStack(spacing: 12) {
-                        Image(systemName: "display")
-                            .font(.system(size: 30, weight: .medium))
-                        Text(store.tasks.isEmpty ? "No generation tasks yet" : "No matching tasks")
-                            .font(.subheadline.weight(.semibold))
-                        Text(store.tasks.isEmpty ? "Generated images, videos, and task status will appear here." : "Try another status, model, or search keyword.")
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.44))
-                    }
-                    .foregroundStyle(.white.opacity(0.46))
-                    .frame(maxWidth: .infinity)
-                    .frame(minHeight: 220)
-                    .padding(.horizontal, 24)
-                } else {
-                    LazyVStack(spacing: 12) {
-                        ForEach(store.visibleTaskGroups) { group in
-                            if group.isBatch {
-                                MediaGeneratorTaskGroupCard(
-                                    group: group,
-                                    isSelected: group.tasks.contains { $0.id == store.selectedTaskID },
-                                    isVideoMuted: { task in
-                                        isVideoMuted(task)
-                                    },
-                                    onPreview: { task in
-                                        previewTask = task
-                                    },
-                                    onToggleVideoMute: { task in
-                                        toggleVideoMute(task)
-                                    },
-                                    onDownload: { task in
-                                        store.downloadResult(task)
-                                    },
-                                    onCopy: { task in
-                                        store.copyResultURL(task)
-                                    },
-                                    onReveal: { task in
-                                        store.revealResultInFinder(task)
-                                    },
-                                    onUseAsReference: { task in
-                                        store.useResultAsReference(task)
-                                    },
-                                    onApply: {
-                                        store.applyTaskParameters(group.representative)
-                                    },
-                                    onStar: {
-                                        store.toggleStar(group)
-                                    },
-                                    onDelete: {
-                                        store.delete(group)
-                                    }
-                                ) {
-                                    store.selectedTaskID = group.representative.id
+            ScrollViewReader { proxy in
+                ZStack(alignment: .bottomTrailing) {
+                    ScrollView {
+                        Color.clear
+                            .frame(height: 0)
+                            .id(taskListTopAnchorID)
+                            .background(
+                                GeometryReader { geometry in
+                                    Color.clear.preference(
+                                        key: MediaGeneratorTaskListTopOffsetPreferenceKey.self,
+                                        value: geometry.frame(in: .named(MediaGeneratorTaskListScrollState.coordinateSpaceName)).minY
+                                    )
                                 }
-                            } else {
-                                let task = group.representative
-                                MediaGeneratorTaskCard(
-                                    task: task,
-                                    isSelected: store.selectedTaskID == task.id,
-                                    isVideoMuted: isVideoMuted(task),
-                                    onPreview: {
-                                        previewTask = task
-                                    },
-                                    onToggleVideoMute: {
-                                        toggleVideoMute(task)
-                                    },
-                                    onDownload: {
-                                        store.downloadResult(task)
-                                    },
-                                    onCopy: {
-                                        store.copyResultURL(task)
-                                    },
-                                    onReveal: {
-                                        store.revealResultInFinder(task)
-                                    },
-                                    onUseAsReference: {
-                                        store.useResultAsReference(task)
-                                    },
-                                    onApply: {
-                                        store.applyTaskParameters(task)
-                                    },
-                                    onStar: {
-                                        store.toggleStar(task)
-                                    },
-                                    onDelete: {
-                                        store.delete(task)
-                                    }
-                                ) {
-                                    store.selectedTaskID = task.id
-                                }
-                            }
-                        }
-                        if store.hasMoreTasks {
-                            Button {
-                                store.loadMoreTasks()
-                            } label: {
-                                Label("Load older", systemImage: "clock.arrow.circlepath")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(MediaGeneratorLoadMoreButtonStyle())
-                            .padding(.top, 2)
-                        }
+                            )
+                        taskListContent
                     }
-                    .padding(16)
+                    .coordinateSpace(name: MediaGeneratorTaskListScrollState.coordinateSpaceName)
+                    .onPreferenceChange(MediaGeneratorTaskListTopOffsetPreferenceKey.self) { offset in
+                        taskListTopOffset = offset
+                    }
+
+                    if MediaGeneratorTaskListScrollState.shouldShowScrollToTopButton(topOffset: taskListTopOffset) {
+                        Button {
+                            withAnimation(.easeOut(duration: 0.18)) {
+                                proxy.scrollTo(taskListTopAnchorID, anchor: .top)
+                            }
+                        } label: {
+                            Image(systemName: "arrow.up")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.88))
+                                .frame(width: 42, height: 42)
+                                .background(MediaGeneratorPalette.accent.opacity(0.92), in: Circle())
+                                .overlay {
+                                    Circle()
+                                        .stroke(.white.opacity(0.22), lineWidth: 0.8)
+                                }
+                                .shadow(color: .black.opacity(0.34), radius: 12, x: 0, y: 8)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Back to top")
+                        .padding(18)
+                        .transition(.scale(scale: 0.92).combined(with: .opacity))
+                    }
                 }
             }
         }
         .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
         .background(.black.opacity(0.10))
+    }
+
+    private var referenceURLPlaceholder: String {
+        if store.category != .video {
+            return "Paste image URL"
+        }
+        return store.selectedModel.isVeoAlternateRoute ? "Paste public image URL" : "Paste image URL or asset://"
+    }
+
+    private var taskListContent: some View {
+        Group {
+            if store.visibleTaskGroups.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "display")
+                        .font(.system(size: 30, weight: .medium))
+                    Text(store.tasks.isEmpty ? "No generation tasks yet" : "No matching tasks")
+                        .font(.subheadline.weight(.semibold))
+                    Text(store.tasks.isEmpty ? "Generated images, videos, and task status will appear here." : "Try another status, model, or search keyword.")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.44))
+                }
+                .foregroundStyle(.white.opacity(0.46))
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: 220)
+                .padding(.horizontal, 24)
+            } else {
+                LazyVStack(spacing: 12) {
+                    ForEach(store.visibleTaskGroups) { group in
+                        taskGroupView(group)
+                    }
+                    if store.hasMoreTasks {
+                        Button {
+                            store.loadMoreTasks()
+                        } label: {
+                            Label("Load older", systemImage: "clock.arrow.circlepath")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(MediaGeneratorLoadMoreButtonStyle())
+                        .padding(.top, 2)
+                    }
+                }
+                .padding(16)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func taskGroupView(_ group: MediaGeneratorTaskGroup) -> some View {
+        if group.isBatch {
+            MediaGeneratorTaskGroupCard(
+                group: group,
+                isSelected: group.tasks.contains { $0.id == store.selectedTaskID },
+                isVideoMuted: { task in
+                    isVideoMuted(task)
+                },
+                onPreview: { task in
+                    previewTask = task
+                },
+                onToggleVideoMute: { task in
+                    toggleVideoMute(task)
+                },
+                onDownload: { task in
+                    store.downloadResult(task)
+                },
+                onCopy: { task in
+                    store.copyResultURL(task)
+                },
+                onReveal: { task in
+                    store.revealResultInFinder(task)
+                },
+                onUseAsReference: { task in
+                    store.useResultAsReference(task)
+                },
+                onApply: {
+                    store.applyTaskParameters(group.representative)
+                },
+                onStar: {
+                    store.toggleStar(group)
+                },
+                onDelete: {
+                    store.delete(group)
+                }
+            ) {
+                store.selectedTaskID = group.representative.id
+            }
+        } else {
+            let task = group.representative
+            MediaGeneratorTaskCard(
+                task: task,
+                isSelected: store.selectedTaskID == task.id,
+                isVideoMuted: isVideoMuted(task),
+                onPreview: {
+                    previewTask = task
+                },
+                onToggleVideoMute: {
+                    toggleVideoMute(task)
+                },
+                onDownload: {
+                    store.downloadResult(task)
+                },
+                onCopy: {
+                    store.copyResultURL(task)
+                },
+                onReveal: {
+                    store.revealResultInFinder(task)
+                },
+                onUseAsReference: {
+                    store.useResultAsReference(task)
+                },
+                onApply: {
+                    store.applyTaskParameters(task)
+                },
+                onStar: {
+                    store.toggleStar(task)
+                },
+                onDelete: {
+                    store.delete(task)
+                }
+            ) {
+                store.selectedTaskID = task.id
+            }
+        }
     }
 }
 
@@ -1828,6 +1912,7 @@ private struct MediaGeneratorPreviewOverlay: View {
 private struct MediaGeneratorReferencePreviewOverlay: View {
     var reference: MediaGeneratorReference
     var url: URL
+    var onDownload: () -> Void
     var onClose: () -> Void
 
     var body: some View {
@@ -1853,10 +1938,17 @@ private struct MediaGeneratorReferencePreviewOverlay: View {
                             .textSelection(.enabled)
                     }
                     Spacer()
-                    Button(action: onClose) {
-                        Image(systemName: "xmark")
+                    HStack(spacing: 8) {
+                        Button(action: onDownload) {
+                            Label("Download", systemImage: "arrow.down.to.line")
+                        }
+                        .buttonStyle(MediaGeneratorPillButtonStyle())
+
+                        Button(action: onClose) {
+                            Image(systemName: "xmark")
+                        }
+                        .buttonStyle(MediaGeneratorPillButtonStyle())
                     }
-                    .buttonStyle(MediaGeneratorPillButtonStyle())
                 }
                 .padding(14)
                 .background(.black.opacity(0.44), in: RoundedRectangle(cornerRadius: 14, style: .continuous))

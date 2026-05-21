@@ -111,6 +111,10 @@
               "type": "integer",
               "minimum": 1,
               "maximum": 50
+            },
+            "cookie_file": {
+              "type": "string",
+              "description": "Optional local yt-dlp cookies.txt path. Defaults to the SmartYT saved cookie file when configured."
             }
           }
         },
@@ -137,6 +141,23 @@
           "Inspect this YouTube URL",
           "Sniff media information from this video link"
         ],
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "url"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "url": {
+              "type": "string",
+              "format": "uri"
+            },
+            "cookie_file": {
+              "type": "string",
+              "description": "Optional local yt-dlp cookies.txt path. Defaults to the SmartYT saved cookie file when configured."
+            }
+          }
+        },
         "exports": {
           "codex": {
             "enabled": true,
@@ -154,6 +175,35 @@
           "Download audio from this URL",
           "Download the video from this link"
         ],
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "url"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "url": {
+              "type": "string",
+              "format": "uri"
+            },
+            "download_kind": {
+              "type": "string",
+              "enum": [
+                "audio",
+                "image",
+                "video",
+                "both"
+              ]
+            },
+            "output_dir": {
+              "type": "string"
+            },
+            "cookie_file": {
+              "type": "string",
+              "description": "Optional local yt-dlp cookies.txt path. Defaults to the SmartYT saved cookie file when configured."
+            }
+          }
+        },
         "exports": {
           "codex": {
             "enabled": true,
@@ -171,6 +221,36 @@
           "Download this video and give me the local file path",
           "Fetch this media file now so it can be imported into the media library"
         ],
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "url"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "url": {
+              "type": "string",
+              "format": "uri"
+            },
+            "download_kind": {
+              "type": "string",
+              "enum": [
+                "audio",
+                "image",
+                "video",
+                "both"
+              ]
+            },
+            "output_dir": {
+              "type": "string",
+              "description": "Optional local directory for completed artifacts. Defaults to ~/Downloads/SmartYT/<job-id>."
+            },
+            "cookie_file": {
+              "type": "string",
+              "description": "Optional local yt-dlp cookies.txt path. Defaults to the SmartYT saved cookie file when configured."
+            }
+          }
+        },
         "exports": {
           "codex": {
             "enabled": true,

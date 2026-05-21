@@ -119,6 +119,79 @@ struct SmartYTMediaGearWindow: View {
                     }
             }
 
+            VStack(alignment: .leading, spacing: 9) {
+                Text("YouTube Cookies")
+                    .font(.geeDisplaySemibold(11))
+                    .foregroundStyle(.white.opacity(0.52))
+
+                HStack(spacing: 8) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "key")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.cyan.opacity(0.8))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(model.cookieStatusTitle)
+                                .font(.geeDisplaySemibold(11))
+                                .foregroundStyle(.white.opacity(0.78))
+                            Text(model.cookieStatusDetail)
+                                .font(.geeBody(10))
+                                .foregroundStyle(.white.opacity(0.42))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                    .padding(.horizontal, 11)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: 42)
+                    .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .stroke(Color.white.opacity(0.09), lineWidth: 0.8)
+                    }
+
+                    Button {
+                        model.chooseCookieFile()
+                    } label: {
+                        Image(systemName: "square.and.arrow.down")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.black.opacity(0.82))
+                            .frame(width: 34, height: 34)
+                            .background(Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Save a cookies.txt file for yt-dlp")
+
+                    Button {
+                        model.refreshCookieFileFromBrowser()
+                    } label: {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.68))
+                            .frame(width: 34, height: 34)
+                            .background(Color.white.opacity(0.065), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Refresh cookies from Chrome")
+
+                    Button {
+                        model.clearCookieFile()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.62))
+                            .frame(width: 34, height: 34)
+                            .background(Color.white.opacity(0.065), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Clear saved cookies")
+                }
+
+                Text("Use a browser cookies.txt or JSON export when YouTube asks for login verification.")
+                    .font(.geeBody(10))
+                    .foregroundStyle(.white.opacity(0.36))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             VStack(spacing: 9) {
                 SmartYTCommandButton(
                     title: "Sniff media",
@@ -247,6 +320,18 @@ struct SmartYTMediaGearWindow: View {
                 Spacer()
 
                 Button {
+                    model.deleteCompletedAndFailedJobs()
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.66))
+                        .frame(width: 30, height: 30)
+                        .background(Color.white.opacity(0.065), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .help("Delete completed and failed job records")
+
+                Button {
                     model.loadJobs()
                 } label: {
                     Image(systemName: "arrow.clockwise")
@@ -268,12 +353,13 @@ struct SmartYTMediaGearWindow: View {
             } else {
                 LazyVStack(spacing: 9) {
                     ForEach(model.jobs) { job in
-                        Button {
-                            model.selectedJobID = job.id
-                        } label: {
-                            SmartYTJobRow(job: job, isSelected: model.selectedJobID == job.id)
-                        }
-                        .buttonStyle(.plain)
+                        SmartYTJobRow(
+                            job: job,
+                            isSelected: model.selectedJobID == job.id,
+                            onSelect: { model.selectedJobID = job.id },
+                            onCancel: job.canCancel ? { model.cancel(jobID: job.id) } : nil,
+                            onDelete: !job.canCancel ? { model.deleteJob(id: job.id) } : nil
+                        )
                     }
                 }
             }
@@ -299,6 +385,34 @@ struct SmartYTMediaGearWindow: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(model.selectedJob == nil)
+
+                if model.selectedJob?.canCancel == true {
+                    Button {
+                        model.cancelSelectedJob()
+                    } label: {
+                        Label("Cancel", systemImage: "stop.fill")
+                            .font(.geeDisplaySemibold(11))
+                            .foregroundStyle(.white.opacity(0.72))
+                            .padding(.horizontal, 10)
+                            .frame(height: 28)
+                            .background(Color.red.opacity(0.16), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if let selectedJob = model.selectedJob, !selectedJob.canCancel {
+                    Button {
+                        model.deleteSelectedJob()
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                            .font(.geeDisplaySemibold(11))
+                            .foregroundStyle(.white.opacity(0.72))
+                            .padding(.horizontal, 10)
+                            .frame(height: 28)
+                            .background(Color.red.opacity(0.16), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
             }
 
             if let job = model.selectedJob {
@@ -532,37 +646,93 @@ private struct SmartYTThumbnailPlaceholder: View {
 private struct SmartYTJobRow: View {
     let job: SmartYTMediaJob
     let isSelected: Bool
+    let onSelect: () -> Void
+    var onCancel: (() -> Void)?
+    var onDelete: (() -> Void)?
 
     var body: some View {
-        HStack(spacing: 11) {
-            Image(systemName: job.action.systemImage)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(statusColor.opacity(0.95))
-                .frame(width: 30, height: 30)
-                .background(statusColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 11) {
+                Image(systemName: job.action.systemImage)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(statusColor.opacity(0.95))
+                    .frame(width: 30, height: 30)
+                    .background(statusColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(job.title)
-                    .font(.geeDisplaySemibold(12))
-                    .foregroundStyle(.white.opacity(0.82))
-                    .lineLimit(1)
-                Text(job.url)
-                    .font(.geeBody(10))
-                    .foregroundStyle(.white.opacity(0.38))
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(job.title)
+                        .font(.geeDisplaySemibold(12))
+                        .foregroundStyle(.white.opacity(0.82))
+                        .lineLimit(1)
+                    Text(job.url)
+                        .font(.geeBody(10))
+                        .foregroundStyle(.white.opacity(0.38))
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+
+                VStack(alignment: .trailing, spacing: 6) {
+                    Text(job.status.title)
+                        .font(.geeDisplaySemibold(10))
+                        .foregroundStyle(statusColor.opacity(0.9))
+                        .padding(.horizontal, 7)
+                        .frame(height: 22)
+                        .background(statusColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+
+                    if let onCancel {
+                        Button(action: onCancel) {
+                            Image(systemName: "stop.fill")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.74))
+                                .frame(width: 24, height: 24)
+                                .background(Color.red.opacity(0.16), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Cancel job")
+                    }
+
+                    if let onDelete {
+                        Button(action: onDelete) {
+                            Image(systemName: "trash")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.74))
+                                .frame(width: 24, height: 24)
+                                .background(Color.red.opacity(0.14), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Delete job record")
+                    }
+                }
             }
 
-            Spacer(minLength: 0)
-
-            Text(job.status.title)
-                .font(.geeDisplaySemibold(10))
-                .foregroundStyle(statusColor.opacity(0.9))
-                .padding(.horizontal, 7)
-                .frame(height: 22)
-                .background(statusColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            if let progressLabel = job.progressLabel {
+                VStack(alignment: .leading, spacing: 5) {
+                    SmartYTProgressBar(
+                        progress: job.normalizedProgressFraction ?? (job.canCancel ? 0.02 : 0),
+                        tint: statusColor
+                    )
+                    HStack(spacing: 8) {
+                        Text(progressLabel)
+                            .font(.geeBody(10))
+                            .foregroundStyle(.white.opacity(0.52))
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        if let fraction = job.normalizedProgressFraction,
+                           job.status == .running || job.status == .completed
+                        {
+                            Text("\(Int((fraction * 100).rounded()))%")
+                                .font(.geeDisplaySemibold(10))
+                                .foregroundStyle(.white.opacity(0.56))
+                        }
+                    }
+                }
+            }
         }
         .padding(.horizontal, 11)
-        .frame(height: 54)
+        .padding(.vertical, 10)
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .onTapGesture(perform: onSelect)
         .background(
             isSelected ? Color.white.opacity(0.11) : Color.white.opacity(0.055),
             in: RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -578,6 +748,7 @@ private struct SmartYTJobRow: View {
         case .queued: .white.opacity(0.68)
         case .running: .blue
         case .completed: .green
+        case .cancelled: .red
         case .failed: .orange
         }
     }
@@ -604,6 +775,29 @@ private struct SmartYTJobSummary: View {
                 .foregroundStyle(.white.opacity(0.44))
                 .textSelection(.enabled)
 
+            if let progressLabel = job.progressLabel {
+                VStack(alignment: .leading, spacing: 7) {
+                    SmartYTProgressBar(
+                        progress: job.normalizedProgressFraction ?? (job.canCancel ? 0.02 : 0),
+                        tint: summaryTint
+                    )
+                    HStack(spacing: 8) {
+                        Text(progressLabel)
+                            .font(.geeBody(11))
+                            .foregroundStyle(.white.opacity(0.62))
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        if let fraction = job.normalizedProgressFraction,
+                           job.status == .running || job.status == .completed
+                        {
+                            Text("\(Int((fraction * 100).rounded()))%")
+                                .font(.geeDisplaySemibold(10))
+                                .foregroundStyle(.white.opacity(0.62))
+                        }
+                    }
+                }
+            }
+
             if let error = job.errorMessage {
                 Text(error)
                     .font(.geeBody(12))
@@ -618,5 +812,34 @@ private struct SmartYTJobSummary: View {
             RoundedRectangle(cornerRadius: 11, style: .continuous)
                 .stroke(Color.white.opacity(0.09), lineWidth: 0.8)
         }
+    }
+
+    private var summaryTint: Color {
+        switch job.status {
+        case .queued: .white.opacity(0.7)
+        case .running: .blue
+        case .completed: .green
+        case .cancelled: .red
+        case .failed: .orange
+        }
+    }
+}
+
+private struct SmartYTProgressBar: View {
+    let progress: Double
+    let tint: Color
+
+    var body: some View {
+        GeometryReader { proxy in
+            let clamped = min(max(progress, 0), 1)
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.white.opacity(0.08))
+                Capsule()
+                    .fill(tint.opacity(0.84))
+                    .frame(width: max(proxy.size.width * clamped, clamped > 0 ? 6 : 0))
+            }
+        }
+        .frame(height: 5)
     }
 }

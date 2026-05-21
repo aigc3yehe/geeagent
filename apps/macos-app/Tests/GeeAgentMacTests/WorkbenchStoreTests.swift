@@ -569,6 +569,11 @@ final class WorkbenchStoreTests: XCTestCase {
             "The mountain appearance switch should hide persona media and leave the global background or abstract field visible"
         )
         XCTAssertEqual(store.effectiveHomeVisualMode, .abstract)
+        XCTAssertEqual(
+            store.activeLive2DBundlePath,
+            "/tmp/manga/model3.json",
+            "Desktop Live2D presentation should still be able to resolve the persona bundle while Home is switched to abstract"
+        )
     }
 
     func testNonLive2DPersonaKeepsLive2DDisabledUntilBundleExists() throws {

@@ -914,7 +914,8 @@ enum GeeHostToolRouter {
             let payload = await SmartYTMediaGearStore.shared.runImmediateAgentDownload(
                 url: url,
                 downloadKind: downloadKind,
-                outputDirectory: stringArg(args, "output_dir") ?? stringArg(args, "output_directory")
+                outputDirectory: stringArg(args, "output_dir") ?? stringArg(args, "output_directory"),
+                cookieFilePath: stringArg(args, "cookie_file") ?? stringArg(args, "cookies_file")
             )
             return .completed(toolID: toolID, payload: payload)
         }
@@ -924,7 +925,8 @@ enum GeeHostToolRouter {
             url: url,
             downloadKind: downloadKind,
             language: stringArg(args, "language"),
-            outputDirectory: stringArg(args, "output_dir") ?? stringArg(args, "output_directory")
+            outputDirectory: stringArg(args, "output_dir") ?? stringArg(args, "output_directory"),
+            cookieFilePath: stringArg(args, "cookie_file") ?? stringArg(args, "cookies_file")
         )
         return .completed(toolID: toolID, payload: payload)
     }
@@ -1399,7 +1401,11 @@ enum GeeHostToolRouter {
                 "required": ["url"],
                 "additionalProperties": false,
                 "properties": [
-                    "url": ["type": "string", "format": "uri"]
+                    "url": ["type": "string", "format": "uri"],
+                    "cookie_file": [
+                        "type": "string",
+                        "description": "Optional local yt-dlp cookies.txt path. Defaults to the SmartYT saved cookie file when configured."
+                    ]
                 ]
             ]
         case (SmartYTMediaGearDescriptor.gearID, "smartyt.search_candidates"):
@@ -1421,7 +1427,11 @@ enum GeeHostToolRouter {
                         "type": "object",
                         "additionalProperties": ["type": ["string", "number", "boolean"]]
                     ],
-                    "limit": ["type": "integer", "minimum": 1, "maximum": 50]
+                    "limit": ["type": "integer", "minimum": 1, "maximum": 50],
+                    "cookie_file": [
+                        "type": "string",
+                        "description": "Optional local yt-dlp cookies.txt path. Defaults to the SmartYT saved cookie file when configured."
+                    ]
                 ]
             ]
         case (SmartYTMediaGearDescriptor.gearID, "smartyt.get_task"):
@@ -1449,7 +1459,11 @@ enum GeeHostToolRouter {
                 "properties": [
                     "url": ["type": "string", "format": "uri"],
                     "download_kind": ["type": "string", "enum": ["audio", "image", "video", "both"]],
-                    "output_dir": ["type": "string"]
+                    "output_dir": ["type": "string"],
+                    "cookie_file": [
+                        "type": "string",
+                        "description": "Optional local yt-dlp cookies.txt path. Defaults to the SmartYT saved cookie file when configured."
+                    ]
                 ]
             ]
         case (SmartYTMediaGearDescriptor.gearID, "smartyt.download_now"):
@@ -1463,6 +1477,10 @@ enum GeeHostToolRouter {
                     "output_dir": [
                         "type": "string",
                         "description": "Optional local directory for completed artifacts. Defaults to ~/Downloads/SmartYT/<job-id>."
+                    ],
+                    "cookie_file": [
+                        "type": "string",
+                        "description": "Optional local yt-dlp cookies.txt path. Defaults to the SmartYT saved cookie file when configured."
                     ]
                 ]
             ]

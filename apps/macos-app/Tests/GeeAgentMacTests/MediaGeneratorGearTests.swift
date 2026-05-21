@@ -349,6 +349,35 @@ final class MediaGeneratorGearTests: XCTestCase {
         XCTAssertEqual(local.previewURL, URL(fileURLWithPath: "/tmp/reference.webp"))
     }
 
+    @MainActor
+    func testReferencePreviewDownloadCopiesLocalReferenceToDestination() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-generator-reference-download-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let sourceURL = root.appendingPathComponent("reference.webp")
+        let destinationURL = root.appendingPathComponent("downloaded-reference.webp")
+        try Data("reference-image".utf8).write(to: sourceURL)
+        let store = MediaGeneratorGearStore(database: MediaGeneratorFileDatabase(rootURL: root.appendingPathComponent("gear-data", isDirectory: true)))
+        let reference = MediaGeneratorReference(
+            id: "local",
+            url: nil,
+            localPath: sourceURL.path,
+            displayName: "reference.webp"
+        )
+
+        await store.saveReference(reference, to: destinationURL)
+
+        XCTAssertEqual(try String(contentsOf: destinationURL, encoding: .utf8), "reference-image")
+        XCTAssertTrue(store.statusMessage.contains("Downloaded reference image"))
+    }
+
+    func testTaskListScrollToTopButtonVisibilityUsesOffsetThreshold() {
+        XCTAssertFalse(MediaGeneratorTaskListScrollState.shouldShowScrollToTopButton(topOffset: 0))
+        XCTAssertFalse(MediaGeneratorTaskListScrollState.shouldShowScrollToTopButton(topOffset: -48))
+        XCTAssertTrue(MediaGeneratorTaskListScrollState.shouldShowScrollToTopButton(topOffset: -120))
+    }
+
     func testMediaGeneratorFileDatabaseClearsPreBatchTaskHistory() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-generator-legacy-task-clear-tests-\(UUID().uuidString)", isDirectory: true)
@@ -842,6 +871,14 @@ final class MediaGeneratorGearTests: XCTestCase {
                 "veo3.1",
                 "veo3.1_fast",
                 "veo3.1_lite",
+                "veo3.1-4k-t",
+                "veo3.1-components-4k-t",
+                "veo3.1-pro-4k-t",
+                "veo3.1-pro-t",
+                "veo3.1-t",
+                "veo3.1-components-t",
+                "veo3-pro-t",
+                "veo3-t",
                 "seedance-2",
                 "seedance-2-fast"
             ]
@@ -864,6 +901,16 @@ final class MediaGeneratorGearTests: XCTestCase {
         XCTAssertTrue(veoFields?.contains("batch_count") == true)
         XCTAssertTrue(veoFields?.contains("generation_type") == true)
         XCTAssertTrue(veoFields?.contains("image_urls") == true)
+        let veoAlternateFields = models?.first { $0["model"] as? String == "veo3.1-pro-t" }?["supported_fields"] as? [String]
+        XCTAssertTrue(veoAlternateFields?.contains("imageUrls") == true)
+        XCTAssertTrue(veoAlternateFields?.contains("duration") == true)
+        XCTAssertFalse(veoAlternateFields?.contains("generation_type") == true)
+        XCTAssertFalse(veoAlternateFields?.contains("enable_translation") == true)
+        let veoAlternateValues = models?.first { $0["model"] as? String == "veo3.1-pro-t" }?["supported_values"] as? [String: Any]
+        XCTAssertEqual(veoAlternateValues?["aspect_ratio"] as? [String], ["16:9", "9:16"])
+        XCTAssertEqual(veoAlternateValues?["resolution"] as? [String], ["720p", "1080p", "4k"])
+        XCTAssertEqual(veoAlternateValues?["duration"] as? [Int], [8])
+        XCTAssertEqual(veoAlternateValues?["reference_url_schemes"] as? [String], ["http", "https"])
         let seedanceFields = models?.first { $0["model"] as? String == "seedance-2" }?["supported_fields"] as? [String]
         XCTAssertTrue(seedanceFields?.contains("batch_count") == true)
         XCTAssertTrue(seedanceFields?.contains("duration") == true)
@@ -873,12 +920,46 @@ final class MediaGeneratorGearTests: XCTestCase {
         XCTAssertEqual(referenceLimits?["nano-banana-pro"], 8)
         XCTAssertEqual(referenceLimits?["gpt-image-2"], 16)
         XCTAssertEqual(referenceLimits?["veo3.1_fast"], 3)
+        XCTAssertEqual(referenceLimits?["veo3.1-pro-t"], 3)
         XCTAssertEqual(referenceLimits?["seedance-2"], 9)
         let batchConstraint = constraints?["batch_count"] as? [String: Int]
         XCTAssertEqual(batchConstraint?["maximum"], 4)
         XCTAssertEqual(constraints?["max_reference_file_bytes"] as? Int64, 31_457_280)
         let placeholders = payload["placeholders"] as? [String: String]
         XCTAssertTrue(placeholders?["audio"]?.contains("Xenodia audio") == true)
+    }
+
+    func testVeoAlternateRouteRequestFieldsUseDocumentedPayloadShape() throws {
+        let fields = try XenodiaImageGenerationClient.videoRequestFields(
+            modelID: .veo31ProT,
+            prompt: "Make an eight second cinematic product reveal",
+            aspectRatio: .story,
+            resolution: .p1080,
+            references: [
+                MediaGeneratorReference(id: "ref-1", url: "https://cdn.example/ref-1.png", localPath: nil, displayName: "ref-1.png"),
+                MediaGeneratorReference(id: "ref-2", url: "https://cdn.example/ref-2.png", localPath: nil, displayName: "ref-2.png")
+            ],
+            parameters: [
+                "duration": "8",
+                "watermark": "true",
+                "generation_type": "REFERENCE_2_VIDEO",
+                "enable_translation": "true",
+                "seed": "12345",
+                "callback_url": "https://example.com/callback"
+            ]
+        )
+
+        XCTAssertEqual(fields["model"] as? String, "veo3.1-pro-t")
+        XCTAssertEqual(fields["prompt"] as? String, "Make an eight second cinematic product reveal")
+        XCTAssertEqual(fields["aspect_ratio"] as? String, "9:16")
+        XCTAssertEqual(fields["resolution"] as? String, "1080p")
+        XCTAssertEqual(fields["duration"] as? Int, 8)
+        XCTAssertEqual(fields["watermark"] as? Bool, true)
+        XCTAssertEqual(fields["imageUrls"] as? [String], ["https://cdn.example/ref-1.png", "https://cdn.example/ref-2.png"])
+        XCTAssertNil(fields["generationType"])
+        XCTAssertNil(fields["enableTranslation"])
+        XCTAssertNil(fields["seeds"])
+        XCTAssertNil(fields["callBackUrl"])
     }
 
     @MainActor
@@ -1066,6 +1147,52 @@ final class MediaGeneratorGearTests: XCTestCase {
         XCTAssertEqual(store.tasks.count, 1)
         XCTAssertEqual(store.tasks.first?.parameters["generation_type"], "REFERENCE_2_VIDEO")
         XCTAssertEqual(store.tasks.first?.references.map(\.url), ["https://cdn.example/frame.png"])
+    }
+
+    @MainActor
+    func testVeoAlternateRouteReferenceURLsDoNotPersistLegacyVeoParameters() async {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-generator-veo-t-reference-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MediaGeneratorGearStore(database: MediaGeneratorFileDatabase(rootURL: root))
+
+        _ = await store.createAgentTask(args: [
+            "category": "video",
+            "model": "veo3.1-pro-t",
+            "prompt": "Animate this product frame",
+            "reference_urls": ["https://cdn.example/frame.png"],
+            "duration": 8,
+            "generation_type": "REFERENCE_2_VIDEO",
+            "enable_translation": true
+        ])
+
+        XCTAssertEqual(store.tasks.count, 1)
+        XCTAssertEqual(store.tasks.first?.modelID, .veo31ProT)
+        XCTAssertEqual(store.tasks.first?.parameters["duration"], "8")
+        XCTAssertEqual(store.tasks.first?.references.map(\.url), ["https://cdn.example/frame.png"])
+        XCTAssertNil(store.tasks.first?.parameters["generation_type"])
+        XCTAssertNil(store.tasks.first?.parameters["enable_translation"])
+    }
+
+    @MainActor
+    func testVeoAlternateRouteRejectsAssetReferencesBeforeProviderCall() async {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-generator-veo-t-asset-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MediaGeneratorGearStore(database: MediaGeneratorFileDatabase(rootURL: root))
+
+        let payload = await store.createAgentTask(args: [
+            "category": "video",
+            "model": "veo3.1-t",
+            "prompt": "Animate this product frame",
+            "reference_urls": ["asset://frame"]
+        ])
+
+        XCTAssertEqual(payload["gear_id"] as? String, MediaGeneratorGearDescriptor.gearID)
+        XCTAssertEqual(payload["capability_id"] as? String, "media_generator.create_task")
+        XCTAssertEqual(payload["status"] as? String, "failed")
+        XCTAssertTrue((payload["error"] as? String)?.contains("http, https") == true)
+        XCTAssertTrue(store.tasks.isEmpty)
     }
 
     @MainActor

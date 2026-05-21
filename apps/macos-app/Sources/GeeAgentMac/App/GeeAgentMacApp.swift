@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Shared store wired through the environment so the menu-bar controller
     /// and the main window point at the same snapshot.
     let workbenchStore: WorkbenchStore = WorkbenchStore(runtimeClient: NativeWorkbenchRuntimeClient())
+    lazy var live2DDesktopCompanionController = Live2DDesktopCompanionController(store: workbenchStore)
     private var menuBarController: MenuBarController?
     private var audioBarController: AudioBarController?
 
@@ -21,6 +22,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let controller = MenuBarController(store: workbenchStore, audioBarController: audioController)
         controller.install()
         self.menuBarController = controller
+        live2DDesktopCompanionController.quickInputPresenter = { [weak controller] in
+            controller?.presentQuickInput()
+        }
+        live2DDesktopCompanionController.audioCapturePresenter = { [weak audioController] in
+            audioController?.showAudioBar()
+        }
 
         let store = workbenchStore
         Task { @MainActor in
@@ -39,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         TelegramBridgeGearStore.shared.stopInboundService()
+        live2DDesktopCompanionController.hide()
         workbenchStore.shutdownRuntime()
         menuBarController?.uninstall()
         audioBarController?.uninstall()
@@ -79,7 +87,10 @@ struct GeeAgentMacApp: App {
 
     var body: some Scene {
         Window("GeeAgent", id: "main") {
-            WorkbenchRootView(store: appDelegate.workbenchStore)
+            WorkbenchRootView(
+                store: appDelegate.workbenchStore,
+                live2DDesktopCompanionController: appDelegate.live2DDesktopCompanionController
+            )
         }
         .defaultSize(width: 1380, height: 860)
         .defaultLaunchBehavior(.presented)
