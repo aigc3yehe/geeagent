@@ -148,6 +148,7 @@ struct HomeWidgetStoredPoint: Codable, Equatable {
 }
 
 private struct BTCPriceHomeWidget: View {
+    @Environment(\.appLanguage) private var appLanguage
     @StateObject private var model = BTCPriceWidgetModel()
 
     var body: some View {
@@ -155,7 +156,7 @@ private struct BTCPriceHomeWidget: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
                     WidgetIcon(symbol: "bitcoinsign.circle.fill", tint: .orange)
-                    Text("BTC Pulse")
+                    Text(AppLocalization.string("home.widget.btc.title", defaultValue: "BTC Pulse", language: appLanguage))
                         .font(.geeDisplaySemibold(13))
                         .foregroundStyle(.white.opacity(0.9))
                     Spacer()
@@ -168,7 +169,7 @@ private struct BTCPriceHomeWidget: View {
                         .monospacedDigit()
                         .foregroundStyle(.white.opacity(0.96))
                         .minimumScaleFactor(0.75)
-                    Text(model.caption)
+                    Text(caption)
                         .font(.geeBodyMedium(11))
                         .foregroundStyle(.white.opacity(0.48))
                         .lineLimit(1)
@@ -179,12 +180,29 @@ private struct BTCPriceHomeWidget: View {
             await model.start()
         }
     }
+
+    private var caption: String {
+        if let updatedAt = model.updatedAt {
+            let time = updatedAt.formatted(date: .omitted, time: .shortened)
+            return AppLocalization.format(
+                "home.widget.btc.updated",
+                defaultValue: "Updated %@",
+                language: appLanguage,
+                time
+            )
+        }
+        if model.isWaitingForNetwork {
+            return AppLocalization.string("home.widget.btc.waiting", defaultValue: "Waiting for network", language: appLanguage)
+        }
+        return AppLocalization.string("home.widget.btc.coinbaseSpot", defaultValue: "Coinbase spot price", language: appLanguage)
+    }
 }
 
 @MainActor
 private final class BTCPriceWidgetModel: ObservableObject {
     @Published var priceText = "$ --"
-    @Published var caption = "Coinbase spot price"
+    @Published var updatedAt: Date?
+    @Published var isWaitingForNetwork = false
     @Published var isLive = false
 
     private var didStart = false
@@ -209,10 +227,12 @@ private final class BTCPriceWidgetModel: ObservableObject {
             formatter.currencyCode = "USD"
             formatter.maximumFractionDigits = 0
             priceText = formatter.string(from: NSNumber(value: value)) ?? "$ \(Int(value))"
-            caption = "Updated \(Date().formatted(date: .omitted, time: .shortened))"
+            updatedAt = Date()
+            isWaitingForNetwork = false
             isLive = true
         } catch {
-            caption = "Waiting for network"
+            updatedAt = nil
+            isWaitingForNetwork = true
             isLive = false
         }
     }
@@ -227,6 +247,7 @@ private struct CoinbaseSpotResponse: Decodable {
 }
 
 private struct SystemMonitorHomeWidget: View {
+    @Environment(\.appLanguage) private var appLanguage
     @StateObject private var model = SystemMonitorWidgetModel()
 
     var body: some View {
@@ -234,7 +255,7 @@ private struct SystemMonitorHomeWidget: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
                     WidgetIcon(symbol: "cpu.fill", tint: .cyan)
-                    Text("System Monitor")
+                    Text(AppLocalization.string("home.widget.systemMonitor.title", defaultValue: "System Monitor", language: appLanguage))
                         .font(.geeDisplaySemibold(13))
                         .foregroundStyle(.white.opacity(0.9))
                     Spacer()

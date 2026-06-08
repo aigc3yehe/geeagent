@@ -7,12 +7,12 @@ struct LogsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center) {
-                Text("Logs")
+                Text(store.localizedString("logs.title", defaultValue: "Logs"))
                     .font(.geeDisplaySemibold(22))
 
                 Spacer()
 
-                Picker("Logs", selection: $selectedTab) {
+                Picker(store.localizedString("logs.title", defaultValue: "Logs"), selection: $selectedTab) {
                     ForEach(LogsTab.allCases) { tab in
                         Text(tab.title).tag(tab)
                     }
@@ -30,7 +30,7 @@ struct LogsView: View {
                 systemPanes
             }
         }
-        .navigationTitle("Logs")
+        .navigationTitle(store.localizedString("logs.title", defaultValue: "Logs"))
     }
 
     private var systemPanes: some View {
@@ -52,8 +52,8 @@ private enum LogsTab: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .agentWork: "Agent Work"
-        case .systemPanes: "System"
+        case .agentWork: AppLocalization.string("logs.agentWork", defaultValue: "Agent Work")
+        case .systemPanes: AppLocalization.string("logs.system", defaultValue: "System")
         }
     }
 }

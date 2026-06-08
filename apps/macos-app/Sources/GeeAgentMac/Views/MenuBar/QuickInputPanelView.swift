@@ -71,7 +71,7 @@ struct QuickInputPanelView: View {
                 onSubmit: submit
             )
             .frame(height: fieldRowHeight)
-            .accessibilityLabel("Quick input prompt")
+            .accessibilityLabel(AppLocalization.string("quickInput.promptAccessibility", defaultValue: "Quick input prompt"))
 
             if store.isSubmittingQuickInput {
                 ProgressView()
@@ -114,12 +114,12 @@ struct QuickInputPanelView: View {
         .font(.geeBody(11))
         .foregroundStyle(.white.opacity(0.54))
         .padding(.horizontal, 4)
-        .accessibilityLabel("Quick input routing")
+        .accessibilityLabel(AppLocalization.string("quickInput.routingAccessibility", defaultValue: "Quick input routing"))
         .accessibilityValue(routingModeText)
     }
 
     private var routingModeText: String {
-        "Starts a new conversation tagged quick-input."
+        AppLocalization.string("quickInput.routing", defaultValue: "Starts a new conversation tagged quick-input.")
     }
 
     private var submitEnabled: Bool {
@@ -128,13 +128,13 @@ struct QuickInputPanelView: View {
     }
 
     private var placeholderText: String {
-        store.canUseQuickInput ? store.quickInputHint : "Preview only."
+        store.canUseQuickInput ? store.quickInputHint : AppLocalization.string("quickInput.previewOnly", defaultValue: "Preview only.")
     }
 
     private var readOnlyNotice: some View {
         Text(
             store.snapshot.interactionCapabilities.readOnlyReason
-                ?? "Open the desktop app to use quick input."
+                ?? AppLocalization.string("quickInput.readOnly", defaultValue: "Open the desktop app to use quick input.")
         )
         .font(.geeBody(11))
         .foregroundStyle(.white.opacity(0.6))
@@ -162,7 +162,7 @@ struct QuickInputPanelView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 if outcome.kind.needsChatContinuation {
                     Button(action: onOpenChat) {
-                        Label("Open Chat", systemImage: "arrow.up.right.square")
+                        Label(AppLocalization.string("quickInput.openChat", defaultValue: "Open Chat"), systemImage: "arrow.up.right.square")
                             .font(.geeBodyMedium(11))
                     }
                     .buttonStyle(.plain)

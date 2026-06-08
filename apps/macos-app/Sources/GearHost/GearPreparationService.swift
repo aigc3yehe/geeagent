@@ -157,6 +157,10 @@ actor GearPreparationService {
             return await runPythonUserInstall(packages: ["twikit", "httpx"])
         case "python3.install.user.wespy":
             return await runPythonUserInstall(packages: ["wespy"])
+        case "python3.install.user.xiaohongshu-cli":
+            return await runPythonUserInstall(packages: ["xiaohongshu-cli"])
+        case "python3.install.user.dy-cli":
+            return await runPythonUserInstall(packages: ["dy-cli"])
         default:
             return GearCommandResult(exitCode: 1, stdout: "", stderr: "Unknown installer recipe `\(id)`.")
         }

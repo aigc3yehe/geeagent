@@ -88,6 +88,15 @@ final class WorkbenchStore {
             UserDefaults.standard.set(autoConversationRoutingEnabled, forKey: PreferenceKey.autoConversationRouting)
         }
     }
+    var appLanguage: AppLanguage {
+        didSet {
+            AppLanguage.save(appLanguage)
+            audioCapture.setAppLanguage(appLanguage)
+            if oldValue.resolvedLanguage != appLanguage.resolvedLanguage {
+                snapshot = runtimeClient.loadSnapshot()
+            }
+        }
+    }
     var selectedSection: WorkbenchSection
     var homeSurfaceMode: HomeSurfaceMode = .companion
     var homeVisualEffectMode: HomeVisualEffectMode {
@@ -172,6 +181,7 @@ final class WorkbenchStore {
         let defaults = UserDefaults.standard
         let storedActiveAgentProfileID = defaults.string(forKey: PreferenceKey.activeAgentProfileId)
         self.snapshot = snapshot
+        self.appLanguage = AppLanguage.savedPreference(defaults: defaults)
         self.selectedSection = snapshot.preferredSection
         self.autoConversationRoutingEnabled = defaults.object(forKey: PreferenceKey.autoConversationRouting) as? Bool ?? true
         self.homeVisualEffectMode = HomeVisualEffectMode(rawValue: defaults.string(forKey: PreferenceKey.homeVisualEffect) ?? "") ?? .none
@@ -367,11 +377,11 @@ final class WorkbenchStore {
                     role: .user,
                     kind: .chat,
                     content: pendingChatTurn.content,
-                    timestampLabel: "Sending...",
+                    timestampLabel: localizedString("chat.sending", defaultValue: "Sending..."),
                     attachments: pendingChatTurn.attachments.map(conversationAttachment),
                     detailItems: pendingChatTurn.attachments.map { attachment in
                         ConversationMessageDetailItem(
-                            label: "Attachment",
+                            label: localizedString("attachment.title", defaultValue: "Attachment"),
                             value: "\(attachment.kind.rawValue) · \(attachment.displayName)"
                         )
                     }
@@ -409,23 +419,23 @@ final class WorkbenchStore {
             let statusLabel: String
             let content: String
             if !hasRuntimeUser {
-                statusLabel = "waiting for first event"
-                content = "Request sent. Waiting for the runtime to return the first agent event."
+                statusLabel = localizedString("chat.thinking.status.firstEvent", defaultValue: "waiting for first event")
+                content = localizedString("chat.thinking.firstEvent", defaultValue: "Request sent. Waiting for the runtime to return the first agent event.")
             } else if hasToolActivityAfterPendingUser {
-                statusLabel = "waiting for reply"
-                content = "Tool activity finished. Waiting for the assistant to write the reply."
+                statusLabel = localizedString("chat.thinking.status.reply", defaultValue: "waiting for reply")
+                content = localizedString("chat.thinking.reply", defaultValue: "Tool activity finished. Waiting for the assistant to write the reply.")
             } else {
-                statusLabel = "thinking"
-                content = "GeeAgent is thinking about the reply."
+                statusLabel = localizedString("chat.thinking.status.thinking", defaultValue: "thinking")
+                content = localizedString("chat.thinking.default", defaultValue: "GeeAgent is thinking about the reply.")
             }
             updated.messages.append(
                 ConversationMessage(
                     id: pendingChatTurn.thinkingMessageID,
                     role: .assistant,
                     kind: .thinking,
-                    headerTitle: "Thinking",
+                    headerTitle: localizedString("chat.thinking.title", defaultValue: "Thinking"),
                     content: content,
-                    timestampLabel: "Now",
+                    timestampLabel: GeeAgentTimeFormatting.conversationTimestampLabel("now", language: appLanguage),
                     statusLabel: statusLabel,
                     systemImage: "brain.head.profile",
                     tone: .info
@@ -434,7 +444,7 @@ final class WorkbenchStore {
         }
 
         updated.previewText = pendingChatTurn.content
-        updated.lastActivityLabel = "Now"
+        updated.lastActivityLabel = GeeAgentTimeFormatting.conversationTimestampLabel("now", language: appLanguage)
         return updated
     }
 
@@ -450,24 +460,24 @@ final class WorkbenchStore {
             return ""
         }
         guard let lastVisibleMessage = conversation.visibleMessages.last else {
-            return "Request sent. GeeAgent is starting the run..."
+            return localizedString("chat.activity.starting", defaultValue: "Request sent. GeeAgent is starting the run...")
         }
 
         switch lastVisibleMessage.kind {
         case .action:
-            return "Tool activity is running. Waiting for GeeAgent to continue..."
+            return localizedString("chat.activity.tool", defaultValue: "Tool activity is running. Waiting for GeeAgent to continue...")
         case .approval:
-            return "Waiting for approval before GeeAgent can continue..."
+            return localizedString("chat.activity.approval", defaultValue: "Waiting for approval before GeeAgent can continue...")
         case .thinking:
-            return "GeeAgent is thinking..."
+            return localizedString("chat.activity.thinking", defaultValue: "GeeAgent is thinking...")
         case .chat:
             switch lastVisibleMessage.role {
             case .user:
-                return "GeeAgent is thinking..."
+                return localizedString("chat.activity.thinking", defaultValue: "GeeAgent is thinking...")
             case .assistant:
-                return "GeeAgent is continuing the reply..."
+                return localizedString("chat.activity.continuing", defaultValue: "GeeAgent is continuing the reply...")
             case .system:
-                return "Request sent. Waiting for GeeAgent..."
+                return localizedString("chat.activity.waiting", defaultValue: "Request sent. Waiting for GeeAgent...")
             }
         }
     }
@@ -1272,12 +1282,24 @@ final class WorkbenchStore {
         guard let capabilityID = invocation.capabilityID else {
             return false
         }
-        return invocation.tool == .invokeCapability
-            && invocation.gearID == MediaGeneratorGearDescriptor.gearID
-            && (
-                capabilityID == "media_generator.get_task" ||
+        guard invocation.tool == .invokeCapability else {
+            return false
+        }
+        if invocation.gearID == MediaGeneratorGearDescriptor.gearID {
+            return capabilityID == "media_generator.get_task" ||
                 capabilityID == "media_generator.list_models"
-            )
+        }
+        if invocation.gearID == WeChatWatcherGearDescriptor.gearID {
+            return [
+                "wechat.auth_status",
+                "wechat.search_accounts",
+                "wechat.watch_account",
+                "wechat.list_watched_accounts",
+                "wechat.check_updates",
+                "wechat.latest_articles"
+            ].contains(capabilityID)
+        }
+        return false
     }
 
     private static func fastExternalInvocationOutcome(

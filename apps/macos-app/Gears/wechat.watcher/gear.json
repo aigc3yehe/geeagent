@@ -1,0 +1,267 @@
+{
+  "schema": "gee.gear.v1",
+  "id": "wechat.watcher",
+  "name": "WeChat Watcher",
+  "description": "Watch explicit WeChat public-account subscriptions by using a configured WeChat Official Account backend session, then discover new article URLs for local capture.",
+  "developer": "Gee",
+  "version": "0.1.0",
+  "category": "Knowledge",
+  "kind": "atmosphere",
+  "display_mode": "full_canvas",
+  "entry": {
+    "type": "native",
+    "native_id": "wechat.watcher"
+  },
+  "permissions": [
+    "network.web",
+    "filesystem.write.gear_storage"
+  ],
+  "agent": {
+    "enabled": true,
+    "capabilities": [
+      {
+        "id": "wechat.auth_status",
+        "title": "Get WeChat watcher auth status",
+        "description": "Report whether a WeChat Official Account backend session is configured for account search and update checks.",
+        "examples": [
+          "Check whether WeChat Watcher is authorized"
+        ],
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {}
+        },
+        "side_effect": "read_only",
+        "permissions": [
+          "gear_data.read",
+          "secret.keychain.read"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "low",
+            "requires_approval": false,
+            "skill_hint": "Use before WeChat Watcher calls to confirm whether the user has configured the WeChat Official Account backend session in GeeAgent. Do not ask Codex to read or handle raw cookies."
+          }
+        }
+      },
+      {
+        "id": "wechat.search_accounts",
+        "title": "Search WeChat public accounts",
+        "description": "Search WeChat Official Account backend results for public accounts by name. Requires a configured backend session.",
+        "examples": [
+          "Search for this WeChat public account name"
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "query"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "WeChat public-account display name or search phrase."
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50
+            },
+            "offset": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "side_effect": "network.wechat.search",
+        "permissions": [
+          "network.web",
+          "secret.keychain.read"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "medium",
+            "requires_approval": false,
+            "skill_hint": "Use only when the user asks to find a WeChat public account by name. Return the structured fake_id candidates from Gee; do not scrape websites or infer fakeid from public profile pages."
+          }
+        }
+      },
+      {
+        "id": "wechat.watch_account",
+        "title": "Add WeChat public account watch",
+        "description": "Add an explicit WeChat public-account search result to the local watchlist using its backend fakeid.",
+        "examples": [
+          "Watch this WeChat account from the search result"
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "fake_id",
+            "name"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "fake_id": {
+              "type": "string",
+              "description": "WeChat backend fakeid returned by wechat.search_accounts."
+            },
+            "name": {
+              "type": "string"
+            },
+            "avatar_url": {
+              "type": "string"
+            },
+            "intro": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        },
+        "side_effect": "write_gear_data",
+        "permissions": [
+          "gear_data.write"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "medium",
+            "requires_approval": false,
+            "skill_hint": "Use only after Gee returned a search candidate and the user asked to add that account to the WeChat Watcher watchlist. Do not invent fake_id values."
+          }
+        }
+      },
+      {
+        "id": "wechat.list_watched_accounts",
+        "title": "List watched WeChat accounts",
+        "description": "List local WeChat public-account watches and their latest check state.",
+        "examples": [
+          "Show watched WeChat accounts"
+        ],
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {}
+        },
+        "side_effect": "read_only",
+        "permissions": [
+          "gear_data.read"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "low",
+            "requires_approval": false,
+            "skill_hint": "Use to inspect WeChat Watcher watchlist records and latest check state. Do not expose raw WeChat session credentials."
+          }
+        }
+      },
+      {
+        "id": "wechat.check_updates",
+        "title": "Check watched WeChat account updates",
+        "description": "Fetch recent article metadata for watched WeChat public accounts and return newly discovered article URLs.",
+        "examples": [
+          "Check WeChat watched accounts for new articles"
+        ],
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "account_id": {
+              "type": "string",
+              "description": "Optional local watch id or backend fakeid. Omit to check all enabled watched accounts."
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "max_articles": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        },
+        "side_effect": "network.wechat.read_and_write_gear_data",
+        "permissions": [
+          "network.web",
+          "secret.keychain.read",
+          "gear_data.read",
+          "gear_data.write"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "medium",
+            "requires_approval": false,
+            "skill_hint": "Use to check already watched WeChat public accounts for newly discovered article URLs. Report structured failed/degraded states from Gee; do not run alternate scraping scripts."
+          }
+        }
+      },
+      {
+        "id": "wechat.latest_articles",
+        "title": "Get latest WeChat articles by account name",
+        "description": "Search a WeChat public account by name through the authenticated backend, select the best account result, optionally add it to the local watchlist, and return its latest article URLs.",
+        "examples": [
+          "Get the latest two articles from HKU ICB",
+          "Add this WeChat account to the watchlist and return its newest posts"
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "query"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "WeChat public-account display name or search phrase."
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20,
+              "description": "Maximum number of latest article records to return. Defaults to 2."
+            },
+            "max_articles": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20
+            },
+            "search_limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20
+            },
+            "auto_watch": {
+              "type": "boolean",
+              "description": "When true, persist the selected account in the local watchlist. Defaults to true."
+            },
+            "watch": {
+              "type": "boolean"
+            }
+          }
+        },
+        "side_effect": "network.wechat.search_read_and_write_gear_data",
+        "permissions": [
+          "network.web",
+          "secret.keychain.read",
+          "gear_data.read",
+          "gear_data.write"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "medium",
+            "requires_approval": false,
+            "skill_hint": "Use as the primary Codex path when the user gives a WeChat public-account name and asks for latest articles. This capability must search by name through GeeAgent's WeChat Watcher, use the returned fakeid, optionally persist the watchlist entry, and return explicit article URLs. Do not substitute official websites, search engines, or Codex-side scraping."
+          }
+        }
+      }
+    ]
+  }
+}

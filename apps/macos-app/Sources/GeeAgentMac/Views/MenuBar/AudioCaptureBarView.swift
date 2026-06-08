@@ -25,10 +25,10 @@ struct AudioCaptureBarView: View {
                 .frame(width: 24, height: 24)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Audio Capture")
+                Text(AppLocalization.string("audio.title", defaultValue: "Audio Capture"))
                     .font(.geeDisplaySemibold(15))
                     .foregroundStyle(.white.opacity(0.92))
-                Text("Control + Option + A or Shift + Command + A")
+                Text(AppLocalization.string("audio.shortcut", defaultValue: "Control + Option + A or Shift + Command + A"))
                     .font(.geeBody(11))
                     .foregroundStyle(.white.opacity(0.48))
                     .lineLimit(1)
@@ -51,13 +51,13 @@ struct AudioCaptureBarView: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.white.opacity(0.66))
-            .help("Close audio bar")
+            .help(AppLocalization.string("audio.closeHelp", defaultValue: "Close audio bar"))
         }
     }
 
     private var controls: some View {
         HStack(spacing: 10) {
-            Picker("Source", selection: $audio.selectedSource) {
+            Picker(AppLocalization.string("audio.source", defaultValue: "Source"), selection: $audio.selectedSource) {
                 ForEach(AudioCaptureSource.allCases) { source in
                     Label(source.title, systemImage: source.systemImage).tag(source)
                 }
@@ -66,7 +66,7 @@ struct AudioCaptureBarView: View {
             .frame(width: 160)
             .disabled(audio.state.isActive)
 
-            Picker("Mode", selection: $audio.selectedMode) {
+            Picker(AppLocalization.string("audio.mode", defaultValue: "Mode"), selection: $audio.selectedMode) {
                 ForEach(AudioCaptureMode.allCases) { mode in
                     Text(mode.title).tag(mode)
                 }
@@ -85,20 +85,20 @@ struct AudioCaptureBarView: View {
             .foregroundStyle(.white.opacity(audio.selectedMode == .record ? 0.34 : 0.72))
             .frame(width: 164, height: 28)
             .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .help("Default STT service. Change this in Settings > Speech To Text.")
+            .help(AppLocalization.string("audio.defaultServiceHelp", defaultValue: "Default STT service. Change this in Settings > Speech To Text."))
 
             Spacer(minLength: 4)
 
             if audio.canStop {
                 Button(action: audio.stopBarSession) {
-                    Label("Stop", systemImage: "stop.fill")
+                    Label(AppLocalization.string("audio.stop", defaultValue: "Stop"), systemImage: "stop.fill")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
                 .controlSize(.small)
             } else {
                 Button(action: audio.startBarSession) {
-                    Label("Start", systemImage: "record.circle")
+                    Label(AppLocalization.string("audio.start", defaultValue: "Start"), systemImage: "record.circle")
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
@@ -145,7 +145,7 @@ struct AudioCaptureBarView: View {
             Spacer()
 
             Button(action: audio.revealLastRecording) {
-                Label("Reveal", systemImage: "folder")
+                Label(AppLocalization.string("audio.reveal", defaultValue: "Reveal"), systemImage: "folder")
             }
             .buttonStyle(.plain)
             .font(.geeBodyMedium(11))
@@ -153,7 +153,7 @@ struct AudioCaptureBarView: View {
             .disabled(audio.lastRecordingURL == nil)
 
             Button(action: audio.copyTranscriptToPasteboard) {
-                Label("Copy", systemImage: "doc.on.doc")
+                Label(AppLocalization.string("audio.copy", defaultValue: "Copy"), systemImage: "doc.on.doc")
             }
             .buttonStyle(.plain)
             .font(.geeBodyMedium(11))
@@ -168,15 +168,15 @@ struct AudioCaptureBarView: View {
         }
         switch audio.state {
         case .idle:
-            return "Transcript output will appear here."
+            return AppLocalization.string("audio.transcript.placeholder", defaultValue: "Transcript output will appear here.")
         case .starting:
-            return "Starting audio capture..."
+            return AppLocalization.string("audio.startingCapture", defaultValue: "Starting audio capture...")
         case .recording:
-            return "Recording..."
+            return AppLocalization.string("audio.status.recording", defaultValue: "Recording...")
         case .transcribing:
-            return "Transcribing..."
+            return AppLocalization.string("audio.status.transcribing", defaultValue: "Transcribing...")
         case .completed:
-            return "Recording saved."
+            return AppLocalization.string("audio.status.recordingSaved", defaultValue: "Recording saved.")
         case let .failed(message):
             return message
         }

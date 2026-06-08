@@ -53,6 +53,9 @@
 /refproj/
 /scripts/
 
+# Local sidecar workspace for the standalone GeeMCP URL mining bundle.
+/geemcp/
+
 # Local env, secrets, and machine-specific state.
 .env
 .env.*

@@ -71,15 +71,15 @@ enum WorkbenchSection: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .home: "Home"
-        case .chat: "Chat"
-        case .telegram: "Telegram"
-        case .tasks: "Tasks"
-        case .automations: "Automations"
-        case .apps: "Gears"
-        case .agents: "Agents"
-        case .logs: "Logs"
-        case .settings: "Settings"
+        case .home: AppLocalization.string("nav.home", defaultValue: "Home")
+        case .chat: AppLocalization.string("nav.chat", defaultValue: "Chat")
+        case .telegram: AppLocalization.string("nav.telegram", defaultValue: "Telegram")
+        case .tasks: AppLocalization.string("nav.tasks", defaultValue: "Tasks")
+        case .automations: AppLocalization.string("nav.automations", defaultValue: "Automations")
+        case .apps: AppLocalization.string("nav.apps", defaultValue: "Gears")
+        case .agents: AppLocalization.string("nav.agents", defaultValue: "Agents")
+        case .logs: AppLocalization.string("nav.logs", defaultValue: "Logs")
+        case .settings: AppLocalization.string("nav.settings", defaultValue: "Settings")
         }
     }
 
@@ -178,8 +178,8 @@ enum HomeHeroVisualMode: String, CaseIterable, Hashable, Identifiable {
 
     var title: String {
         switch self {
-        case .banner: "Banner"
-        case .abstract: "Abstract"
+        case .banner: AppLocalization.string("home.visual.banner", defaultValue: "Banner")
+        case .abstract: AppLocalization.string("common.abstract", defaultValue: "Abstract")
         }
     }
 }
@@ -194,10 +194,10 @@ enum AgentAppearanceKind: String, CaseIterable, Codable, Hashable, Identifiable 
 
     var title: String {
         switch self {
-        case .staticImage: "Image"
-        case .video: "Video"
+        case .staticImage: AppLocalization.string("common.image", defaultValue: "Image")
+        case .video: AppLocalization.string("common.video", defaultValue: "Video")
         case .live2D: "Live2D"
-        case .abstract: "Abstract"
+        case .abstract: AppLocalization.string("common.abstract", defaultValue: "Abstract")
         }
     }
 
@@ -229,9 +229,9 @@ enum AgentProfileGlobalBackgroundRecord: Hashable {
 
     var title: String {
         switch self {
-        case .video: "Global Video"
-        case .staticImage: "Global Image"
-        case .none: "None"
+        case .video: AppLocalization.string("home.visual.globalVideo", defaultValue: "Global Video")
+        case .staticImage: AppLocalization.string("home.visual.globalImage", defaultValue: "Global Image")
+        case .none: AppLocalization.string("common.none", defaultValue: "None")
         }
     }
 
@@ -453,14 +453,14 @@ struct ContextBudgetRecord: Hashable {
 
         var title: String {
             switch self {
-            case .idle: "Idle"
-            case .watching: "Watching"
-            case .scheduled: "Summary soon"
-            case .projecting: "Projecting"
-            case .summarizing: "Summarizing"
-            case .summarized: "Summarized"
-            case .failed: "Summary failed"
-            case .disabled: "Disabled"
+            case .idle: AppLocalization.string("context.state.idle", defaultValue: "Idle")
+            case .watching: AppLocalization.string("context.state.watching", defaultValue: "Watching")
+            case .scheduled: AppLocalization.string("context.state.scheduled", defaultValue: "Summary soon")
+            case .projecting: AppLocalization.string("context.state.projecting", defaultValue: "Projecting")
+            case .summarizing: AppLocalization.string("context.state.summarizing", defaultValue: "Summarizing")
+            case .summarized: AppLocalization.string("context.state.summarized", defaultValue: "Summarized")
+            case .failed: AppLocalization.string("context.state.failed", defaultValue: "Summary failed")
+            case .disabled: AppLocalization.string("common.disabled", defaultValue: "Disabled")
             }
         }
     }
@@ -522,8 +522,8 @@ struct TerminalPermissionRuleRecord: Identifiable, Hashable {
 
         var title: String {
             switch self {
-            case .allow: "Always allow"
-            case .deny: "Always deny"
+            case .allow: AppLocalization.string("permission.alwaysAllow", defaultValue: "Always allow")
+            case .deny: AppLocalization.string("permission.alwaysDeny", defaultValue: "Always deny")
             }
         }
     }
@@ -566,10 +566,10 @@ enum WorkbenchRuntimeState: String, Hashable {
 
     var title: String {
         switch self {
-        case .live: "Live"
-        case .needsSetup: "Needs Setup"
-        case .degraded: "Degraded"
-        case .unavailable: "Unavailable"
+        case .live: AppLocalization.string("menu.runtime.live", defaultValue: "Live")
+        case .needsSetup: AppLocalization.string("menu.runtime.needsSetup", defaultValue: "Needs Setup")
+        case .degraded: AppLocalization.string("menu.runtime.degraded", defaultValue: "Degraded")
+        case .unavailable: AppLocalization.string("menu.runtime.unavailable", defaultValue: "Unavailable")
         }
     }
 
@@ -630,10 +630,10 @@ struct WorkbenchHomeItem: Identifiable, Hashable {
 
         var title: String {
             switch self {
-            case .approval: "Approval"
-            case .task: "Task"
-            case .automation: "Automation"
-            case .app: "App"
+            case .approval: AppLocalization.string("task.status.approval", defaultValue: "Approval")
+            case .task: AppLocalization.string("common.task", defaultValue: "Task")
+            case .automation: AppLocalization.string("common.automation", defaultValue: "Automation")
+            case .app: AppLocalization.string("common.app", defaultValue: "App")
             }
         }
 
@@ -751,29 +751,31 @@ struct ConversationMessageAttachment: Identifiable, Hashable, Sendable {
     }
 
     var inspectorDetailItems: [ConversationMessageDetailItem] {
-        var details = [ConversationMessageDetailItem(label: "Status", value: status.rawValue)]
-        appendInspectorDetail("Source", source, to: &details)
-        appendInspectorDetail("Created", createdAt, to: &details)
-        appendInspectorDetail("Original path", originalPath, to: &details)
-        appendInspectorDetail("Resolved path", resolvedPath, to: &details)
+        var details = [ConversationMessageDetailItem(label: AppLocalization.string("common.status", defaultValue: "Status"), value: status.rawValue)]
+        appendInspectorDetail(AppLocalization.string("attachment.source", defaultValue: "Source"), source, to: &details)
+        appendInspectorDetail(AppLocalization.string("attachment.created", defaultValue: "Created"), createdAt, to: &details)
+        appendInspectorDetail(AppLocalization.string("attachment.originalPath", defaultValue: "Original path"), originalPath, to: &details)
+        appendInspectorDetail(AppLocalization.string("attachment.resolvedPath", defaultValue: "Resolved path"), resolvedPath, to: &details)
         appendInspectorDetail("MIME", mimeType, to: &details)
         if let sizeBytes {
             details.append(
                 ConversationMessageDetailItem(
-                    label: "Size",
+                    label: AppLocalization.string("attachment.size", defaultValue: "Size"),
                     value: ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file)
                 )
             )
         }
-        appendInspectorDetail("Access", accessSummary, to: &details)
-        appendInspectorDetail("Image", imageSummary, to: &details)
-        appendInspectorDetail("Limits", limitsSummary, to: &details)
-        appendInspectorDetail("Error", errorSummary, to: &details)
+        appendInspectorDetail(AppLocalization.string("attachment.access", defaultValue: "Access"), accessSummary, to: &details)
+        appendInspectorDetail(AppLocalization.string("attachment.image", defaultValue: "Image"), imageSummary, to: &details)
+        appendInspectorDetail(AppLocalization.string("attachment.limits", defaultValue: "Limits"), limitsSummary, to: &details)
+        appendInspectorDetail(AppLocalization.string("attachment.error", defaultValue: "Error"), errorSummary, to: &details)
         if let fallbackAttempted {
             details.append(
                 ConversationMessageDetailItem(
-                    label: "Fallback attempted",
-                    value: fallbackAttempted ? "Yes" : "No"
+                    label: AppLocalization.string("attachment.fallbackAttempted", defaultValue: "Fallback attempted"),
+                    value: fallbackAttempted
+                        ? AppLocalization.string("common.yes", defaultValue: "Yes")
+                        : AppLocalization.string("common.no", defaultValue: "No")
                 )
             )
         }
@@ -842,9 +844,9 @@ struct ConversationMessage: Identifiable, Hashable {
 
         var title: String {
             switch self {
-            case .user: "You"
+            case .user: AppLocalization.string("message.role.you", defaultValue: "You")
             case .assistant: "GeeAgent"
-            case .system: "System"
+            case .system: AppLocalization.string("logs.system", defaultValue: "System")
             }
         }
     }
@@ -1120,23 +1122,23 @@ enum WorkbenchTaskStatus: String, CaseIterable, Hashable {
 
     var title: String {
         switch self {
-        case .needsApproval: "Needs Approval"
-        case .running: "Running"
-        case .blocked: "Blocked"
-        case .queued: "Queued"
-        case .completed: "Completed"
-        case .failed: "Failed"
+        case .needsApproval: AppLocalization.string("task.status.needsApproval", defaultValue: "Needs Approval")
+        case .running: AppLocalization.string("common.running", defaultValue: "Running")
+        case .blocked: AppLocalization.string("common.blocked", defaultValue: "Blocked")
+        case .queued: AppLocalization.string("common.queued", defaultValue: "Queued")
+        case .completed: AppLocalization.string("common.completed", defaultValue: "Completed")
+        case .failed: AppLocalization.string("common.failed", defaultValue: "Failed")
         }
     }
 
     var shortTitle: String {
         switch self {
-        case .needsApproval: "Approval"
-        case .running: "Running"
-        case .blocked: "Blocked"
-        case .queued: "Queued"
-        case .completed: "Completed"
-        case .failed: "Failed"
+        case .needsApproval: AppLocalization.string("task.status.approval", defaultValue: "Approval")
+        case .running: AppLocalization.string("common.running", defaultValue: "Running")
+        case .blocked: AppLocalization.string("common.blocked", defaultValue: "Blocked")
+        case .queued: AppLocalization.string("common.queued", defaultValue: "Queued")
+        case .completed: AppLocalization.string("common.completed", defaultValue: "Completed")
+        case .failed: AppLocalization.string("common.failed", defaultValue: "Failed")
         }
     }
 
@@ -1177,11 +1179,11 @@ enum WorkbenchTaskAction: Hashable {
 
     var title: String {
         switch self {
-        case .allowOnce: "Allow once"
-        case .alwaysAllow: "Always allow"
-        case .deny: "Deny"
-        case .complete: "Complete"
-        case .retry: "Retry"
+        case .allowOnce: AppLocalization.string("approval.allowOnce", defaultValue: "Allow once")
+        case .alwaysAllow: AppLocalization.string("permission.alwaysAllow", defaultValue: "Always allow")
+        case .deny: AppLocalization.string("approval.deny", defaultValue: "Deny")
+        case .complete: AppLocalization.string("approval.complete", defaultValue: "Complete")
+        case .retry: AppLocalization.string("common.retry", defaultValue: "Retry")
         }
     }
 
@@ -1203,9 +1205,9 @@ enum AutomationStatus: String, Hashable {
 
     var title: String {
         switch self {
-        case .active: "Active"
-        case .paused: "Paused"
-        case .attention: "Attention"
+        case .active: AppLocalization.string("automation.status.active", defaultValue: "Active")
+        case .paused: AppLocalization.string("automation.status.paused", defaultValue: "Paused")
+        case .attention: AppLocalization.string("automation.status.attention", defaultValue: "Attention")
         }
     }
 
@@ -1237,10 +1239,10 @@ enum AppInstallState: String, Hashable, Sendable {
 
     var title: String {
         switch self {
-        case .installed: "Installed"
-        case .updateAvailable: "Update Available"
-        case .needsPermission: "Needs Permission"
-        case .installError: "Install Issue"
+        case .installed: AppLocalization.string("app.install.installed", defaultValue: "Installed")
+        case .updateAvailable: AppLocalization.string("app.install.updateAvailable", defaultValue: "Update Available")
+        case .needsPermission: AppLocalization.string("app.install.needsPermission", defaultValue: "Needs Permission")
+        case .installError: AppLocalization.string("app.install.installError", defaultValue: "Install Issue")
         }
     }
 
@@ -1281,9 +1283,9 @@ enum AgentProfileSourceRecord: String, CaseIterable, Hashable, Identifiable {
 
     var title: String {
         switch self {
-        case .firstParty: "First-Party"
-        case .userCreated: "User Created"
-        case .modulePack: "Module Pack"
+        case .firstParty: AppLocalization.string("app.category.firstParty", defaultValue: "First-Party")
+        case .userCreated: AppLocalization.string("app.category.userCreated", defaultValue: "User Created")
+        case .modulePack: AppLocalization.string("app.category.modulePack", defaultValue: "Module Pack")
         }
     }
 
@@ -1304,10 +1306,10 @@ enum AgentProfileAppearanceRecord: Hashable {
 
     var title: String {
         switch self {
-        case .staticImage: "Static Image"
-        case .video: "Video"
+        case .staticImage: AppLocalization.string("agent.appearance.staticImage", defaultValue: "Static Image")
+        case .video: AppLocalization.string("common.video", defaultValue: "Video")
         case .live2D: "Live2D"
-        case .abstract: "Abstract"
+        case .abstract: AppLocalization.string("common.abstract", defaultValue: "Abstract")
         }
     }
 

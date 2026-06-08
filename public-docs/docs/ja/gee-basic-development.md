@@ -34,6 +34,8 @@ Workspace chat は、local image、file、folder references を structured input
 
 Settings は audio transcription 用の default STT service を 1 つ公開します。Chat voice input と Audio Capture shortcut bar は同じ保存済み provider を使います。現在の選択肢は Local Whisper、Local SenseVoice、ElevenLabs です。Local backend が欠けている場合は、別 provider に fallback せず明示的に失敗します。Audio Capture bar は menu-bar panel から開けるほか、Control+Option+A / Shift+Command+A でも開けます。Microphone と system-audio permission failure は macOS の current authorization state、bundle id、running app path を表示します。Permission request は bar を Starting のままにせず timeout し、stale TCC entry も直接示します。
 
+GeeAgentMac の main app はデフォルトで macOS の優先言語に従います。Settings > Language では main workbench shell を System、English、簡体中文、または日本語に上書きできます。この設定は navigation、Home、Chat、Telegram、Tasks/Logs、Automations、Gears catalog shell、Agents、Settings、Inspector、approval prompt、menu-bar panel、Quick Input、Audio Capture など GeeAgent が所有する main surface に適用されます。Gear internal screens、Gear manifest text、user messages、assistant replies、runtime logs、provider/model names、file paths、raw runtime error details は元の言語のままです。
+
 Gear work では live SDK run と Gee MCP bridge が必須 path です。SDK runtime または bridge が live でない場合、GeeAgent は alternate native route で task を実行せず、structured failure を報告します。
 
 Native app control も shared Gee MCP host path であり、Gear や Telegram 固有の shortcut ではありません。App Chat/runtime は `native_app_control`（`gee.nativeApp.control`）で supported local macOS app を control できます。V1 は Codex Desktop の `new_chat_and_send` を公開し、app、permission、target UI element、send action が unavailable な場合は structured blocked/failed state を返します。

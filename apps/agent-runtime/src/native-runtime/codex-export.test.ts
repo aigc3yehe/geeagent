@@ -147,6 +147,18 @@ describe("Codex capability export projection", () => {
     assert.equal(refs.has("todo.manager/todo.query"), true);
     assert.equal(refs.has("todo.manager/todo.update"), true);
     assert.equal(refs.has("todo.manager/todo.delete"), true);
+    assert.equal(refs.has("smartyt.media/smartyt.search_candidates"), true);
+    assert.equal(refs.has("smartyt.media/smartyt.download_now"), true);
+    assert.equal(refs.has("smartyt.media/smartyt.sniff"), true);
+    assert.equal(refs.has("wespy.reader/wespy.fetch_article"), true);
+    assert.equal(refs.has("wespy.reader/wespy.list_album"), true);
+    assert.equal(refs.has("wespy.reader/wespy.fetch_album"), true);
+    assert.equal(refs.has("wechat.watcher/wechat.latest_articles"), true);
+    assert.equal(refs.has("wechat.channels/wechat_channels.auth_status"), true);
+    assert.equal(refs.has("wechat.channels/wechat_channels.metadata"), true);
+    assert.equal(refs.has("wechat.channels/wechat_channels.download"), true);
+    assert.equal(refs.has("wechat.channels/wechat_channels.get_task"), true);
+    assert.equal(refs.has("wechat.channels/wechat_channels.list_tasks"), true);
 
     const focusFolder = result.capabilities.find(
       (capability) => capability.capability_ref === "media.library/media.focus_folder",
@@ -200,6 +212,95 @@ describe("Codex capability export projection", () => {
     );
     assert.equal(todoDelete?.risk, "high");
     assert.deepEqual(todoDelete?.input_schema?.required, ["task_id"]);
+
+    const smartYTSearch = result.capabilities.find(
+      (capability) => capability.capability_ref === "smartyt.media/smartyt.search_candidates",
+    );
+    assert.equal(smartYTSearch?.risk, "medium");
+    assert.equal(smartYTSearch?.requires_approval, false);
+    assert.deepEqual(smartYTSearch?.input_schema?.required, ["query"]);
+    const smartYTSearchProperties = smartYTSearch?.input_schema?.properties as
+      | Record<string, { description?: string; maximum?: number }>
+      | undefined;
+    assert.match(smartYTSearchProperties?.platforms?.description ?? "", /douyin/i);
+    assert.match(smartYTSearchProperties?.platforms?.description ?? "", /xiaohongshu/i);
+    assert.equal(smartYTSearchProperties?.limit?.maximum, 50);
+
+    const smartYTDownloadNow = result.capabilities.find(
+      (capability) => capability.capability_ref === "smartyt.media/smartyt.download_now",
+    );
+    assert.equal(smartYTDownloadNow?.risk, "high");
+    assert.deepEqual(smartYTDownloadNow?.input_schema?.required, ["url"]);
+
+    const weSpyArticle = result.capabilities.find(
+      (capability) => capability.capability_ref === "wespy.reader/wespy.fetch_article",
+    );
+    assert.equal(weSpyArticle?.risk, "medium");
+    assert.equal(weSpyArticle?.requires_approval, false);
+    assert.equal(weSpyArticle?.side_effect, "gear_data.write");
+    assert.deepEqual(weSpyArticle?.input_schema?.required, ["url"]);
+    assert.deepEqual(weSpyArticle?.permissions, [
+      "network.web",
+      "process.spawn",
+      "gear_data.write",
+    ]);
+
+    const weSpyAlbum = result.capabilities.find(
+      (capability) => capability.capability_ref === "wespy.reader/wespy.fetch_album",
+    );
+    assert.equal(weSpyAlbum?.risk, "high");
+    assert.deepEqual(weSpyAlbum?.input_schema?.required, ["url"]);
+    const weSpyAlbumProperties = weSpyAlbum?.input_schema?.properties as
+      | Record<string, { minimum?: number; maximum?: number }>
+      | undefined;
+    assert.equal(weSpyAlbumProperties?.max_articles?.minimum, 1);
+    assert.equal(weSpyAlbumProperties?.max_articles?.maximum, 200);
+
+    const wechatLatest = result.capabilities.find(
+      (capability) => capability.capability_ref === "wechat.watcher/wechat.latest_articles",
+    );
+    assert.equal(wechatLatest?.risk, "medium");
+    assert.equal(wechatLatest?.requires_approval, false);
+    assert.equal(wechatLatest?.side_effect, "network.wechat.search_read_and_write_gear_data");
+    assert.deepEqual(wechatLatest?.input_schema?.required, ["query"]);
+    assert.deepEqual(wechatLatest?.permissions, [
+      "network.web",
+      "secret.keychain.read",
+      "gear_data.read",
+      "gear_data.write",
+    ]);
+    const wechatLatestProperties = wechatLatest?.input_schema?.properties as
+      | Record<string, { minimum?: number; maximum?: number }>
+      | undefined;
+    assert.equal(wechatLatestProperties?.limit?.minimum, 1);
+    assert.equal(wechatLatestProperties?.limit?.maximum, 20);
+    assert.equal(wechatLatestProperties?.search_limit?.maximum, 20);
+
+    const wechatChannelsMetadata = result.capabilities.find(
+      (capability) => capability.capability_ref === "wechat.channels/wechat_channels.metadata",
+    );
+    assert.equal(wechatChannelsMetadata?.risk, "medium");
+    assert.equal(wechatChannelsMetadata?.requires_approval, false);
+    assert.equal(wechatChannelsMetadata?.side_effect, "network.wechat.read");
+    assert.deepEqual(wechatChannelsMetadata?.input_schema?.required, ["url"]);
+    assert.deepEqual(wechatChannelsMetadata?.permissions, [
+      "network.web",
+      "secret.keychain.read",
+    ]);
+
+    const wechatChannelsDownload = result.capabilities.find(
+      (capability) => capability.capability_ref === "wechat.channels/wechat_channels.download",
+    );
+    assert.equal(wechatChannelsDownload?.risk, "high");
+    assert.equal(wechatChannelsDownload?.requires_approval, false);
+    assert.equal(wechatChannelsDownload?.side_effect, "network.wechat.download_and_write_files");
+    assert.deepEqual(wechatChannelsDownload?.input_schema?.required, ["url"]);
+    assert.deepEqual(wechatChannelsDownload?.permissions, [
+      "network.web",
+      "secret.keychain.read",
+      "filesystem.write.downloads",
+      "gear_data.write",
+    ]);
 
     const createTask = result.capabilities.find(
       (capability) => capability.capability_ref === "media.generator/media_generator.create_task",

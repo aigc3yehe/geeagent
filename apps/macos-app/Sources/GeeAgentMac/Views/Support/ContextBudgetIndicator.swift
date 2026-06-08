@@ -21,11 +21,11 @@ struct ContextBudgetIndicator: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Context: \(budget.tokenLabel) · \(budget.summaryState.title)")
+        .help(AppLocalization.format("context.help", defaultValue: "Context: %@ · %@", budget.tokenLabel, budget.summaryState.title))
         .popover(isPresented: $isPopoverPresented, arrowEdge: .top) {
             popoverContent
         }
-        .accessibilityLabel("Context window")
+        .accessibilityLabel(AppLocalization.string("context.accessibility", defaultValue: "Context window"))
         .accessibilityValue("\(budget.tokenLabel), \(budget.summaryState.title)")
     }
 
@@ -57,7 +57,7 @@ struct ContextBudgetIndicator: View {
     private var popoverContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Context Window")
+                Text(AppLocalization.string("context.title", defaultValue: "Context Window"))
                     .font(.geeDisplaySemibold(14))
                 Spacer()
                 Text(budget.percentageLabel)
@@ -81,7 +81,7 @@ struct ContextBudgetIndicator: View {
                 }
             }
 
-            Text("GeeAgent keeps the full transcript locally. The model sees a bounded projection: recent task context, compact reference capsules, and the latest request verbatim.")
+            Text(AppLocalization.string("context.description", defaultValue: "GeeAgent keeps the full transcript locally. The model sees a bounded projection: recent task context, compact reference capsules, and the latest request verbatim."))
                 .font(.geeBody(11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

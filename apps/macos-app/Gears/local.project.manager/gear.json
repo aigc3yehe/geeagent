@@ -1,0 +1,30 @@
+{
+  "schema": "gee.gear.v1",
+  "id": "local.project.manager",
+  "name": "Local Project Manager",
+  "description": "Native controls for saving local project launch commands, checking running status, starting services, stopping matched processes, and opening reachable frontend pages.",
+  "developer": "Gee",
+  "version": "0.1.0",
+  "category": "Developer Tools",
+  "kind": "atmosphere",
+  "display_mode": "full_canvas",
+  "entry": {
+    "type": "native",
+    "native_id": "local.project.manager"
+  },
+  "permissions": [
+    "filesystem.read.gear_storage",
+    "filesystem.write.gear_storage",
+    "process.execute.local_command",
+    "process.terminate.local_command",
+    "network.local_probe"
+  ],
+  "dependencies": {
+    "install_strategy": "on_open",
+    "items": []
+  },
+  "agent": {
+    "enabled": false,
+    "capabilities": []
+  }
+}

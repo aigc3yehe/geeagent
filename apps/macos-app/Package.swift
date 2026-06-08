@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "GeeAgentMac",
+    defaultLocalization: "en",
     platforms: [
         .macOS(.v15)
     ],
@@ -18,7 +19,6 @@ let package = Package(
                 ".build",
                 ".swift-build",
                 "dist",
-                "Resources",
                 "script",
                 "Tests"
             ],
@@ -28,7 +28,8 @@ let package = Package(
                 "Sources/GeeAgentMac"
             ],
             resources: [
-                .copy("Gears")
+                .copy("Gears"),
+                .process("Resources")
             ]
         ),
         .testTarget(

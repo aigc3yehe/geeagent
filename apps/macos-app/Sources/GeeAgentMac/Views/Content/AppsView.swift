@@ -26,7 +26,7 @@ struct AppsView: View {
             .scrollIndicators(.hidden)
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
         }
-        .navigationTitle("Gears")
+        .navigationTitle(store.localizedString("apps.title", defaultValue: "Gears"))
         .task {
             await loadCachedPreparationSnapshots()
         }
@@ -34,7 +34,7 @@ struct AppsView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Gears")
+            Text(store.localizedString("apps.title", defaultValue: "Gears"))
                 .font(.geeDisplaySemibold(34))
                 .foregroundStyle(.white.opacity(0.95))
 
@@ -108,7 +108,7 @@ struct AppsView: View {
         preparationSnapshots[app.id] = GearPreparationSnapshot(
             gearID: app.id,
             state: .checking,
-            summary: "Checking dependencies...",
+            summary: store.localizedString("apps.checkingDependencies", defaultValue: "Checking dependencies..."),
             detail: nil,
             missingDependencyIDs: [],
             updatedAt: Date()
@@ -259,25 +259,25 @@ private struct GearCatalogCard: View {
 
     private var attentionStateTitle: String? {
         if app.installState == .installed, !isEnabled {
-            return "Disabled"
+            return AppLocalization.string("common.disabled", defaultValue: "Disabled")
         }
         guard app.installState == .installed else {
-            return app.installState == .installError ? "Issue detected" : app.installState.title
+            return app.installState == .installError ? AppLocalization.string("apps.issueDetected", defaultValue: "Issue detected") : app.installState.title
         }
         guard let preparation, preparation.state != .ready, preparation.state != .unknown else {
             return nil
         }
         switch preparation.state {
         case .checking:
-            return "Checking"
+            return AppLocalization.string("common.checking", defaultValue: "Checking")
         case .needsSetup:
-            return "Setup required"
+            return AppLocalization.string("apps.setupRequired", defaultValue: "Setup required")
         case .installing:
-            return "Installing"
+            return AppLocalization.string("common.installing", defaultValue: "Installing")
         case .installFailed:
-            return "Install failed"
+            return AppLocalization.string("apps.installFailed", defaultValue: "Install failed")
         case .unsupported:
-            return "Unsupported"
+            return AppLocalization.string("apps.unsupported", defaultValue: "Unsupported")
         case .unknown, .ready:
             return nil
         }
@@ -319,22 +319,26 @@ private struct GearCatalogCard: View {
 
     private var openButtonTitle: String {
         guard app.installState == .installed else {
-            return "Blocked"
+            return AppLocalization.string("common.blocked", defaultValue: "Blocked")
         }
         guard isEnabled else {
-            return "Off"
+            return AppLocalization.string("apps.off", defaultValue: "Off")
         }
         guard let preparation, preparation.state != .ready else {
-            return app.gearKind == .widget ? "Home" : "Open"
+            return app.gearKind == .widget
+                ? AppLocalization.string("common.home", defaultValue: "Home")
+                : AppLocalization.string("common.open", defaultValue: "Open")
         }
         return switch preparation.state {
-        case .checking: "Checking"
-        case .needsSetup: "Install"
-        case .installing: "Installing"
-        case .installFailed: "Retry"
-        case .unsupported: "Blocked"
-        case .unknown: "Open"
-        case .ready: app.gearKind == .widget ? "Home" : "Open"
+        case .checking: AppLocalization.string("common.checking", defaultValue: "Checking")
+        case .needsSetup: AppLocalization.string("common.install", defaultValue: "Install")
+        case .installing: AppLocalization.string("common.installing", defaultValue: "Installing")
+        case .installFailed: AppLocalization.string("common.retry", defaultValue: "Retry")
+        case .unsupported: AppLocalization.string("common.blocked", defaultValue: "Blocked")
+        case .unknown: AppLocalization.string("common.open", defaultValue: "Open")
+        case .ready: app.gearKind == .widget
+            ? AppLocalization.string("common.home", defaultValue: "Home")
+            : AppLocalization.string("common.open", defaultValue: "Open")
         }
     }
 
@@ -367,7 +371,11 @@ private struct GearCatalogCard: View {
                         .foregroundStyle(.white.opacity(0.94))
                         .lineLimit(1)
 
-                    Text("by \(app.developerLabel.isEmpty ? "Unknown" : app.developerLabel)")
+                    Text(AppLocalization.format(
+                        "apps.byDeveloper",
+                        defaultValue: "by %@",
+                        app.developerLabel.isEmpty ? AppLocalization.string("apps.unknownDeveloper", defaultValue: "Unknown") : app.developerLabel
+                    ))
                         .font(.geeBodyMedium(12))
                         .foregroundStyle(.white.opacity(0.44))
                         .lineLimit(1)
@@ -560,10 +568,10 @@ private struct GearEmptyState: View {
             Image(systemName: kind.systemImage)
                 .font(.system(size: 24, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.52))
-            Text("No \(kind.title) yet")
+            Text(AppLocalization.format("apps.emptyTitle", defaultValue: "No %@ yet", kind.title))
                 .font(.geeDisplaySemibold(18))
                 .foregroundStyle(.white.opacity(0.86))
-            Text("Drop a valid gear folder into the Gears directory and restart GeeAgent to reveal it here.")
+            Text(AppLocalization.string("apps.emptyDescription", defaultValue: "Drop a valid gear folder into the Gears directory and restart GeeAgent to reveal it here."))
                 .font(.geeBody(13))
                 .foregroundStyle(.white.opacity(0.5))
         }
@@ -577,9 +585,9 @@ private extension GearKind {
     var catalogTabTitle: String {
         switch self {
         case .atmosphere:
-            "App"
+            AppLocalization.string("apps.tab.atmosphere", defaultValue: "App")
         case .widget:
-            "Widget"
+            AppLocalization.string("apps.tab.widget", defaultValue: "Widget")
         }
     }
 }

@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="README.zh-CN.md">中文</a> | <a href="README.ja.md">日本語</a>
+  <a href="README.zh-CN.md">Simplified Chinese</a> | <a href="README.ja.md">Japanese</a>
 </p>
 
 GeeAgent is a lightweight macOS AI workbench for persona-driven agents, local app assistance, and AI visual production.

@@ -8,8 +8,8 @@ enum AudioCaptureSource: String, CaseIterable, Identifiable, Codable, Hashable {
 
     var title: String {
         switch self {
-        case .microphone: "Microphone"
-        case .systemAudio: "System Audio"
+        case .microphone: AppLocalization.string("audio.source.microphone", defaultValue: "Microphone")
+        case .systemAudio: AppLocalization.string("audio.source.systemAudio", defaultValue: "System Audio")
         }
     }
 
@@ -29,8 +29,8 @@ enum AudioCaptureMode: String, CaseIterable, Identifiable, Codable, Hashable {
 
     var title: String {
         switch self {
-        case .record: "Record"
-        case .transcribe: "Transcribe"
+        case .record: AppLocalization.string("audio.mode.record", defaultValue: "Record")
+        case .transcribe: AppLocalization.string("audio.mode.transcribe", defaultValue: "Transcribe")
         }
     }
 }
@@ -53,11 +53,20 @@ enum SpeechTranscriptionProviderID: String, CaseIterable, Identifiable, Codable,
     var detail: String {
         switch self {
         case .localWhisper:
-            "Uses local faster-whisper, whisper, or whisper-cli when installed."
+            AppLocalization.string(
+                "audio.provider.localWhisper.detail",
+                defaultValue: "Uses local faster-whisper, whisper, or whisper-cli when installed."
+            )
         case .localSenseVoice:
-            "Uses the global sensevoice-transcribe command when installed."
+            AppLocalization.string(
+                "audio.provider.localSenseVoice.detail",
+                defaultValue: "Uses the global sensevoice-transcribe command when installed."
+            )
         case .elevenLabs:
-            "Uses the saved ElevenLabs key from Settings for online speech-to-text."
+            AppLocalization.string(
+                "audio.provider.elevenLabs.detail",
+                defaultValue: "Uses the saved ElevenLabs key from Settings for online speech-to-text."
+            )
         }
     }
 }
@@ -72,12 +81,12 @@ enum AudioCaptureState: Equatable, Hashable {
 
     var title: String {
         switch self {
-        case .idle: "Idle"
-        case .starting: "Starting"
-        case .recording: "Recording"
-        case .transcribing: "Transcribing"
-        case .completed: "Completed"
-        case .failed: "Failed"
+        case .idle: AppLocalization.string("audio.state.idle", defaultValue: "Idle")
+        case .starting: AppLocalization.string("audio.state.starting", defaultValue: "Starting")
+        case .recording: AppLocalization.string("audio.state.recording", defaultValue: "Recording")
+        case .transcribing: AppLocalization.string("audio.state.transcribing", defaultValue: "Transcribing")
+        case .completed: AppLocalization.string("audio.state.completed", defaultValue: "Completed")
+        case .failed: AppLocalization.string("audio.state.failed", defaultValue: "Failed")
         }
     }
 
@@ -126,11 +135,11 @@ enum AudioCaptureAuthorizationStatus: String, Equatable, Hashable, Sendable {
 
     var title: String {
         switch self {
-        case .authorized: "Authorized"
-        case .notDetermined: "Not Determined"
-        case .denied: "Denied"
-        case .restricted: "Restricted"
-        case .unknown: "Unknown"
+        case .authorized: AppLocalization.string("audio.permission.authorized", defaultValue: "Authorized")
+        case .notDetermined: AppLocalization.string("audio.permission.notDetermined", defaultValue: "Not Determined")
+        case .denied: AppLocalization.string("audio.permission.denied", defaultValue: "Denied")
+        case .restricted: AppLocalization.string("audio.permission.restricted", defaultValue: "Restricted")
+        case .unknown: AppLocalization.string("audio.permission.unknown", defaultValue: "Unknown")
         }
     }
 }

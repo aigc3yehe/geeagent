@@ -139,7 +139,7 @@ struct ChatMarkdownText: View {
 
     private func localFilePath(from text: String) -> String? {
         var trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trailingCharacters = CharacterSet(charactersIn: ".,;:，。；：)]}＞>」』")
+        let trailingCharacters = CharacterSet(charactersIn: ".,;:\u{FF0C}\u{3002}\u{FF1B}\u{FF1A})]}\u{FF1E}>\u{300D}\u{300F}")
         trimmed = trimmed.trimmingCharacters(in: trailingCharacters)
         guard trimmed.hasPrefix("/") || trimmed.hasPrefix("~/") else {
             return nil
@@ -164,6 +164,8 @@ private struct ChatMarkdownRow: Identifiable {
 }
 
 private struct FilePathInlineLink: View {
+    @Environment(\.appLanguage) private var appLanguage
+
     var path: String
     var font: Font
     var color: Color
@@ -187,10 +189,13 @@ private struct FilePathInlineLink: View {
             Button {
                 revealInFinder()
             } label: {
-                Label("Open in Finder", systemImage: "folder")
+                Label(
+                    AppLocalization.string("common.openInFinder", defaultValue: "Open in Finder", language: appLanguage),
+                    systemImage: "folder"
+                )
             }
         }
-        .help("Open \(path)")
+        .help(AppLocalization.format("common.openPath", defaultValue: "Open %@", language: appLanguage, path))
     }
 
     private func revealInFinder() {
@@ -403,7 +408,9 @@ struct ChatMessageCard: View {
         actionButton(
             systemImage: deleteFeedbackActive ? "checkmark" : "trash",
             tint: deleteFeedbackActive ? .red : .secondary,
-            help: store.canMutateRuntime ? "Delete message" : "Message deletion is unavailable",
+            help: store.canMutateRuntime
+                ? AppLocalization.string("message.deleteHelp", defaultValue: "Delete message")
+                : AppLocalization.string("message.deleteUnavailable", defaultValue: "Message deletion is unavailable"),
             compact: true
         ) {
             guard store.canMutateRuntime else {
@@ -995,7 +1002,7 @@ private struct WorkedTraceDisclosure: View {
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(rowTint.opacity(0.76))
 
-                    Text("Worked")
+                    Text(AppLocalization.string("message.worked", defaultValue: "Worked"))
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(prominentBackground ? .white.opacity(0.76) : .secondary)
 

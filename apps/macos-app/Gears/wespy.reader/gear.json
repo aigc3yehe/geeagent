@@ -68,7 +68,130 @@
         "examples": [
           "Use WeSpy to turn this WeChat article into Markdown",
           "Fetch this article URL and save Markdown plus JSON"
-        ]
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "url"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "url": {
+              "type": "string",
+              "format": "uri",
+              "description": "Explicit WeChat public-account article or general article URL to fetch."
+            },
+            "save_html": {
+              "type": "boolean",
+              "description": "When true, ask WeSpy to save an HTML copy beside the Markdown capture."
+            },
+            "save_json": {
+              "type": "boolean",
+              "description": "When true, ask WeSpy to save structured article JSON beside the Markdown capture."
+            },
+            "export_markdown": {
+              "type": "boolean",
+              "description": "When true, create a combined Markdown export inside the WeSpy task directory."
+            }
+          }
+        },
+        "output_schema": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "gear_id": {
+              "type": "string"
+            },
+            "capability_id": {
+              "type": "string"
+            },
+            "task_id": {
+              "type": "string"
+            },
+            "task_path": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "article",
+                "albumList",
+                "albumDownload"
+              ]
+            },
+            "url": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "completed",
+                "failed",
+                "queued",
+                "running"
+              ]
+            },
+            "article_count": {
+              "type": "integer"
+            },
+            "output_dir": {
+              "type": "string"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "articles": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "author": {
+                    "type": "string"
+                  },
+                  "publish_time": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  },
+                  "msgid": {
+                    "type": "string"
+                  },
+                  "create_time": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "exported_markdown_path": {
+              "type": "string"
+            },
+            "error": {
+              "type": "string"
+            }
+          }
+        },
+        "side_effect": "gear_data.write",
+        "permissions": [
+          "network.web",
+          "process.spawn",
+          "gear_data.write"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "medium",
+            "requires_approval": false,
+            "skill_hint": "Use only for explicit article URLs provided by the user or prior Gee results. Invoke through Gee MCP and report returned task paths, article metadata, files, or structured failures; do not run the WeSpy sidecar from Codex."
+          }
+        }
       },
       {
         "id": "wespy.list_album",
@@ -77,7 +200,121 @@
         "examples": [
           "List the first 20 articles from this WeChat album",
           "Get the article URLs in this mp.weixin album"
-        ]
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "url"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "url": {
+              "type": "string",
+              "format": "uri",
+              "description": "Explicit WeChat public-account album URL to list."
+            },
+            "max_articles": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "description": "Maximum number of album article records to list."
+            }
+          }
+        },
+        "output_schema": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "gear_id": {
+              "type": "string"
+            },
+            "capability_id": {
+              "type": "string"
+            },
+            "task_id": {
+              "type": "string"
+            },
+            "task_path": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "article",
+                "albumList",
+                "albumDownload"
+              ]
+            },
+            "url": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "completed",
+                "failed",
+                "queued",
+                "running"
+              ]
+            },
+            "article_count": {
+              "type": "integer"
+            },
+            "output_dir": {
+              "type": "string"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "articles": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "author": {
+                    "type": "string"
+                  },
+                  "publish_time": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  },
+                  "msgid": {
+                    "type": "string"
+                  },
+                  "create_time": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "error": {
+              "type": "string"
+            }
+          }
+        },
+        "side_effect": "gear_data.write",
+        "permissions": [
+          "network.web",
+          "process.spawn",
+          "gear_data.write"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "medium",
+            "requires_approval": false,
+            "skill_hint": "Use only for explicit WeChat album URLs when Codex needs article links or metadata. Report the structured list and failure state from Gee; do not scrape album pages directly from Codex."
+          }
+        }
       },
       {
         "id": "wespy.fetch_album",
@@ -86,7 +323,136 @@
         "examples": [
           "Download the first 10 articles from this WeChat album as Markdown",
           "Fetch this album and also save HTML and JSON"
-        ]
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "url"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "url": {
+              "type": "string",
+              "format": "uri",
+              "description": "Explicit WeChat public-account album URL to batch fetch."
+            },
+            "max_articles": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "description": "Maximum number of album articles to fetch."
+            },
+            "save_html": {
+              "type": "boolean",
+              "description": "When true, ask WeSpy to save HTML copies beside Markdown captures."
+            },
+            "save_json": {
+              "type": "boolean",
+              "description": "When true, ask WeSpy to save structured article JSON beside Markdown captures."
+            },
+            "export_markdown": {
+              "type": "boolean",
+              "description": "When true, create a combined Markdown export inside the WeSpy task directory."
+            }
+          }
+        },
+        "output_schema": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "gear_id": {
+              "type": "string"
+            },
+            "capability_id": {
+              "type": "string"
+            },
+            "task_id": {
+              "type": "string"
+            },
+            "task_path": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "article",
+                "albumList",
+                "albumDownload"
+              ]
+            },
+            "url": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "completed",
+                "failed",
+                "queued",
+                "running"
+              ]
+            },
+            "article_count": {
+              "type": "integer"
+            },
+            "output_dir": {
+              "type": "string"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "articles": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "author": {
+                    "type": "string"
+                  },
+                  "publish_time": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  },
+                  "msgid": {
+                    "type": "string"
+                  },
+                  "create_time": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "exported_markdown_path": {
+              "type": "string"
+            },
+            "error": {
+              "type": "string"
+            }
+          }
+        },
+        "side_effect": "gear_data.write",
+        "permissions": [
+          "network.web",
+          "process.spawn",
+          "gear_data.write"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "high",
+            "requires_approval": false,
+            "skill_hint": "Use only for explicit WeChat album URLs and bounded article counts. Return Gee's task paths, generated files, metadata, and structured errors exactly; do not batch scrape from Codex-side scripts."
+          }
+        }
       }
     ]
   }

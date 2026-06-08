@@ -104,6 +104,30 @@ const GEAR_CAPABILITY_CONTRACTS: RuntimeCapabilityContract[] = [
   gearContract("wespy.reader", "wespy.list_album", [
     requiredString("url", ["url", "album_url"]),
   ]),
+  gearContract("wechat.watcher", "wechat.search_accounts", [
+    requiredString("query", ["query", "account_name", "name"]),
+  ]),
+  gearContract("wechat.watcher", "wechat.latest_articles", [
+    requiredString("query", ["query", "account_name", "name"]),
+  ]),
+  gearContract("wechat.watcher", "wechat.watch_account", [
+    requiredString("fake_id", ["fake_id", "fakeid", "mp_id"]),
+    requiredString("name", ["name", "mp_name", "account_name"]),
+  ]),
+  gearContract("wechat.watcher", "wechat.check_updates", []),
+  gearContract("wechat.watcher", "wechat.list_watched_accounts", []),
+  gearContract("wechat.watcher", "wechat.auth_status", []),
+  gearContract("wechat.channels", "wechat_channels.metadata", [
+    requiredString("url", ["url", "share_url", "sph_url"]),
+  ]),
+  gearContract("wechat.channels", "wechat_channels.download", [
+    requiredString("url", ["url", "share_url", "sph_url"]),
+  ]),
+  gearContract("wechat.channels", "wechat_channels.get_task", [
+    requiredString("task_id", ["task_id", "id"]),
+  ]),
+  gearContract("wechat.channels", "wechat_channels.list_tasks", []),
+  gearContract("wechat.channels", "wechat_channels.auth_status", []),
 ];
 
 const GEAR_CAPABILITY_CONTRACTS_BY_KEY = new Map(

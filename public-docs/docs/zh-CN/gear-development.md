@@ -2,7 +2,7 @@
 
 ## 状态与日期
 
-文档日期：2026-05-04。
+文档日期：2026-06-05。
 
 状态：Gear Platform V1 公开开发标准。本文同时记录当前实现状态和目标架构。当前已经实现的能力会明确写成“当前”；尚未完全落地但已经确定方向的内容会写成“目标”或“V1 标准”。
 
@@ -81,9 +81,12 @@ apps/macos-app/Gears/
 ├── twitter.capture/
 ├── bookmark.vault/
 ├── wespy.reader/
+├── wechat.watcher/
+├── wechat.channels/
 ├── app.icon.forge/
 ├── todo.manager/
 ├── power.video.manager/
+├── local.project.manager/
 ├── btc.price/
 └── system.monitor/
 ```
@@ -98,9 +101,12 @@ apps/macos-app/Sources/GeeAgentMac/Modules/SmartYTMedia/
 apps/macos-app/Sources/GeeAgentMac/Modules/TwitterCapture/
 apps/macos-app/Sources/GeeAgentMac/Modules/BookmarkVault/
 apps/macos-app/Sources/GeeAgentMac/Modules/WeSpyReader/
+apps/macos-app/Sources/GeeAgentMac/Modules/WeChatWatcher/
+apps/macos-app/Sources/GeeAgentMac/Modules/WeChatChannels/
 apps/macos-app/Sources/GeeAgentMac/Modules/AppIconForge/
 apps/macos-app/Sources/GeeAgentMac/Modules/TodoManager/
 apps/macos-app/Sources/GeeAgentMac/Modules/PowerVideoManager/
+apps/macos-app/Sources/GeeAgentMac/Modules/LocalProjectManager/
 apps/macos-app/Sources/GeeAgentMac/Views/Content/HomeWidgetsView.swift
 ```
 
@@ -119,10 +125,13 @@ apps/macos-app/Sources/GeeAgentMac/Views/Content/HomeWidgetsView.swift
 - `media.generator` 是当前第一方 Gear app。它提供原生媒体生成界面，图片和视频生成都通过全局 Xenodia 渠道执行，并向 agent 暴露列出模型、创建生成任务、读取任务状态的结构化能力。
 - 已经有第一版 V1 host bridge surface：`gee.app.openSurface`、渐进式 Gear capability disclosure 和统一 Gear invocation。
 - `bookmark.vault` 是当前第一方 Gear app。它把任意文本或 URL 保存到 `gear-data/bookmark.vault`，媒体 URL 使用与 `smartyt.media` 同一类 `yt-dlp` 元数据能力，Twitter/X 推文 URL 先走嵌入元数据路径，其他网站则回退到基础网页元数据 fetch。
-- `wespy.reader` 是当前第一方 Gear app。它封装 MIT 许可的 WeSpy Python package，把微信公众号文章、微信公众号专辑和通用文章页面抓取成 Markdown 优先的本地 task 文件。
+- `wespy.reader` 是当前第一方 Gear app。它封装 MIT 许可的 WeSpy Python package，把微信公众号文章、微信公众号专辑和通用文章页面抓取成 Markdown 优先的本地 task 文件。它的显式 URL 文章和专辑能力可以通过 Gee MCP bridge 暴露给 Codex 使用。
+- `wechat.watcher` 是当前第一方 Gear app。它把已认证的微信公众号后台 session 存入 Keychain，通过微信已登录后台搜索公众号记录，把显式 watchlist 按 `fakeid` 存入 `gear-data/wechat.watcher`，并检查已关注账号的新文章 URL。它和 `wespy.reader` 互补：V1 负责发现账号更新，不下载 Markdown 正文。`wechat.latest_articles` 会通过 Codex bridge 导出给明确提供公众号名称的调用；Codex 必须通过 Gee MCP/GearHost 让 live Gear 按名称搜索微信后台、使用返回的 `fakeid`、按需写入 watchlist 并返回文章 URL，不能用官网、搜索引擎、profile 页面抓取或本地脚本替代。
+- `wechat.channels` 是当前第一方 Gear app。它把腾讯元宝 Web session 存入 Keychain，并可通过 Gear 原生元宝授权面板配置该 session；通过腾讯自有端点解析显式的视频号分享链接或 finder-preview URL，短分享链接会先走官方 `shortUri` feed route 获取 metadata，把下载任务记录写入 `gear-data/wechat.channels`，并在腾讯返回可下载 video URL 时把视频保存为本地 artifact。`wechat_channels.metadata` 和 `wechat_channels.download` 会通过 Codex bridge 导出给明确提供视频号 URL 的调用。如果腾讯拒绝请求，或只返回元数据但没有可下载 `videoUrl`，Gear 会返回 `fallback_attempted: false` 的结构化 failed/degraded 恢复信息；Codex 不能用第三方解析站、浏览器抓取或本地脚本替代。
 - `app.icon.forge` 是当前第一方 Gear app。它可以把一张本地源图转换为 macOS app 图标 package，包含圆角安全区渲染、`AppIcon.icns`、`AppIcon.iconset`、`AppIcon.appiconset` 和 1024px 预览图；也可以生成简单的 Gear catalog 图标 package，包含 780x580 的 `assets/icon.png` 列表 tile、`preview-780x580.png` 和 `gear-icon.json`。
 - `todo.manager` 是当前第一方 Gear app。它提供受滴答清单式快速记录启发的原生本地优先任务清单，把 task 和 list 记录写入 `gear-data/todo.manager`，把常见的今天、明天、单一非提醒时段、下周几、明确日期、周末和提醒表达规范化成结构化日期，在获得授权时调度本地提醒通知，并向 GeeAgent 和 Codex bridge 暴露结构化 `todo.create`、`todo.query`、`todo.update`、`todo.delete` 能力。创建能力支持 idempotency key 和短窗口精确重复复用，因此重试不会重复创建同一个逻辑任务。只有提醒、没有 due date 的任务也能进入 Today/Upcoming，查询 payload 会包含 due/start/reminder-only/all-day/timed/overdue/unscheduled 的 schedule summary，原生 inspector 可以新增、编辑、移除和清空绝对时间或相对 due time 的提醒，并显示通知授权状态。重复规则会先作为 metadata 保存，暂不展开成循环任务实例；V1 不包含滴答清单云同步。
 - `power.video.manager` 是当前第一方只读 Gear app。它让用户选择 AI 视频 `runs` 工作区，把每个包含 `script/script-archive.md` 的文件夹视为一个独立项目，并在灵活的脚本元数据旁边提供严格的资产视图，包括角色定妆照、故事板网格、首帧、镜头视频、剪辑渲染、final 视频、成本摘要和显式当前选择。V1 不暴露 agent capabilities。
+- `local.project.manager` 是当前第一方 Gear app。它把本地项目启动命令保存到 `gear-data/local.project.manager`，以原生启动 / 停止 tile 展示每个项目，并把整张 tile 作为主要启动 / 停止点击目标；它通过用户保存的 shell 命令启动服务，停止匹配到的本地服务进程，并按已配置且可连接的前端端口、Gear 管理的启动 PID、命令指纹三层证据检查状态。运行中且配置了前端端口的项目会显示打开页面操作。移除项目 tile 只删除 Gear 保存的配置，不删除项目文件。V1 禁用 agent capabilities，因为进程启停属于高副作用本地操作。
 - `telegram.bridge` 是当前第一方 Gear。它提供原生 Telegram Bridge 界面、基于 GearHost 且 token 存在 GeeAgent 本地 app data 的 push-only Telegram 投递、主窗口安全的延后 app-started polling service，用于 GeeAgent 直连对话和 Codex Remote 命令，以及 Gee direct 消息的 runtime channel ingress。它的设置界面已经把双向对话 Bot 和单向推送信道分开，标明首次配置必填字段，能用表单里的 bot token 读取最新 Telegram update chat ID 后填入推送目标字段，也能从本地会话历史、runtime channel ingress 历史或 Bot API updates 读取最新 Telegram sender user ID 后填入 Gee/Codex 对话 Bot allowlist，并提供独立的 Telegram Conversations 视图展示 bridge 的收发线程。Gee Direct 支持用 `/new` 重置已绑定的 runtime 对话，并把这条重置确认限制在重置命令内，不会把它复用成普通回复；它也能通过上下文相关的原生 GearHost 执行把校验过的本地文件发回当前 Telegram 聊天，也会把 runtime 失败作为 `runtime_failed` 发回同一个 Telegram 聊天，而不是只记录在本地。Push-only 信道现在可以把文本、图片、视频、GIF 和其他可读本地文件发送到已配置的 Telegram 出站目标。入站 Telegram 媒体附件会作为远端 Telegram artifact reference 写入 runtime ingress 和 replay；不支持或无法读取的附件结构会明确失败，bridge 不会下载媒体，也不会把媒体塞进 transcript 文本。Status 输出包含 `gateway_health` 诊断，会报告缺失 token、webhook 尚未就绪的账户、polling offsets、push-channel counts 和 lifecycle readiness（`polling_loop`、`poll_interval_ms`、webhook `not_implemented`），并且不会连接 Telegram 或尝试 fallback 路线。Standalone worker 的 `poll-loop` 也会输出结构化 `poll_loop_started`、`poll_loop_iteration_failed` 和 `poll_loop_stopped` 事件，用于 daemon supervision。Codex Remote 支持 `/start`/`/help`、`/list`/`/recent`、`/tracked`、`/open`、`/latest`、`/desktop`、`/newcodex [prompt]`、`/mycodex`、`/cancel`、`/send <text>` 和 `/send <session_id> <prompt>`，发送提示仍通过明确的 CLI resume mode。Native bridge 会注册 Telegram bot 命令菜单，为分页 project 选择、分页 thread 浏览、Track/Untrack 和 Open/Latest thread 操作发送 inline keyboard 按钮，`/list` 会按每个 Codex session 自己记录的 workspace/cwd 聚合，并且只列出 Codex Desktop 来源的非 subagent 会话，避免 Telegram 暴露 Codex app 工作台里看不到的内部对话。Telegram 创建的 CLI session 会写入每个 chat 自己的有界 registry，并通过 `/mycodex` 列出；Open、Latest 和 Send 可以指向这些 session，而 `/desktop [session_id]` 会阻止它们，因为它们不是 Codex Desktop thread。`/desktop [session_id]` 保留为 slash command，不再作为每条 thread 的 inline action。选中 Codex thread 后直接发送普通文本或 `/send <text>` 会先进入 Confirm/Cancel 确认，不会立刻 resume 对应 session。native 和 worker 的 file-scan 列表路径只读取有界的近期 Codex session 日期目录，限制每个目录文件数和总候选数，增量读取 JSONL 摘要，并压缩 `/list` 的 project 摘要，避免大型 session store 触发全历史遍历或生成过大的 Telegram 回复。`/latest` 只读取选中 session 文件的有界尾部窗口。对话长回复会拆成多条 Telegram 消息，而不是截断；长纯文本 push 消息也会拆分，带 Telegram parse mode 的长 push 消息则继续阻止，避免格式标签被切成无效片段；Telegram 发送卡住时会变成结构化 timeout failure，让 polling offset 能带着失败证据继续前进。不可用的 app-server mode 会返回结构化 failure，不会 fallback。Codex export 已对 status/list/send push 文本和文件 capabilities 启用；信道创建和上下文相关的 direct file send 仍保留在 Gee 原生流程里，因为 bot token 绑定、目标确认和 active-chat identity 都属于本地配置/runtime 步骤。
 - Telegram 创建的 Codex CLI session 会从 app-owned Codex Remote workspace 启动，并显式使用 Codex 的 `--skip-git-repo-check` 选项。Telegram 后续 resume 这些 session 时会保留同一 non-repo 语义；失败仍以结构化 Codex Remote failure 暴露，不会走 fallback execution。
 - Codex Remote inline button action 不会等待 Telegram callback acknowledgement 完成后才执行所选命令，因此卡住的 `answerCallbackQuery` 请求不会阻塞 Start、Send、Cancel、分页、Open 或 Latest 操作。
@@ -130,7 +139,7 @@ apps/macos-app/Sources/GeeAgentMac/Views/Content/HomeWidgetsView.swift
 - Telegram 入站 polling 由 GeeAgentMac app 拥有。GeeAgentMac 启动入站 polling service 前会获取本地 single-owner lock；旧的独立 `tg-codex` launchd worker 不应与 app-owned bridge 并行运行。原生 Codex Remote 的 `/list` 扫描会离开 main actor 执行，使用有界的近期 session discovery 和短缓存，避免大型 Codex store 卡住 workbench。
 - 原生 Codex Remote 会在执行回复工作前先推进 polling offset，`/list` 扫描带有请求用时、条数、字节体积、workspace/cwd 元数据和持久化 session index 上限，通过每个 chat 的 registry 限制 Telegram 创建的 CLI session 找回范围，并限制 `/send` 和 `/newcodex` 返回的 Codex CLI 命令输出体积，避免崩溃或 Telegram 发送卡住后重复处理同一条重型 update。显式 `/list` 和 `/tracked` 命令会刷新有界 session index，分页和操作按钮则复用已记住的 index，让按钮编号保持稳定。Telegram 流程采用分层获取：`/list` 只返回 Desktop project 分页，`/project` 返回有界的 Desktop 对话标题分页，`/mycodex` 返回有界的 Telegram 创建 CLI session 分页，`/latest` 只返回选中 thread 最近一条有界公开 assistant 回复。GeeAgentMac 轮询 Codex-originated external invocations 时读取轻量 shared-store projection，而不是在 app 空闲时反复启动完整 runtime snapshot。
 - 在完整 SDK/MCP tool exposure 完成前，过渡期的 `host_action_intents` 可以让第一方 runtime turn 把 native Gear actions 交回 GeeAgentMac 顺序执行。
-- 外部 Codex 调用现在通过生成的 `geeagent-codex` plugin 和 Gee MCP server 创建 shared-store external invocations。GeeAgentMac 会轮询该队列，并把 `gee_invoke_capability` / `gee_open_surface` 通过 runtime 使用的同一 GearHost bridge 执行；Codex 通过 `gee_get_invocation` 读取已记录结果，只读 `media.generator` 模型/任务查询会被优先处理并使用较短等待窗口。已导出的内置能力包括低风险的 `media.generator` 模型/任务查询、仅面向明确用户请求的高风险 `media.generator/media_generator.create_task` 图片任务、图片 batch 或视频任务创建、`media.library` 视图过滤/文件夹聚焦和明确本地文件导入、仅面向明确用户请求的高风险 `app.icon.forge/app_icon.generate` app 图标 package 生成、仅面向明确用户请求的高风险 `app.icon.forge/gear_icon.generate` Gear catalog 图标生成、中风险的 `bookmark.vault/bookmark.save` Gear-owned bookmark 写入、低风险的 `todo.manager/todo.query`、中风险的 `todo.manager/todo.create` 和 `todo.manager/todo.update`、高风险软删除 `todo.manager/todo.delete`，以及中风险的 `telegram.bridge/telegram_push.send_message` 和高风险显式本地文件 `telegram.bridge/telegram_push.send_file` 已配置信道 Telegram push 投递。上下文相关的 `telegram_direct.send_file` 仍与 detached Codex direct-chat 调用分开。
+- 外部 Codex 调用现在通过生成的 `geeagent-codex` plugin 和 Gee MCP server 创建 shared-store external invocations。GeeAgentMac 会轮询该队列，并把 `gee_invoke_capability` / `gee_open_surface` 通过 runtime 使用的同一 GearHost bridge 执行；Codex 通过 `gee_get_invocation` 读取已记录结果，只读 `media.generator` 模型/任务查询会被优先处理并使用较短等待窗口。已导出的内置能力包括低风险的 `media.generator` 模型/任务查询、仅面向明确用户请求的高风险 `media.generator/media_generator.create_task` 图片任务、图片 batch 或视频任务创建、`media.library` 视图过滤/文件夹聚焦和明确本地文件导入、仅面向明确用户请求的高风险 `app.icon.forge/app_icon.generate` app 图标 package 生成、仅面向明确用户请求的高风险 `app.icon.forge/gear_icon.generate` Gear catalog 图标生成、中风险的 `bookmark.vault/bookmark.save` Gear-owned bookmark 写入、中风险 `smartyt.media/smartyt.search_candidates` 媒体搜索（包含抖音和小红书平台）、高风险 `smartyt.media/smartyt.download_now` 明确媒体下载、中风险显式 URL `wespy.reader/wespy.fetch_article` 和 `wespy.reader/wespy.list_album`、高风险有界 `wespy.reader/wespy.fetch_album`、中风险的 `wechat.watcher/wechat.latest_articles` 明确公众号名称查询、中风险 `wechat.channels/wechat_channels.metadata` 和高风险 `wechat.channels/wechat_channels.download` 明确视频号 URL 解析/下载、低风险的 `todo.manager/todo.query`、中风险的 `todo.manager/todo.create` 和 `todo.manager/todo.update`、高风险软删除 `todo.manager/todo.delete`，以及中风险的 `telegram.bridge/telegram_push.send_message` 和高风险显式本地文件 `telegram.bridge/telegram_push.send_file` 已配置信道 Telegram push 投递。上下文相关的 `telegram_direct.send_file` 仍与 detached Codex direct-chat 调用分开。
 - `btc.price` 和 `system.monitor` 已经作为 Home widgets 的方向存在。
 
 当前主要缺口：
@@ -772,7 +781,7 @@ Gear invocation 也必须按阶段收窄。当 focused runtime stage 处于活�
 
 核心导出标准位于 `docs/planning/gee-capability-export-standard-v0.md`。
 
-当前实现状态：agent runtime 已经有基于 manifest 的 export status/list/describe 命令、面向 Codex 的 MCP stdio server、shared-store external invocation queue、本地 `geeagent-codex` plugin generator，以及 home-local install command。生成的 `gee-capabilities` skill 是 Codex 的第一入口：它说明 GeeAgent plugin 是什么，指向生成的 capability index 和每个 Gear 的 reference 文件，并要求在调用前用 live MCP 完成 discovery / describe。install command 默认写入 `~/plugins/geeagent-codex`、刷新 `~/.agents/plugins/marketplace.json`，并刷新 Codex 实际加载的 cache package：`~/.codex/plugins/cache/geeagent-local/geeagent-codex/<plugin-version>`。cache package 会从 home-local plugin package 派生，而不是从开发 checkout 派生。plugin package 会包含一个版本化的已构建 native runtime bundle，位置是 `runtime/native-runtime/<plugin-version>/index.mjs`，也会为导出的 capabilities 生成 `gears/<gear-id>/gear.json` manifest projection；生成的 `.mcp.json` 指向这个 plugin-local bundle，使 Codex 能从任意 project cwd 启动 bridge，而不依赖开发 checkout 或 `tsx` loader。`gee_status`、`gee_list_capabilities` 和 `gee_describe_capability` 由 manifest projection 提供。`gee_invoke_capability` 和 `gee_open_surface` 会创建 external invocation，由 GeeAgentMac 通过 live GearHost bridge 执行；`gee_get_invocation` 直接读取已记录的 status/result，并可通过 `wait_ms` 短暂等待 terminal state。shared-store 写入会在 Codex 和 GeeAgentMac bridge 并发更新时保留已排队的 external invocation record。GeeAgentMac 会优先处理只读的 `media.generator` model 和 task status 查询，但结果仍通过同一个 external invocation record 完成。`media.generator/media_generator.create_task` 已导出给明确用户请求的图片或视频生成，并支持两个类别都使用 `batch_count` 1-4 fan-out，通过同一队列返回 task 或 batch status/artifact references。`app.icon.forge/app_icon.generate` 和 `app.icon.forge/gear_icon.generate` 已导出给明确用户请求的图标生成，并通过 GearHost 返回结构化文件 artifact。`telegram.bridge/telegram_push.send_message` 和 `telegram.bridge/telegram_push.send_file` 已导出给已配置的 push-only Telegram 信道，并返回真实 Telegram delivery metadata 或结构化 failed/degraded 状态。`telegram.bridge/telegram_direct.send_file` 仍然只在原生 runtime 内使用，因为它依赖 active Gee Direct Telegram chat。如果 GeeAgentMac 没有运行或无法清空队列，Codex 会收到带 `fallback_attempted: false` 的 pending/failed/blocked/degraded 结构化结果；stale `running` invocation 会降级并返回手动重试指引，不会自动重试。MCP server 不会执行 Gear 业务逻辑，也不会运行 fallback scripts。
+当前实现状态：agent runtime 已经有基于 manifest 的 export status/list/describe 命令、面向 Codex 的 MCP stdio server、shared-store external invocation queue、本地 `geeagent-codex` plugin generator，以及 home-local install command。生成的 `gee-capabilities` skill 是 Codex 的第一入口：它说明 GeeAgent plugin 是什么，指向生成的 capability index 和每个 Gear 的 reference 文件，并要求在调用前用 live MCP 完成 discovery / describe。install command 默认写入 `~/plugins/geeagent-codex`、刷新 `~/.agents/plugins/marketplace.json`，并刷新 Codex 实际加载的 cache package：`~/.codex/plugins/cache/geeagent-local/geeagent-codex/<plugin-version>`。cache package 会从 home-local plugin package 派生，而不是从开发 checkout 派生。plugin package 会包含一个版本化的已构建 native runtime bundle，位置是 `runtime/native-runtime/<plugin-version>/index.mjs`，也会为导出的 capabilities 生成 `gears/<gear-id>/gear.json` manifest projection；生成的 `.mcp.json` 指向这个 plugin-local bundle，使 Codex 能从任意 project cwd 启动 bridge，而不依赖开发 checkout 或 `tsx` loader。`gee_status`、`gee_list_capabilities` 和 `gee_describe_capability` 由 manifest projection 提供。`gee_invoke_capability` 和 `gee_open_surface` 会创建 external invocation，由 GeeAgentMac 通过 live GearHost bridge 执行；`gee_get_invocation` 直接读取已记录的 status/result，并可通过 `wait_ms` 短暂等待 terminal state。shared-store 写入会在 Codex 和 GeeAgentMac bridge 并发更新时保留已排队的 external invocation record。GeeAgentMac 会优先处理只读的 `media.generator` model 和 task status 查询，但结果仍通过同一个 external invocation record 完成。`media.generator/media_generator.create_task` 已导出给明确用户请求的图片或视频生成，并支持两个类别都使用 `batch_count` 1-4 fan-out，通过同一队列返回 task 或 batch status/artifact references。`app.icon.forge/app_icon.generate` 和 `app.icon.forge/gear_icon.generate` 已导出给明确用户请求的图标生成，并通过 GearHost 返回结构化文件 artifact。`smartyt.media/smartyt.search_candidates` 和 `smartyt.media/smartyt.download_now` 已导出给明确媒体搜索和选中媒体下载。小红书/RED 搜索使用带浏览器 cookie 的 `xiaohongshu-cli`；抖音搜索在已配置抖音账号和所需代理/网络路线时使用 `dy-cli`。CLI 依赖缺失、抖音未登录或抖音代理/网络路线未就绪会返回结构化失败。`wespy.reader/wespy.fetch_article`、`wespy.reader/wespy.list_album` 和 `wespy.reader/wespy.fetch_album` 已导出给显式文章或专辑 URL，并通过 GearHost 返回 WeSpy task path、生成文件、文章 metadata 和结构化失败。`wechat.channels/wechat_channels.metadata` 和 `wechat.channels/wechat_channels.download` 已导出给明确的视频号 URL，并通过 GearHost 返回腾讯 profile 数据、任务状态、本地输出路径或结构化 failed/degraded 恢复信息。`telegram.bridge/telegram_push.send_message` 和 `telegram.bridge/telegram_push.send_file` 已导出给已配置的 push-only Telegram 信道，并返回真实 Telegram delivery metadata 或结构化 failed/degraded 状态。`telegram.bridge/telegram_direct.send_file` 仍然只在原生 runtime 内使用，因为它依赖 active Gee Direct Telegram chat。如果 GeeAgentMac 没有运行或无法清空队列，Codex 会收到带 `fallback_attempted: false` 的 pending/failed/blocked/degraded 结构化结果；stale `running` invocation 会降级并返回手动重试指引，不会自动重试。MCP server 不会执行 Gear 业务逻辑，也不会运行 fallback scripts。
 
 目标 Codex-facing package 结构：
 
@@ -873,7 +882,7 @@ Capability 示例：
 - 目标是完整独立的 Eagle-compatible local media manager。
 - package 内包含 manifest、README、assets、setup metadata、storage notes 和未来 capability declarations。
 - Native Swift 实现可以在迁移期继续 host-compiled，但业务边界必须从主 app 里抽离。
-- 文件夹、筛选、星标、Quick Look、Finder、视频编辑交接、带缩略图兜底的视频 / gif hover playback、无缝循环预览、动态展示等行为属于 media gear，不属于主 workbench。
+- 文件夹、筛选、星标、Quick Look、Finder、视频编辑交接、带缩略图兜底的视频 / gif hover playback、无缝循环预览、动态展示等行为属于 media gear，不属于主 workbench。动态展示应启动可见范围内的每个视频 / gif 预览，在普通 gallery mode 下隐藏自动播放卡片上的 metadata、badge、star controls 和 gradient overlays，在进入 viewer mode 等 viewport size 或 gallery layout 变化时重新计算可见性，跳过 trimmed MP4 预览里延迟出现的视频轨 lead-in，并把 player setup 和视频播放放在 SwiftUI render pass 之外调度，使用短暂有界错峰和首帧停滞监测。viewer mode 应在空闲时自动隐藏底部工具栏，并在 pointer activity 时重新显示。
 - Agent capabilities 包括 `media.filter`、`media.focus_folder`、`media.import_files`、`media.inspect_assets`、`media.update_review_state` 和 `media.search_assets`。只有当前用户明确要求导入本地文件时，`media.import_files` 才可由 GeeAgent root-agent 对话和 Codex 对话触发；下载或生成出的媒体不会自动入库。导入时可以带上 project、run、source、beat、intended-use、review、flag、note 和 tag 等显式 metadata，Gear 会把这些字段写入 Eagle-compatible item metadata，能在可能时恢复已保存的访问授权，并为多 Gear 工作流返回 item proof。新导入文件会出现在 `imported_items`；重复文件会作为幂等成功返回 `action: "import_noop"`、`existing_items` 和 `duplicate_paths`；源文件不存在时通过 `missing_paths` 报告；不支持的文件通过 `unsupported_paths` 报告。`media.inspect_assets` 只报告文件存在性、可播放性、时长、尺寸和方向等技术事实。`media.update_review_state` 只保存人或 agent 明确给出的 review status、flags 和 notes，Gee 不判断版权、水印、肖像、风格或 beat 适配度。如果没有任何可用的已导入或已存在媒体条目，它会返回带 `code: "gear.media.no_supported_files"` 的结构化失败，而不是用 `imported_count: 0` 伪装成功。如果授权缺失，它会把可读路径保留为 `pending_paths`，打开 Media Library 界面，并返回结构化失败交给 active agent/LLM 解释。
 
 `hyperframes.studio`：
@@ -907,12 +916,12 @@ Capability 示例：
 
 - 目标是从 SmartYT 参考项目改造来的 native URL media acquisition gear。
 - Gear 接收明确的 URL 或媒体搜索 query，嗅探媒体 metadata，搜索候选素材，并且只在候选或 URL 被明确选中后下载音频、视频或直链图片 artifact。
-- V1 使用 `yt-dlp` 处理候选搜索、metadata、下载，以及平台已有字幕文件；使用 `ffmpeg` / `ffprobe` 支撑媒体转换。语音转写和语音互转不属于当前 Codex-exported 采集工作流。
+- V1 使用 `yt-dlp` 处理 YouTube 候选搜索、metadata、下载，以及平台已有字幕文件；使用 `ffmpeg` / `ffprobe` 支撑媒体转换。小红书/RED 搜索使用 Gear 声明的 `xiaohongshu-cli` 依赖和浏览器 cookie。抖音搜索在已配置抖音账号和所需代理/网络路线时使用 Gear 声明的 `dy-cli` 依赖。抖音视频 URL 下载使用同一条 `dy-cli` route；小红书显式 URL 继续通过 SmartYT 的 URL download provider。语音转写和语音互转不属于当前 Codex-exported 采集工作流。
 - 在执行依赖 `yt-dlp` 的操作前，SmartYT 会做有边界的依赖维护：每天最多一次通过 Homebrew 的 `yt-dlp` upgrade 路径刷新 stable 版本。并发的 SmartYT 操作会共享同一个进程内维护任务，避免同时启动互相竞争的 Homebrew upgrade。如果维护路径不可用，Gear 会返回结构化失败，而不是隐藏问题。YouTube bot verification 或 cookie 要求会以 `gear.smartyt.youtube_auth_required` 报告；单纯更新 `yt-dlp` 不会被当成这种状态的恢复方式。
 - SmartYT 原生 UI 可以长期保存浏览器导出的 Netscape `cookies.txt` 文件，或常见的浏览器 JSON cookie 导出。SmartYT 会把用户选择的文件规范化保存到 `~/Library/Application Support/GeeAgent/gear-data/smartyt.media/cookies/yt-dlp-cookies.txt`，之后通过每次命令的临时 cookie 副本自动用于后续 `yt-dlp` 操作；agent call 也可以通过 `cookie_file` 显式传入单次覆盖路径。保存的 cookie 源文件不能被 extractor 的 cookie-jar 写回修改。如果 YouTube 报告保存的账号 cookie 已轮换或不再有效，SmartYT 会从当前 Chrome profile 刷新自己的保存 cookie 文件，并对同一个 `yt-dlp` 命令自动重试一次；UI 也提供手动从 Chrome 刷新的操作。
 - Job state 应写入 `~/Library/Application Support/GeeAgent/gear-data/smartyt.media/`；下载媒体和平台已有字幕文件在 agent call 未提供 `output_dir` 时默认写入 `~/Downloads/SmartYT/<job-id>/`。
 - SmartYT 原生任务界面会为 queued/running job 显示逐项进度，并允许取消 queued 或 running 状态的 job。已完成、失败、已取消的 job record 可以从 UI 删除；删除时也会移除该 job 关联的 Gear-owned 下载文件、转写文件和任务输出目录。Queued 或 running job 必须先取消或结束后才能删除。结构化 task payload 会暴露 `progress_fraction`、`progress_label` 和 `can_cancel`，方便轮询界面渲染相同状态。
-- Codex-exported agent capabilities 是 `smartyt.search_candidates`、`smartyt.sniff`、`smartyt.download`、`smartyt.download_now`、`smartyt.get_task` 和 `smartyt.list_tasks`。`smartyt.search_candidates` 会保存 search task 并返回候选 metadata，不下载任何文件。`smartyt.download` 面向 UI 排队执行，`smartyt.download_now` 会等到 artifact 真正生成后返回 `output_paths`，供多 Gear 工作流使用。下载文件会留在 SmartYT task output directory，不会自动导入 Media Library；只有用户另外明确要求入库时才调用导入。直链图片 URL，包括带图片扩展名或 `format=` query hint 的 Twitter/X 图片 URL，会按图片下载处理，而不是误走视频下载。最终给用户看的自然语言回复由 active agent/LLM 生成。
+- Codex-exported agent capabilities 是 `smartyt.search_candidates`、`smartyt.sniff`、`smartyt.download`、`smartyt.download_now`、`smartyt.get_task` 和 `smartyt.list_tasks`。`smartyt.search_candidates` 会保存 search task 并返回候选 metadata，不下载任何文件；`platforms` 可包含 `youtube`、`douyin`、`xiaohongshu`，以及 `xhs`、`rednote` 等别名。`smartyt.download` 面向 UI 排队执行，`smartyt.download_now` 会等到 artifact 真正生成后返回 `output_paths`，供多 Gear 工作流使用；抖音 provider 失败会返回结构化登录或代理/网络恢复信息，而不是 Codex-side fallback work。下载文件会留在 SmartYT task output directory，不会自动导入 Media Library；只有用户另外明确要求入库时才调用导入。直链图片 URL，包括带图片扩展名或 `format=` query hint 的 Twitter/X 图片 URL，会按图片下载处理，而不是误走视频下载。最终给用户看的自然语言回复由 active agent/LLM 生成。
 
 `twitter.capture`：
 
@@ -948,8 +957,29 @@ Capability 示例：
 - Gear 接收单篇文章 URL、用于列出文章的微信公众号专辑 URL，或用于批量 Markdown 抓取的微信公众号专辑 URL。
 - V1 使用 package-local Python sidecar，位置是 `apps/macos-app/Gears/wespy.reader/scripts/`，并导入用户已安装的 `wespy` package。GeeAgent 不把 WeSpy 源码 vendor 到主 runtime 中。
 - Task state 和生成文件路径写入 `~/Library/Application Support/GeeAgent/gear-data/wespy.reader/tasks/<task-id>/task.json`。
-- Agent capabilities 是 `wespy.fetch_article`、`wespy.list_album`、`wespy.fetch_album`。每个 capability 都返回结构化 task 数据、文章数量、生成文件路径、文章 metadata 和结构化错误，最终回复由 active agent/LLM 生成。
+- Agent capabilities 是 `wespy.fetch_article`、`wespy.list_album`、`wespy.fetch_album`。每个 capability 都返回结构化 task 数据、文章数量、生成文件路径、文章 metadata 和结构化错误，最终回复由 active agent/LLM 生成。这些 capability 已针对用户明确提供的 URL 导出给 Codex；Codex caller 必须走 Gee MCP bridge，不能直接运行 WeSpy sidecar 或其他抓取脚本。
 - 缺少 Python package、网站结构变化、来源页面阻止访问或网络失败必须以结构化 task failure 返回；Gear 不能伪造抓取成功。
+
+`wechat.watcher`：
+
+- 目标是原生微信公众号更新监控 Gear，只监控用户明确添加的账号。
+- Gear 需要用户提供已认证的微信公众号后台 session。session token、cookie 和 user agent 存在 Keychain 中，不写入 `gear.json` 或 Gear 数据文件。
+- 账号搜索走微信已登录后台搜索接口，并把后台 `fakeid` 记录为 watchlist key。公开公众号资料页不作为稳定 watchlist identity。
+- Watchlist record 和检查历史写入 `~/Library/Application Support/GeeAgent/gear-data/wechat.watcher/watcher.json`。
+- Agent capabilities 是 `wechat.auth_status`、`wechat.search_accounts`、`wechat.watch_account`、`wechat.list_watched_accounts`、`wechat.check_updates` 和 `wechat.latest_articles`。它们返回结构化状态、搜索结果、已关注账号、新发现文章 URL、检查记录和失败代码，最终回复由 active agent/LLM 生成。
+- `wechat.latest_articles` 通过 Codex bridge 导出给明确提供公众号名称的调用。Codex caller 必须走 Gee MCP/GearHost，让 live Gear 按名称搜索已认证微信后台、使用返回的 `fakeid`、按需写入 watchlist 并返回文章 URL；不能用官网、搜索引擎、profile 页面抓取或本地脚本替代。
+- V1 不读取个人微信关注列表，不做二维码登录，不在主窗口出现前跑后台轮询，也不自动调用 `wespy.reader`。多 Gear 工作流可以在用户要求 Markdown 抓取时，把发现的文章 URL 传给 `wespy.fetch_article`。
+- 缺失或过期 session、微信 API 拒绝、响应结构变化和网络失败都必须以包含 `fallback_attempted: false` 的结构化 failure 返回。Gear 不能静默切换到其他抓取路径，也不能在没有有效账号 session 时声称监控已经启用。
+
+`wechat.channels`：
+
+- 目标是原生视频号下载 Gear，只处理用户明确提供的视频号分享链接或 finder-preview URL。
+- 短分享链接会先走腾讯官方 `shortUri` feed route 获取 metadata。只有需要恢复可下载 feed URL，或公开 feed route 无法解析某个 URL 时，才使用已配置的腾讯元宝 Web session。用户可以在 Gear 原生授权面板中完成元宝登录，Gear 会在自身边界内保存得到的浏览器 session。cookie、user agent 和可选当前请求头存入 Keychain，不写入 `gear.json` 或 Gear task 文件。
+- URL 支持范围是显式的：`https://weixin.qq.com/sph/...` 和 `https://channels.weixin.qq.com/finder-preview/pages/...`。微信公众号文章 URL 仍属于 `wespy.reader`；公众号更新监控仍属于 `wechat.watcher`。
+- Task record 写入 `~/Library/Application Support/GeeAgent/gear-data/wechat.channels/tasks/<task-id>/task.json`。如果 agent call 没有提供 `output_dir`，下载视频默认写入 `~/Downloads/WeChat Channels/<task-id>/`。
+- Agent capabilities 是 `wechat_channels.auth_status`、`wechat_channels.metadata`、`wechat_channels.download`、`wechat_channels.get_task` 和 `wechat_channels.list_tasks`。它们返回结构化 session 状态、profile 数据、任务记录、本地输出路径和 failed/degraded 恢复信息，最终回复由 active agent/LLM 生成。
+- `wechat_channels.metadata` 和 `wechat_channels.download` 通过 Codex bridge 导出给明确提供视频 URL 的调用。Codex caller 必须走 Gee MCP/GearHost，不能用第三方解析站、浏览器抓取、SmartYT 或本地脚本替代。
+- 缺失必需的元宝 session、腾讯 API 拒绝、响应结构变化、网络失败，以及已解析 profile 但没有 `videoUrl` 的情况，都必须以 `fallback_attempted: false` 的结构化 failure 或 degraded state 返回。
 
 `app.icon.forge`：
 
@@ -970,13 +1000,25 @@ Capability 示例：
 - 当前 AI 视频 runs 可在 `run-state.json` 中记录已接受首帧、已接受视频候选、路线元数据和视频成本。旧版 workflow closeout 文件仍会在可用时被支持：`production/current-selection.json` 记录选中的首帧/视频，`editing/current-edit.json` 记录选中的 final/剪辑渲染，`cost-summary.json` 记录项目成本。若 run-state 和 selection 文件都没有指明某个资产，Gear 只是不显示选中标记。
 - V1 禁用 agent capabilities。这个 Gear 不通过 Codex bridge 导出，也不能新增 gear-specific pseudo-tools。
 
+`local.project.manager`：
+
+- 目标是原生本地项目服务启动 / 停止 Gear。
+- Project record 写入 `~/Library/Application Support/GeeAgent/gear-data/local.project.manager/projects.json`。
+- 每个项目保存显示名称、多行终端命令和可选前端端口。原生界面以紧凑 tile 展示项目，tile 本体是主要启动 / 停止控件，编辑 / 移除、刷新、状态来源证据和打开页面保留为独立控件。项目运行中且配置了前端端口时会显示打开页面，并打开配置的 localhost URL。
+- 启停判断保持技术栈无关。GeeAgent 首先信任可连接的配置端口，其次信任在此 Gear 中启动命令留下的受管理 PID，最后使用从保存 shell 命令提取的命令指纹。对有前端页面的项目，端口检查是跨技术栈最强信号；命令匹配只是较低置信度的进程发现。
+- 停止操作使用当前解析到的服务 PID。把项目从 Gear 中移除只删除保存的配置，不触碰源码目录。
+- V1 禁用 agent capabilities。进程启停控制在完成 approval、结果和失败语义审查前，不能作为 gear-specific pseudo-tool 暴露。
+
 信息采集工作流：
 
 - 纯文本直接调用 `bookmark.save`。
 - URL metadata capture 先调用 `bookmark.save`；只有当用户要求更深入的 Twitter/media 内容，或 URL 明确指向强媒体内容时，才使用 `twitter.capture` 或 `smartyt.media`。
 - 当用户要求 Markdown、文章提取或批量专辑抓取时，微信公众号文章或专辑 URL 应使用 `wespy.reader`；只有用户明确要保存 URL 本身为书签时才使用 `bookmark.save`。
+- 当用户要求盯着公众号账号新文章时，应使用 `wechat.watcher`。`wechat.watcher` 通过显式添加的 `fakeid` watchlist 发现新文章 URL；这些 URL 的 Markdown / 正文抓取仍由 `wespy.reader` 负责。
+- 当用户要求解析或下载视频时，视频号分享链接或 finder-preview URL 应使用 `wechat.channels`。不要把这些 URL 路由到 `smartyt.media`。
 - Twitter/X status URL 默认需要采集媒体，除非用户明确只想保存 metadata 或明确不要下载媒体。需要推文/媒体细节时先用 `twitter.fetch_tweet`，再对每个可下载的视频或图片 URL 调用 `smartyt.download_now`。
 - YouTube URL 在默认下载决策前应使用 `smartyt.sniff` 作为轻量时长探测。只有 `duration_seconds` 小于 300 秒时才默认下载；超过 300 秒或时长未知时默认只保存 metadata，除非用户明确要求下载。
+- 抖音和小红书/RED 搜索或明确视频 URL 应使用 `smartyt.media`。关键词搜索调用 `smartyt.search_candidates`，并把 `platforms` 设为 `douyin` 或 `xiaohongshu`；小红书需要浏览器 cookie，抖音需要已配置的 `dy-cli` 账号，以及 CLI 报告所需的代理/网络路线。选中的候选和明确 URL 通过 `smartyt.download_now` 下载。
 - 强媒体采集应对每个 media URL 调用 `smartyt.download_now`，再调用 `media.import_files`，最后调用带 `local_media_paths` 的 `bookmark.save`。
 - 如果当前没有已授权媒体库，`media.import_files` 应把下载路径保留为 `pending_paths`，打开 Media Library 界面，并提示用户选择或创建媒体库后再声称导入成功。Bookmark Vault 仍可保存下载路径，以便授权后继续工作流。
 - 依赖 `media.import_files` 的 runtime stage 必须要求 `available_count > 0`，或 `imported_items` / `existing_items` 非空，才能声称媒体导入完成。只有 successful invocation 和 `imported_count: 0` 不足以作为完成证明。
@@ -1007,8 +1049,11 @@ apps/macos-app/
 │   ├── twitter.capture/
 │   ├── bookmark.vault/
 │   ├── wespy.reader/
+│   ├── wechat.watcher/
+│   ├── wechat.channels/
 │   ├── app.icon.forge/
 │   ├── todo.manager/
+│   ├── local.project.manager/
 │   ├── btc.price/
 │   └── system.monitor/
 └── Sources/

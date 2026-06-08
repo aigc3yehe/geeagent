@@ -14,7 +14,7 @@ final class AudioCaptureCoordinator {
     }
     var state: AudioCaptureState = .idle
     var transcriptText: String = ""
-    var statusMessage: String = "Ready."
+    var statusMessage: String
     var lastRecordingURL: URL?
     var lastTranscriptURL: URL?
     var lastArtifact: AudioCaptureArtifact?
@@ -30,6 +30,7 @@ final class AudioCaptureCoordinator {
     private var activeProvider: SpeechTranscriptionProviderID
     private var activeStartedAt: Date?
     private var activeIsChatInput = false
+    private var appLanguage: AppLanguage
 
     private static let providerPreferenceKey = "geeagent.audioCapture.transcriptionProvider"
 
@@ -41,6 +42,9 @@ final class AudioCaptureCoordinator {
         self.captureService = captureService
         self.transcriptionService = transcriptionService
         self.userDefaults = userDefaults
+        let appLanguage = AppLanguage.savedPreference(defaults: userDefaults)
+        self.appLanguage = appLanguage
+        self.statusMessage = AppLocalization.string("audio.status.ready", defaultValue: "Ready.", language: appLanguage)
         let storedProvider = userDefaults.string(forKey: Self.providerPreferenceKey)
         let provider = SpeechTranscriptionProviderID(rawValue: storedProvider ?? "") ?? .localWhisper
         self.selectedProvider = provider
@@ -75,6 +79,11 @@ final class AudioCaptureCoordinator {
         stopSession(isChatInput: false)
     }
 
+    func setAppLanguage(_ language: AppLanguage) {
+        appLanguage = language
+        refreshLocalizedStatusMessages()
+    }
+
     func startChatVoiceInput() {
         guard !isChatVoiceInputActive else {
             stopChatVoiceInput()
@@ -88,7 +97,11 @@ final class AudioCaptureCoordinator {
             isChatInput: true
         )
         if started {
-            chatVoiceStatusMessage = "Listening with \(selectedProvider.title)..."
+            chatVoiceStatusMessage = localizedFormat(
+                "audio.status.listeningWith",
+                defaultValue: "Listening with %@...",
+                selectedProvider.title
+            )
             isChatVoiceInputActive = true
         }
     }
@@ -102,12 +115,14 @@ final class AudioCaptureCoordinator {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(transcriptText, forType: .string)
-        statusMessage = transcriptText.isEmpty ? "No transcript to copy." : "Transcript copied."
+        statusMessage = transcriptText.isEmpty
+            ? localizedString("audio.status.noTranscriptToCopy", defaultValue: "No transcript to copy.")
+            : localizedString("audio.status.transcriptCopied", defaultValue: "Transcript copied.")
     }
 
     func revealLastRecording() {
         guard let lastRecordingURL else {
-            statusMessage = "No saved recording to reveal."
+            statusMessage = localizedString("audio.status.noSavedRecording", defaultValue: "No saved recording to reveal.")
             return
         }
         NSWorkspace.shared.activateFileViewerSelecting([lastRecordingURL])
@@ -121,7 +136,7 @@ final class AudioCaptureCoordinator {
         isChatInput: Bool
     ) -> Bool {
         guard canStart else {
-            let message = "Audio capture is already active."
+            let message = localizedString("audio.status.alreadyActive", defaultValue: "Audio capture is already active.")
             statusMessage = message
             if isChatInput {
                 chatVoiceStatusMessage = message
@@ -142,8 +157,17 @@ final class AudioCaptureCoordinator {
             lastTranscriptURL = nil
         }
         statusMessage = mode == .transcribe
-            ? "Starting \(source.title.lowercased()) capture with \(provider.title)..."
-            : "Starting \(source.title.lowercased()) capture..."
+            ? localizedFormat(
+                "audio.status.startingCaptureWithProvider",
+                defaultValue: "Starting %@ capture with %@...",
+                sourceTitle(source).lowercased(),
+                provider.title
+            )
+            : localizedFormat(
+                "audio.status.startingCapture",
+                defaultValue: "Starting %@ capture...",
+                sourceTitle(source).lowercased()
+            )
 
         Task { [weak self] in
             guard let self else { return }
@@ -151,16 +175,26 @@ final class AudioCaptureCoordinator {
                 if mode == .transcribe {
                     let supportsRealtime = await transcriptionService.supportsRealtime(providerID: provider)
                     if supportsRealtime {
-                        statusMessage = "Realtime transcription ready."
+                        statusMessage = localizedString("audio.status.realtimeReady", defaultValue: "Realtime transcription ready.")
                     }
                 }
                 let startedAt = try await captureService.startRecording(source: source)
                 await MainActor.run {
                     self.activeStartedAt = startedAt
                     self.state = .recording(startedAt: startedAt)
-                    self.statusMessage = mode == .transcribe ? "Recording for transcription with \(provider.title)..." : "Recording..."
+                    self.statusMessage = mode == .transcribe
+                        ? self.localizedFormat(
+                            "audio.status.recordingForTranscription",
+                            defaultValue: "Recording for transcription with %@...",
+                            provider.title
+                        )
+                        : self.localizedString("audio.status.recording", defaultValue: "Recording...")
                     if isChatInput {
-                        self.chatVoiceStatusMessage = "Recording with \(provider.title). Press the microphone again to stop."
+                        self.chatVoiceStatusMessage = self.localizedFormat(
+                            "audio.status.chatRecordingWithProvider",
+                            defaultValue: "Recording with %@. Press the microphone again to stop.",
+                            provider.title
+                        )
                     }
                 }
             } catch {
@@ -177,10 +211,14 @@ final class AudioCaptureCoordinator {
         let sessionIsChatInput = activeIsChatInput
         state = .transcribing
         statusMessage = activeMode == .transcribe
-            ? "Stopping and transcribing with \(activeProvider.title)..."
-            : "Stopping recording..."
+            ? localizedFormat(
+                "audio.status.stoppingTranscribing",
+                defaultValue: "Stopping and transcribing with %@...",
+                activeProvider.title
+            )
+            : localizedString("audio.status.stoppingRecording", defaultValue: "Stopping recording...")
         if sessionIsChatInput || isChatInput {
-            chatVoiceStatusMessage = "Transcribing..."
+            chatVoiceStatusMessage = localizedString("audio.status.transcribing", defaultValue: "Transcribing...")
         }
 
         Task { [weak self] in
@@ -230,10 +268,13 @@ final class AudioCaptureCoordinator {
         lastArtifact = artifact
         state = .completed
         activeIsChatInput = false
-        statusMessage = "Recording saved."
+        statusMessage = localizedString("audio.status.recordingSaved", defaultValue: "Recording saved.")
         if isChatInput {
             isChatVoiceInputActive = false
-            chatVoiceStatusMessage = "Recording saved, but no transcript was requested."
+            chatVoiceStatusMessage = localizedString(
+                "audio.status.recordingSavedNoTranscript",
+                defaultValue: "Recording saved, but no transcript was requested."
+            )
         }
     }
 
@@ -260,10 +301,10 @@ final class AudioCaptureCoordinator {
         )
         state = .completed
         activeIsChatInput = false
-        statusMessage = "Transcription completed."
+        statusMessage = localizedString("audio.status.transcriptionCompleted", defaultValue: "Transcription completed.")
         if isChatInput {
             chatVoiceText = result.transcriptText
-            chatVoiceStatusMessage = "Voice input ready."
+            chatVoiceStatusMessage = localizedString("audio.status.voiceInputReady", defaultValue: "Voice input ready.")
             isChatVoiceInputActive = false
         }
     }
@@ -289,6 +330,88 @@ final class AudioCaptureCoordinator {
         if isChatInput {
             chatVoiceStatusMessage = message
             isChatVoiceInputActive = false
+        }
+    }
+
+    private func refreshLocalizedStatusMessages() {
+        switch state {
+        case .idle:
+            statusMessage = localizedString("audio.status.ready", defaultValue: "Ready.")
+        case .starting:
+            statusMessage = activeMode == .transcribe
+                ? localizedFormat(
+                    "audio.status.startingCaptureWithProvider",
+                    defaultValue: "Starting %@ capture with %@...",
+                    sourceTitle(activeSource).lowercased(),
+                    activeProvider.title
+                )
+                : localizedFormat(
+                    "audio.status.startingCapture",
+                    defaultValue: "Starting %@ capture...",
+                    sourceTitle(activeSource).lowercased()
+                )
+        case .recording:
+            statusMessage = activeMode == .transcribe
+                ? localizedFormat(
+                    "audio.status.recordingForTranscription",
+                    defaultValue: "Recording for transcription with %@...",
+                    activeProvider.title
+                )
+                : localizedString("audio.status.recording", defaultValue: "Recording...")
+        case .transcribing:
+            statusMessage = activeMode == .transcribe
+                ? localizedFormat(
+                    "audio.status.stoppingTranscribing",
+                    defaultValue: "Stopping and transcribing with %@...",
+                    activeProvider.title
+                )
+                : localizedString("audio.status.stoppingRecording", defaultValue: "Stopping recording...")
+        case .completed:
+            statusMessage = transcriptText.isEmpty
+                ? localizedString("audio.status.recordingSaved", defaultValue: "Recording saved.")
+                : localizedString("audio.status.transcriptionCompleted", defaultValue: "Transcription completed.")
+        case .failed:
+            break
+        }
+
+        if isChatVoiceInputActive {
+            switch state {
+            case .starting:
+                chatVoiceStatusMessage = localizedFormat(
+                    "audio.status.listeningWith",
+                    defaultValue: "Listening with %@...",
+                    activeProvider.title
+                )
+            case .recording:
+                chatVoiceStatusMessage = localizedFormat(
+                    "audio.status.chatRecordingWithProvider",
+                    defaultValue: "Recording with %@. Press the microphone again to stop.",
+                    activeProvider.title
+                )
+            case .transcribing:
+                chatVoiceStatusMessage = localizedString("audio.status.transcribing", defaultValue: "Transcribing...")
+            default:
+                break
+            }
+        } else if chatVoiceStatusMessage != nil, !chatVoiceText.isEmpty {
+            chatVoiceStatusMessage = localizedString("audio.status.voiceInputReady", defaultValue: "Voice input ready.")
+        }
+    }
+
+    private func localizedString(_ key: String, defaultValue: String) -> String {
+        AppLocalization.string(key, defaultValue: defaultValue, language: appLanguage)
+    }
+
+    private func localizedFormat(_ key: String, defaultValue: String, _ arguments: CVarArg...) -> String {
+        AppLocalization.format(key, defaultValue: defaultValue, language: appLanguage, arguments: arguments)
+    }
+
+    private func sourceTitle(_ source: AudioCaptureSource) -> String {
+        switch source {
+        case .microphone:
+            AppLocalization.string("audio.source.microphone", defaultValue: "Microphone", language: appLanguage)
+        case .systemAudio:
+            AppLocalization.string("audio.source.systemAudio", defaultValue: "System Audio", language: appLanguage)
         }
     }
 }

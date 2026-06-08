@@ -190,6 +190,69 @@ final class GearDependencyTests: XCTestCase {
         XCTAssertTrue(commands.contains("python3 -m pip install --user wespy"))
         XCTAssertTrue(commands.contains("python3 -m pip install --user --break-system-packages wespy"))
     }
+
+    func testPreparationServiceInstallsSmartYTChinaShortVideoPythonRecipes() async throws {
+        let data = Data("""
+        {
+          "schema": "gee.gear.v1",
+          "id": "smartyt.media",
+          "name": "SmartYT Media",
+          "description": "Media gear.",
+          "developer": "Gee",
+          "version": "0.1.0",
+          "entry": { "type": "native", "native_id": "smartyt.media" },
+          "dependencies": {
+            "install_strategy": "on_open",
+            "items": [
+              {
+                "id": "python3",
+                "kind": "runtime",
+                "scope": "global",
+                "required": true,
+                "detect": { "command": "python3", "args": ["--version"] },
+                "installer": { "type": "recipe", "id": "brew.install.python" }
+              },
+              {
+                "id": "xiaohongshu-cli",
+                "kind": "runtime",
+                "scope": "global",
+                "required": true,
+                "detect": { "command": "python3", "args": ["-c", "import xhs_cli"] },
+                "installer": { "type": "recipe", "id": "python3.install.user.xiaohongshu-cli" }
+              },
+              {
+                "id": "dy-cli",
+                "kind": "runtime",
+                "scope": "global",
+                "required": true,
+                "detect": { "command": "python3", "args": ["-c", "import dy_cli"] },
+                "installer": { "type": "recipe", "id": "python3.install.user.dy-cli" }
+              }
+            ]
+          }
+        }
+        """.utf8)
+        let manifest = try JSONDecoder().decode(GearManifest.self, from: data)
+        let runner = StatefulSmartYTChinaInstallRunner()
+        let suiteName = "gear-prep-smartyt-china-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let service = GearPreparationService(
+            runner: runner,
+            store: GearPreparationStore(defaults: defaults)
+        )
+
+        let snapshot = await service.prepareIfNeeded(
+            manifest: manifest.resolvingAssets(relativeTo: URL(fileURLWithPath: "/tmp/smartyt.media"))
+        )
+
+        XCTAssertEqual(snapshot.state, .ready)
+        let commands = await runner.commandHistory()
+        XCTAssertTrue(commands.contains("python3 -m pip install --user xiaohongshu-cli"))
+        XCTAssertTrue(commands.contains("python3 -m pip install --user --break-system-packages xiaohongshu-cli"))
+        XCTAssertTrue(commands.contains("python3 -m pip install --user dy-cli"))
+        XCTAssertTrue(commands.contains("python3 -m pip install --user --break-system-packages dy-cli"))
+    }
 }
 
 private struct FakeGearCommandRunner: GearCommandRunning {
@@ -224,6 +287,48 @@ private actor StatefulWeSpyInstallRunner: GearCommandRunning {
             return GearCommandResult(exitCode: 1, stdout: "", stderr: "error: externally-managed-environment")
         case "python3 -m pip install --user --break-system-packages wespy":
             return GearCommandResult(exitCode: 0, stdout: "installed wespy\n", stderr: "")
+        default:
+            return GearCommandResult(exitCode: 127, stdout: "", stderr: "unexpected command: \(key)")
+        }
+    }
+
+    func commandHistory() -> [String] {
+        commands
+    }
+}
+
+private actor StatefulSmartYTChinaInstallRunner: GearCommandRunning {
+    private var xhsDetectAttempts = 0
+    private var dyDetectAttempts = 0
+    private var commands: [String] = []
+
+    func run(_ command: String, arguments: [String]) async -> GearCommandResult {
+        let key = ([command] + arguments).joined(separator: " ")
+        commands.append(key)
+
+        switch key {
+        case "command -v python3":
+            return GearCommandResult(exitCode: 0, stdout: "/usr/bin/python3\n", stderr: "")
+        case "python3 --version":
+            return GearCommandResult(exitCode: 0, stdout: "Python 3.14.0\n", stderr: "")
+        case "python3 -c import xhs_cli":
+            xhsDetectAttempts += 1
+            return xhsDetectAttempts == 1
+                ? GearCommandResult(exitCode: 1, stdout: "", stderr: "No module named xhs_cli")
+                : GearCommandResult(exitCode: 0, stdout: "", stderr: "")
+        case "python3 -m pip install --user xiaohongshu-cli":
+            return GearCommandResult(exitCode: 1, stdout: "", stderr: "error: externally-managed-environment")
+        case "python3 -m pip install --user --break-system-packages xiaohongshu-cli":
+            return GearCommandResult(exitCode: 0, stdout: "installed xiaohongshu-cli\n", stderr: "")
+        case "python3 -c import dy_cli":
+            dyDetectAttempts += 1
+            return dyDetectAttempts == 1
+                ? GearCommandResult(exitCode: 1, stdout: "", stderr: "No module named dy_cli")
+                : GearCommandResult(exitCode: 0, stdout: "", stderr: "")
+        case "python3 -m pip install --user dy-cli":
+            return GearCommandResult(exitCode: 1, stdout: "", stderr: "error: externally-managed-environment")
+        case "python3 -m pip install --user --break-system-packages dy-cli":
+            return GearCommandResult(exitCode: 0, stdout: "installed dy-cli\n", stderr: "")
         default:
             return GearCommandResult(exitCode: 127, stdout: "", stderr: "unexpected command: \(key)")
         }

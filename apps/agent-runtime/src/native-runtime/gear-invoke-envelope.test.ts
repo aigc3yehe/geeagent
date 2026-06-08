@@ -252,4 +252,68 @@ describe("Gee Gear invoke envelope normalization", () => {
       taskId: "todo_123",
     });
   });
+
+  it("validates WeChat Channels download capabilities require explicit URLs", () => {
+    const missingURL = geeGearInvoke({
+      tool_id: "gee.gear.invoke",
+      arguments: {
+        gear_id: "wechat.channels",
+        capability_id: "wechat_channels.download",
+        args: {},
+      },
+    });
+
+    assert.equal(missingURL.kind, "error");
+    assert.equal(missingURL.kind === "error" ? missingURL.code : "", "gear.args.url");
+
+    const validDownload = geeGearInvoke({
+      tool_id: "gee.gear.invoke",
+      arguments: {
+        gear_id: "wechat.channels",
+        capability_id: "wechat_channels.download",
+        args: {
+          share_url: "https://weixin.qq.com/sph/AZJc5LQAbb",
+        },
+      },
+    });
+
+    assert.equal(validDownload.kind, "completed");
+    assert.deepEqual(validDownload.kind === "completed" ? validDownload.payload.args : undefined, {
+      share_url: "https://weixin.qq.com/sph/AZJc5LQAbb",
+    });
+  });
+
+  it("validates SmartYT candidate search requires an explicit query", () => {
+    const missingQuery = geeGearInvoke({
+      tool_id: "gee.gear.invoke",
+      arguments: {
+        gear_id: "smartyt.media",
+        capability_id: "smartyt.search_candidates",
+        args: {
+          platforms: ["douyin", "xiaohongshu"],
+        },
+      },
+    });
+
+    assert.equal(missingQuery.kind, "error");
+    assert.equal(missingQuery.kind === "error" ? missingQuery.code : "", "gear.args.query");
+
+    const validSearch = geeGearInvoke({
+      tool_id: "gee.gear.invoke",
+      arguments: {
+        gear_id: "smartyt.media",
+        capability_id: "smartyt.search_candidates",
+        args: {
+          query: "city night scene",
+          platforms: ["douyin", "xiaohongshu"],
+        },
+      },
+    });
+
+    assert.equal(validSearch.kind, "completed");
+    assert.deepEqual(validSearch.kind === "completed" ? validSearch.payload.args : undefined, {
+      query: "city night scene",
+      platforms: ["douyin", "xiaohongshu"],
+    });
+  });
 });

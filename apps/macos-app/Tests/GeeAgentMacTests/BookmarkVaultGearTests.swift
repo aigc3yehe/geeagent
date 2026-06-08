@@ -52,7 +52,7 @@ final class BookmarkVaultGearTests: XCTestCase {
 
     func testInputParserFindsFirstURLAndNormalizesWWW() {
         XCTAssertEqual(
-            BookmarkVaultInputParser.firstURL(in: "save www.example.com/watch?v=1。"),
+            BookmarkVaultInputParser.firstURL(in: "save www.example.com/watch?v=1."),
             "https://www.example.com/watch?v=1"
         )
         XCTAssertEqual(

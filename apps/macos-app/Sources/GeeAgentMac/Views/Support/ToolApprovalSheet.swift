@@ -42,7 +42,7 @@ struct ToolApprovalSheet: View {
                         .fill(blastRadiusColor.opacity(0.16))
                 )
             VStack(alignment: .leading, spacing: 2) {
-                Text("Approve local action")
+                Text(AppLocalization.string("approval.title", defaultValue: "Approve local action"))
                     .font(.geeDisplaySemibold(15))
                 Text(pending.invocation.toolID)
                     .font(.geeBody(12))
@@ -76,7 +76,7 @@ struct ToolApprovalSheet: View {
             EmptyView()
         } else {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Arguments")
+                Text(AppLocalization.string("approval.arguments", defaultValue: "Arguments"))
                     .font(.geeBodyMedium(11))
                     .foregroundStyle(.secondary)
                     .textCase(.uppercase)
@@ -107,7 +107,7 @@ struct ToolApprovalSheet: View {
         HStack(spacing: 8) {
             Spacer()
             Button(action: onCancel) {
-                Text("Cancel")
+                Text(AppLocalization.string("approval.cancel", defaultValue: "Cancel"))
                     .font(.geeBodyMedium(13))
                     .frame(minWidth: 72)
             }
@@ -115,7 +115,7 @@ struct ToolApprovalSheet: View {
             .buttonStyle(.bordered)
 
             Button(action: onApprove) {
-                Text("Approve")
+                Text(AppLocalization.string("approval.approve", defaultValue: "Approve"))
                     .font(.geeBodyMedium(13))
                     .frame(minWidth: 72)
             }

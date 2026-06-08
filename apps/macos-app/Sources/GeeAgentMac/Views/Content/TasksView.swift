@@ -29,7 +29,7 @@ struct TasksView: View {
             }
             .listStyle(.inset)
         }
-        .navigationTitle("Tasks")
+        .navigationTitle(store.localizedString("tasks.title", defaultValue: "Tasks"))
     }
 
     private var statusRow: some View {

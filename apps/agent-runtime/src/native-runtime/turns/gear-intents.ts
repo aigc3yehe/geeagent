@@ -36,6 +36,16 @@ export function routeLocalGearIntent(
     return twitterIntent;
   }
 
+  const weChatChannelsIntent = routeWeChatChannelsIntent(rawText, text);
+  if (weChatChannelsIntent) {
+    return weChatChannelsIntent;
+  }
+
+  const shortVideoIntent = routeSmartYTShortVideoIntent(rawText, text);
+  if (shortVideoIntent) {
+    return shortVideoIntent;
+  }
+
   const weSpyIntent = routeWeSpyReaderIntent(rawText, text);
   if (weSpyIntent) {
     return weSpyIntent;
@@ -125,9 +135,12 @@ export function requiresGeeGearBridgeFirst(prompt: string): boolean {
     mentionsMediaGeneration(rawText, text) ||
     mentionsTwitterCapture(text) ||
     mentionsBookmarkVault(text) ||
+    mentionsWeChatWatcher(rawText, text) ||
+    mentionsWeChatChannels(rawText, text) ||
+    mentionsSmartYTShortVideo(rawText, text) ||
     mentionsMediaLibrary(text) ||
     mentionsTodoManager(text) ||
-    (url !== null && isWeChatReaderURL(url))
+    (url !== null && (isWeChatReaderURL(url) || isWeChatChannelsURL(url) || isSmartYTShortVideoURL(url)))
   );
 }
 
@@ -220,6 +233,134 @@ function mentionsTodoManager(text: string): boolean {
     /\b(remind me|set a reminder|schedule a reminder)\b/.test(text) ||
     /\b(add|create|update|delete|complete|show|list|find|set|schedule)\b.{0,48}\b(tasks?|todos?|to-dos?|reminders?)\b/.test(text)
   );
+}
+
+function mentionsWeChatWatcher(rawText: string, text: string): boolean {
+  return (
+    text.includes("wechat watcher") ||
+    text.includes("wechat public account") ||
+    text.includes("weixin public account") ||
+    text.includes("official account") ||
+    text.includes("mp.weixin account") ||
+    /(?:watch|subscribe|monitor|check|scan|follow).{0,40}(?:wechat|weixin|public account|mp\.weixin)/i.test(rawText)
+  );
+}
+
+function mentionsWeChatChannels(rawText: string, text: string): boolean {
+  const url = firstURL(rawText);
+  return (
+    (url !== null && isWeChatChannelsURL(url)) ||
+    text.includes("wechat channels") ||
+    text.includes("video account") ||
+    text.includes("weixin channels")
+  );
+}
+
+function routeWeChatChannelsIntent(rawText: string, text: string): RoutedGearIntent | null {
+  const url = firstURL(rawText);
+  if (!url || !isWeChatChannelsURL(url)) {
+    return null;
+  }
+  const wantsDownload = (
+    text.includes("download") ||
+    text.includes("save") ||
+    text.includes("mp4")
+  );
+  const capabilityID = wantsDownload
+    ? "wechat_channels.download"
+    : "wechat_channels.metadata";
+  const runID = uniqueHostActionRunID();
+  return {
+    hostActions: [
+      {
+        host_action_id: hostActionID("open_wechat_channels", text, runID),
+        tool_id: "gee.app.openSurface",
+        arguments: { gear_id: "wechat.channels" },
+      },
+      {
+        host_action_id: hostActionID(capabilityID, text, runID),
+        tool_id: "gee.gear.invoke",
+        arguments: {
+          gear_id: "wechat.channels",
+          capability_id: capabilityID,
+          args: { url },
+        },
+      },
+    ],
+  };
+}
+
+function mentionsSmartYTShortVideo(rawText: string, text: string): boolean {
+  const url = firstURL(rawText);
+  return (
+    (url !== null && isSmartYTShortVideoURL(url)) ||
+    shortVideoPlatformsFromText(rawText, text, url).length > 0
+  );
+}
+
+function routeSmartYTShortVideoIntent(rawText: string, text: string): RoutedGearIntent | null {
+  const url = firstURL(rawText);
+  const platforms = shortVideoPlatformsFromText(rawText, text, url);
+  if (platforms.length === 0) {
+    return null;
+  }
+
+  const runID = uniqueHostActionRunID();
+  if (url && isSmartYTShortVideoURL(url)) {
+    const wantsDownload = (
+      mentionsMediaAcquisitionWorkflow(rawText, text) ||
+      text.includes("save")
+    );
+    const capabilityID = wantsDownload ? "smartyt.download_now" : "smartyt.sniff";
+    return {
+      hostActions: [
+        {
+          host_action_id: hostActionID("open_smartyt_media", text, runID),
+          tool_id: "gee.app.openSurface",
+          arguments: { gear_id: "smartyt.media" },
+        },
+        {
+          host_action_id: hostActionID(capabilityID, text, runID),
+          tool_id: "gee.gear.invoke",
+          arguments: {
+            gear_id: "smartyt.media",
+            capability_id: capabilityID,
+            args: {
+              url,
+              ...(capabilityID === "smartyt.download_now" ? { download_kind: "video" } : {}),
+            },
+          },
+        },
+      ],
+    };
+  }
+
+  if (!mentionsShortVideoSearch(rawText, text)) {
+    return null;
+  }
+
+  return {
+    hostActions: [
+      {
+        host_action_id: hostActionID("open_smartyt_media", text, runID),
+        tool_id: "gee.app.openSurface",
+        arguments: { gear_id: "smartyt.media" },
+      },
+      {
+        host_action_id: hostActionID("smartyt_search_candidates", text, runID),
+        tool_id: "gee.gear.invoke",
+        arguments: {
+          gear_id: "smartyt.media",
+          capability_id: "smartyt.search_candidates",
+          args: {
+            query: smartYTShortVideoSearchQuery(rawText),
+            platforms,
+            limit: requestedMediaSearchLimit(rawText, text),
+          },
+        },
+      },
+    ],
+  };
 }
 
 function bookmarkContent(rawText: string): string {
@@ -331,7 +472,7 @@ function mentionsTwitterCapture(text: string): boolean {
 
 function firstURL(text: string): string | null {
   const match = text.match(/https?:\/\/[^\s"'<>]+/);
-  return match?.[0]?.replace(/[.,;:!?)\]]+$/, "") ?? null;
+  return match?.[0]?.replace(/[.,;:!?)\]\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09]+$/, "") ?? null;
 }
 
 function requestedLimit(text: string): number {
@@ -384,6 +525,70 @@ function requestedHandle(text: string, url: string | null): string | null {
 
 function isWeChatReaderURL(url: string): boolean {
   return /^https?:\/\/mp\.weixin\.qq\.com\/(?:s(?:\/|\?)|mp\/appmsgalbum\?)/i.test(url);
+}
+
+function isWeChatChannelsURL(url: string): boolean {
+  return (
+    /^https?:\/\/weixin\.qq\.com\/sph\/[a-z0-9_-]+/i.test(url) ||
+    /^https?:\/\/channels\.weixin\.qq\.com\/finder-preview\/pages\/(?:sph|feed)\b/i.test(url)
+  );
+}
+
+function isSmartYTShortVideoURL(url: string): boolean {
+  return (
+    /^https?:\/\/(?:[^/]+\.)?(?:douyin\.com|iesdouyin\.com)\//i.test(url) ||
+    /^https?:\/\/(?:[^/]+\.)?(?:xiaohongshu\.com|xhslink\.com)\//i.test(url)
+  );
+}
+
+function shortVideoPlatformsFromText(rawText: string, text: string, url: string | null): string[] {
+  const platforms: string[] = [];
+  const add = (platform: string) => {
+    if (!platforms.includes(platform)) {
+      platforms.push(platform);
+    }
+  };
+  if (url && /^https?:\/\/(?:[^/]+\.)?(?:douyin\.com|iesdouyin\.com)\//i.test(url)) {
+    add("douyin");
+  }
+  if (url && /^https?:\/\/(?:[^/]+\.)?(?:xiaohongshu\.com|xhslink\.com)\//i.test(url)) {
+    add("xiaohongshu");
+  }
+  if (text.includes("douyin")) {
+    add("douyin");
+  }
+  if (
+    text.includes("xiaohongshu") ||
+    text.includes("rednote") ||
+    /\bxhs\b/i.test(rawText)
+  ) {
+    add("xiaohongshu");
+  }
+  return platforms;
+}
+
+function mentionsShortVideoSearch(_rawText: string, text: string): boolean {
+  return (
+    /\b(search|find|look for)\b/.test(text)
+  );
+}
+
+function requestedMediaSearchLimit(_rawText: string, text: string): number {
+  const mediaLimit = text.match(/(\d{1,3})\s*(?:videos?|results?|candidates?|items?)/);
+  if (mediaLimit?.[1]) {
+    return clampLimit(Number.parseInt(mediaLimit[1], 10), 30);
+  }
+  return requestedLimit(text);
+}
+
+function smartYTShortVideoSearchQuery(rawText: string): string {
+  const withoutURL = rawText.replace(/https?:\/\/[^\s"'<>]+/g, " ");
+  const cleaned = withoutURL
+    .replace(/\b\d{1,3}\s*(?:videos?|results?|candidates?|items?)\b/gi, " ")
+    .replace(/\b(search|find|look for|download|save|video|videos|douyin|xiaohongshu|rednote|xhs)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || rawText.trim();
 }
 
 function isWeChatAlbumURL(url: string): boolean {
@@ -483,7 +688,7 @@ function requestedLocalMediaPaths(rawText: string): string[] {
   for (const match of rawText.matchAll(/["'“”‘’]([^"'“”‘’]+)["'“”‘’]/g)) {
     addPathCandidate(pathCandidates, match[1]);
   }
-  for (const match of rawText.matchAll(/(?:file:\/\/[^\s,，。！？、；)）\]}】]+|~?\/[^\s,，。！？、；)）\]}】]+|[A-Za-z]:\\[^\s,，。！？、；)）\]}】]+)/g)) {
+  for (const match of rawText.matchAll(/(?:file:\/\/[^\s,\uFF0C\u3002\uFF01\uFF1F\u3001\uFF1B)\uFF09\]}\u3011]+|~?\/[^\s,\uFF0C\u3002\uFF01\uFF1F\u3001\uFF1B)\uFF09\]}\u3011]+|[A-Za-z]:\\[^\s,\uFF0C\u3002\uFF01\uFF1F\u3001\uFF1B)\uFF09\]}\u3011]+)/g)) {
     addPathCandidate(pathCandidates, match[0]);
   }
   return [...pathCandidates];

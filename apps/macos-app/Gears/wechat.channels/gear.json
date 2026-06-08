@@ -1,0 +1,193 @@
+{
+  "schema": "gee.gear.v1",
+  "id": "wechat.channels",
+  "name": "WeChat Channels Downloader",
+  "description": "Resolve explicit WeChat Channels share links through Tencent-owned feed routes and download returned video URLs when available.",
+  "developer": "Gee",
+  "version": "0.1.0",
+  "category": "Media",
+  "kind": "atmosphere",
+  "display_mode": "full_canvas",
+  "entry": {
+    "type": "native",
+    "native_id": "wechat.channels"
+  },
+  "permissions": [
+    "network.web",
+    "filesystem.write.downloads",
+    "filesystem.write.gear_storage",
+    "secret.keychain.read",
+    "secret.keychain.write"
+  ],
+  "agent": {
+    "enabled": true,
+    "capabilities": [
+      {
+        "id": "wechat_channels.auth_status",
+        "title": "Get WeChat Channels auth status",
+        "description": "Report whether a Tencent Yuanbao web session is configured for WeChat Channels download URL recovery.",
+        "examples": [
+          "Check whether WeChat Channels Downloader is authorized"
+        ],
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {}
+        },
+        "side_effect": "read_only",
+        "permissions": [
+          "gear_data.read",
+          "secret.keychain.read"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "low",
+            "requires_approval": false,
+            "skill_hint": "Use before WeChat Channels download calls to confirm whether the user configured a Yuanbao web session in GeeAgent. Do not ask Codex to read, print, or handle raw cookies."
+          }
+        }
+      },
+      {
+        "id": "wechat_channels.metadata",
+        "title": "Resolve WeChat Channels metadata",
+        "description": "Resolve an explicit WeChat Channels share or preview URL and return structured author, description, cover, and video URL metadata when Tencent returns it. Short share links first use Tencent's official shortUri feed route; Yuanbao session recovery is used only when a downloadable feed URL is needed.",
+        "examples": [
+          "Resolve this WeChat Channels link",
+          "Inspect this WeChat Channels share URL"
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "url"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "url": {
+              "type": "string",
+              "format": "uri",
+              "description": "Explicit WeChat Channels share URL, such as https://weixin.qq.com/sph/... or a channels.weixin.qq.com finder-preview URL."
+            }
+          }
+        },
+        "side_effect": "network.wechat.read",
+        "permissions": [
+          "network.web",
+          "secret.keychain.read"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "medium",
+            "requires_approval": false,
+            "skill_hint": "Use only for explicit WeChat Channels URLs. Short links may return metadata through Tencent's shortUri route even without Yuanbao credentials. Return structured degraded or failed states from Gee; do not call third-party parser sites or use browser scraping as a fallback."
+          }
+        }
+      },
+      {
+        "id": "wechat_channels.download",
+        "title": "Download WeChat Channels video",
+        "description": "Resolve an explicit WeChat Channels URL, download the returned Tencent video URL when available, save a Gear task record, and return local artifact paths.",
+        "examples": [
+          "Download this WeChat Channels video",
+          "Save this WeChat Channels share link as an MP4"
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "url"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "url": {
+              "type": "string",
+              "format": "uri"
+            },
+            "output_dir": {
+              "type": "string",
+              "description": "Optional local directory for the completed video. Defaults to ~/Downloads/WeChat Channels/<task-id>."
+            }
+          }
+        },
+        "side_effect": "network.wechat.download_and_write_files",
+        "permissions": [
+          "network.web",
+          "secret.keychain.read",
+          "filesystem.write.downloads",
+          "gear_data.write"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "high",
+            "requires_approval": false,
+            "skill_hint": "Use only when the user explicitly asks to download a WeChat Channels URL. Report output_paths and task state exactly. If Gee returns auth_missing, Tencent rejection, or no_video_url, surface that structured recovery instead of trying third-party downloader sites."
+          }
+        }
+      },
+      {
+        "id": "wechat_channels.get_task",
+        "title": "Get WeChat Channels task",
+        "description": "Return one saved WeChat Channels metadata or download task by id.",
+        "examples": [
+          "Show this WeChat Channels download task"
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "task_id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "task_id": {
+              "type": "string"
+            }
+          }
+        },
+        "side_effect": "read_only",
+        "permissions": [
+          "gear_data.read"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "low",
+            "requires_approval": false,
+            "skill_hint": "Use to inspect a saved WeChat Channels task state before deciding the next action."
+          }
+        }
+      },
+      {
+        "id": "wechat_channels.list_tasks",
+        "title": "List WeChat Channels tasks",
+        "description": "List recent WeChat Channels tasks with compact state for inspection and recovery.",
+        "examples": [
+          "List recent WeChat Channels downloads"
+        ],
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            }
+          }
+        },
+        "side_effect": "read_only",
+        "permissions": [
+          "gear_data.read"
+        ],
+        "exports": {
+          "codex": {
+            "enabled": true,
+            "risk": "low",
+            "requires_approval": false,
+            "skill_hint": "Use to inspect recent WeChat Channels task state. This capability does not resolve or download media."
+          }
+        }
+      }
+    ]
+  }
+}

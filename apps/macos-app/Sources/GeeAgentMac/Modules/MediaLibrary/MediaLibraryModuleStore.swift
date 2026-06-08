@@ -12,6 +12,7 @@ final class MediaLibraryModuleStore {
         static let lastLibraryPath = "geeagent.mediaLibrary.lastLibraryPath"
         static let lastLibraryBookmark = "geeagent.mediaLibrary.lastLibraryBookmark"
         static let libraryHistory = "geeagent.mediaLibrary.libraryHistory"
+        static let galleryLayout = "geeagent.mediaLibrary.galleryLayout"
     }
 
     private let service = MediaLibraryService()
@@ -32,6 +33,12 @@ final class MediaLibraryModuleStore {
     var selectedItemIDs: Set<MediaLibraryItem.ID> = []
     var focusedItemID: MediaLibraryItem.ID?
     var thumbnailSize: Double = 190
+    var galleryLayout: MediaLibraryGalleryLayout = .justified {
+        didSet {
+            guard galleryLayout != oldValue else { return }
+            defaults.set(galleryLayout.rawValue, forKey: PreferenceKey.galleryLayout)
+        }
+    }
     var isLoading = false
     var errorMessage: String?
     var pendingAgentImportPaths: [String] = []
@@ -41,6 +48,11 @@ final class MediaLibraryModuleStore {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.libraryHistory = Self.loadHistory(from: defaults)
+        if let stored = defaults.string(forKey: PreferenceKey.galleryLayout),
+           let layout = MediaLibraryGalleryLayout(rawValue: stored)
+        {
+            self.galleryLayout = layout
+        }
     }
 
     var focusedItem: MediaLibraryItem? {
@@ -839,4 +851,9 @@ struct MediaLibraryHistoryEntry: Codable, Hashable, Identifiable {
 
 enum MediaLibrarySpecialFolder {
     static let uncategorizedID = "__uncategorized"
+}
+
+enum MediaLibraryGalleryLayout: String, CaseIterable, Codable, Sendable {
+    case justified
+    case waterfall
 }

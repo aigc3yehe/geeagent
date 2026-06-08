@@ -2,7 +2,7 @@
   "schema": "gee.gear.v1",
   "id": "smartyt.media",
   "name": "SmartYT Media",
-  "description": "URL media sniffer and candidate search gear for explicit video, audio, or direct image acquisition.",
+  "description": "URL media sniffer, candidate search, and download gear for explicit video, audio, or direct image acquisition, including Douyin and Xiaohongshu/RED URLs.",
   "developer": "Gee",
   "version": "0.1.0",
   "category": "Media",
@@ -64,6 +64,57 @@
           "type": "recipe",
           "id": "brew.install.ffmpeg"
         }
+      },
+      {
+        "id": "python3",
+        "kind": "runtime",
+        "scope": "global",
+        "required": true,
+        "detect": {
+          "command": "python3",
+          "args": [
+            "--version"
+          ],
+          "min_version": "3.11.0"
+        },
+        "installer": {
+          "type": "recipe",
+          "id": "brew.install.python"
+        }
+      },
+      {
+        "id": "xiaohongshu-cli",
+        "kind": "runtime",
+        "scope": "global",
+        "required": true,
+        "detect": {
+          "command": "python3",
+          "args": [
+            "-c",
+            "import xhs_cli"
+          ]
+        },
+        "installer": {
+          "type": "recipe",
+          "id": "python3.install.user.xiaohongshu-cli"
+        }
+      },
+      {
+        "id": "dy-cli",
+        "kind": "runtime",
+        "scope": "global",
+        "required": true,
+        "detect": {
+          "command": "python3",
+          "args": [
+            "-c",
+            "import dy_cli"
+          ]
+        },
+        "installer": {
+          "type": "recipe",
+          "id": "python3.install.user.dy-cli"
+        }
       }
     ]
   },
@@ -73,7 +124,7 @@
       {
         "id": "smartyt.search_candidates",
         "title": "Search media candidates",
-        "description": "Search for candidate media from an explicit Codex/user query and platform list, save a search task, and return candidate metadata without downloading anything.",
+        "description": "Search for candidate media from an explicit Codex/user query and platform list, save a search task, and return candidate metadata without downloading anything. YouTube uses native yt-dlp search. Xiaohongshu uses xiaohongshu-cli with browser cookies. Douyin uses dy-cli and returns structured dependency, login, or proxy/network recovery when the local Douyin CLI route is not ready.",
         "examples": [
           "Search YouTube for evening neighborhood walking footage",
           "Find candidate clips for this media search plan"
@@ -99,6 +150,7 @@
             },
             "platforms": {
               "type": "array",
+              "description": "Supported values include youtube, douyin, xiaohongshu, xhs, and rednote.",
               "items": {
                 "type": "string"
               }
@@ -216,7 +268,7 @@
       {
         "id": "smartyt.download_now",
         "title": "Download media and return files",
-        "description": "Download URL media, including direct image URLs, immediately for multi-Gear workflows and return completed local artifact paths.",
+        "description": "Download URL media immediately for multi-Gear workflows and return completed local artifact paths. Direct image URLs are saved as images. Douyin video URLs use the Gear-declared dy-cli route and return structured login or proxy/network recovery when that local provider is not ready.",
         "examples": [
           "Download this video and give me the local file path",
           "Fetch this media file now so it can be imported into the media library"

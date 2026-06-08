@@ -226,7 +226,9 @@ struct HomeView: View {
                         )
                 }
                 .buttonStyle(.plain)
-                .help(live2DDesktopCompanionController.isPresented ? "Hide desktop Live2D companion" : "Show Live2D companion on desktop")
+                .help(live2DDesktopCompanionController.isPresented
+                    ? store.localizedString("home.live2d.hideDesktop", defaultValue: "Hide desktop Live2D companion")
+                    : store.localizedString("home.live2d.showDesktop", defaultValue: "Show Live2D companion on desktop"))
                 .disabled(!live2DDesktopCompanionController.canPresent)
             }
         }
@@ -239,7 +241,7 @@ struct HomeView: View {
         }
         .shadow(color: .black.opacity(0.22), radius: 10, x: 0, y: 5)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Switch display mode")
+        .accessibilityLabel(store.localizedString("home.displayMode.accessibility", defaultValue: "Switch display mode"))
     }
 
     private var homeAgentAppearanceSwitcher: some View {
@@ -262,7 +264,7 @@ struct HomeView: View {
             }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Switch agent visual")
+        .accessibilityLabel(store.localizedString("home.agentVisual.accessibility", defaultValue: "Switch agent visual"))
     }
 
     private func logoGlyph(fontSize: CGFloat) -> Text {
@@ -304,7 +306,7 @@ struct HomeView: View {
             .onTapGesture {
                 store.openHomeChatFocus()
             }
-            .help("Open focused chat")
+            .help(store.localizedString("home.chat.openFocused", defaultValue: "Open focused chat"))
 
             launcherControls(compactLayout: compactLayout)
         }
@@ -433,13 +435,13 @@ struct HomeView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("Attach files or folders")
+            .help(store.localizedString("chat.attachHelp", defaultValue: "Attach files or folders"))
             .disabled(store.isSendingMessage || !store.canSendMessages)
 
             TextField(
                 "",
                 text: $draftMessage,
-                prompt: Text("Type to continue in focused chat").foregroundStyle(.white.opacity(0.46))
+                prompt: Text(store.localizedString("home.chat.focusPlaceholder", defaultValue: "Type to continue in focused chat")).foregroundStyle(.white.opacity(0.46))
             )
             .textFieldStyle(.plain)
             .font(.geeBodyMedium(13))
@@ -463,7 +465,9 @@ struct HomeView: View {
                     .background(Color.white.opacity(0.1), in: Circle())
             }
             .buttonStyle(.plain)
-            .help(draftAttachments.isEmpty ? "Open focused chat" : "Send with attachments")
+            .help(draftAttachments.isEmpty
+                ? store.localizedString("home.chat.openFocused", defaultValue: "Open focused chat")
+                : store.localizedString("home.chat.sendWithAttachments", defaultValue: "Send with attachments"))
             .disabled(!draftAttachments.isEmpty && !canSendHomeDraft)
         }
         .frame(height: 34)
@@ -482,7 +486,7 @@ struct HomeView: View {
     private var conversationSummaryContent: some View {
         Group {
             if store.isSendingMessage {
-                ThinkingGradientText(text: "Agent is thinking…")
+                ThinkingGradientText(text: store.localizedString("chat.activity.thinking", defaultValue: "GeeAgent is thinking..."))
                     .font(.geeBodyMedium(15))
             } else {
                 Text(homeConversationSummaryPreview)
@@ -556,14 +560,14 @@ struct HomeView: View {
                 }
             } else {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("No conversation yet.")
+                    Text(store.localizedString("home.chat.noConversation", defaultValue: "No conversation yet."))
                         .font(.geeDisplaySemibold(20))
                         .foregroundStyle(.white.opacity(0.92))
 
                     Button {
                         store.createConversation(openSection: false)
                     } label: {
-                        Label("New Conversation", systemImage: "plus")
+                        Label(store.localizedString("home.chat.newConversation", defaultValue: "New Conversation"), systemImage: "plus")
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
@@ -590,10 +594,10 @@ struct HomeView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("Attach files or folders")
+                    .help(store.localizedString("chat.attachHelp", defaultValue: "Attach files or folders"))
                     .disabled(store.isSendingMessage || !store.canSendMessages)
 
-                    TextField("Ask GeeAgent…", text: $draftMessage)
+                    TextField(store.localizedString("home.chat.placeholder", defaultValue: "Ask GeeAgent..."), text: $draftMessage)
                         .textFieldStyle(.plain)
                         .foregroundStyle(.white.opacity(0.94))
                         .focused($chatComposerFocused)
@@ -752,9 +756,9 @@ struct HomeView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         } else {
             ContentUnavailableView(
-                "No active tasks",
+                store.localizedString("home.tasks.emptyTitle", defaultValue: "No active tasks"),
                 systemImage: "checklist",
-                description: Text("Tasks will appear here when the queue starts moving.")
+                description: Text(store.localizedString("home.tasks.emptyDescription", defaultValue: "Tasks will appear here when the queue starts moving."))
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -811,7 +815,7 @@ struct HomeView: View {
 
                 Spacer()
 
-                Button("Settings") {
+                Button(store.localizedString("settings.title", defaultValue: "Settings")) {
                     store.openSection(.settings)
                 }
                 .buttonStyle(.bordered)
@@ -825,7 +829,7 @@ struct HomeView: View {
         HStack(alignment: .center, spacing: 14) {
             Group {
                 if editingConversationTitle {
-                    TextField("Conversation", text: $editedConversationTitle)
+                    TextField(store.localizedString("home.chat.conversationTitlePlaceholder", defaultValue: "Conversation"), text: $editedConversationTitle)
                         .textFieldStyle(.plain)
                         .font(.geeDisplay(34))
                         .foregroundStyle(.white.opacity(0.96))
@@ -908,17 +912,18 @@ struct HomeView: View {
     }
 
     private var selectedConversationTitle: String {
-        store.selectedDisplayConversation?.displayTitle ?? "No Active Conversation"
+        store.selectedDisplayConversation?.displayTitle
+            ?? store.localizedString("home.chat.noActiveConversation", defaultValue: "No Active Conversation")
     }
 
     private var displayConversationTitle: String {
         let trimmed = selectedConversationTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            return "Conversation"
+            return store.localizedString("home.chat.conversationTitlePlaceholder", defaultValue: "Conversation")
         }
 
         if trimmed.lowercased().hasPrefix("new conversation") {
-            return "Conversation"
+            return store.localizedString("home.chat.conversationTitlePlaceholder", defaultValue: "Conversation")
         }
 
         return trimmed
@@ -947,7 +952,7 @@ struct HomeView: View {
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else {
-            return "Open focused chat to continue."
+            return store.localizedString("home.chat.openFocusedToContinue", defaultValue: "Open focused chat to continue.")
         }
         guard normalized.count > 220 else {
             return normalized
@@ -1719,9 +1724,9 @@ private extension HomeVisualEffectMode {
     var homeSwitcherHelpText: String {
         switch self {
         case .rain:
-            "Switch display mode to rain glass"
+            AppLocalization.string("home.effect.rainHelp", defaultValue: "Switch display mode to rain glass")
         case .none:
-            "Switch display mode to clean background"
+            AppLocalization.string("home.effect.noneHelp", defaultValue: "Switch display mode to clean background")
         }
     }
 }

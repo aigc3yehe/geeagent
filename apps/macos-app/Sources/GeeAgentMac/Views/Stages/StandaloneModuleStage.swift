@@ -24,7 +24,7 @@ struct StandaloneModuleStage: View {
                     Text(module.name)
                         .font(.geeDisplaySemibold(16))
                         .foregroundStyle(.primary)
-                    Text("Module · \(module.displayMode.shortLabel)")
+                    Text(AppLocalization.format("module.displayMode", defaultValue: "Module · %@", module.displayMode.shortLabel))
                         .font(.geeBody(11))
                         .foregroundStyle(.secondary)
                 }
@@ -34,7 +34,7 @@ struct StandaloneModuleStage: View {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.backward")
                         .font(.system(size: 11, weight: .semibold))
-                    Text("Workbench")
+                    Text(AppLocalization.string("workbench.title", defaultValue: "Workbench"))
                         .font(.geeBodyMedium(12))
                 }
                 .padding(.horizontal, 12)
@@ -54,7 +54,7 @@ struct StandaloneModuleStage: View {
                 GenericFullCanvasModuleStubView(module: module)
             }
         } else {
-            Text("Module unavailable.")
+            Text(AppLocalization.string("module.unavailable", defaultValue: "Module unavailable."))
                 .font(.geeBody(13))
                 .foregroundStyle(.secondary)
         }

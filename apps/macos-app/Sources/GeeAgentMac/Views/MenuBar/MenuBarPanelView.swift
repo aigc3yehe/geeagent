@@ -153,13 +153,13 @@ struct MenuBarPanelView: View {
     private var recentTasks: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Recent Logs")
+                Text(AppLocalization.string("menu.recentLogs", defaultValue: "Recent Logs"))
                     .font(.geeBodyMedium(11))
                     .textCase(.uppercase)
                     .tracking(0.6)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Open Logs") {
+                Button(AppLocalization.string("menu.openLogs", defaultValue: "Open Logs")) {
                     onOpenMainWindow(.logs)
                 }
                 .font(.geeBodyMedium(10))
@@ -234,8 +234,8 @@ struct MenuBarPanelView: View {
         switch store.menuBarState {
         case .waitingReview: return "Open Review"
         case _ where needsSetup: return "Open Setup"
-        case .idle: return "Open Chat"
-        default: return "Open Logs"
+        case .idle: return AppLocalization.string("quickInput.openChat", defaultValue: "Open Chat")
+        default: return AppLocalization.string("menu.openLogs", defaultValue: "Open Logs")
         }
     }
 

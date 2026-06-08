@@ -126,6 +126,7 @@ struct WorkbenchRootView: View {
                     .allowsHitTesting(false)
             }
         }
+        .appLanguage(store.appLanguage)
         .overlay(alignment: .top) {
             GeometryReader { proxy in
                 Color.clear
@@ -203,7 +204,7 @@ struct WorkbenchRootView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .animation(.spring(response: 0.42, dampingFraction: 0.9), value: presentedSection)
+        .animation(.spring(response: 0.38, dampingFraction: 0.82), value: presentedSection)
     }
 
     private var homeStageTransition: AnyTransition {
@@ -328,14 +329,14 @@ private struct WorkbenchTopNavigation: View {
                 )
 
                 HomeTopLevelNavigationButton(
-                    title: "Gears",
+                    title: store.localizedString("apps.title", defaultValue: "Gears"),
                     systemImage: WorkbenchSection.apps.systemImage,
                     isSelected: store.selectedSection == .apps,
                     action: { store.openSection(.apps) }
                 )
 
                 HomeTopLevelNavigationButton(
-                    title: "Workbench",
+                    title: store.localizedString("workbench.title", defaultValue: "Workbench"),
                     systemImage: "rectangle.3.group",
                     isSelected: store.selectedSection != .home && store.selectedSection != .apps,
                     action: { store.openSection(.chat) }
@@ -384,7 +385,14 @@ private struct WorkbenchTopNavigation: View {
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .stroke(Color.white.opacity(0.08), lineWidth: 0.9)
+                                .stroke(
+                                    LinearGradient(
+                                        colors: [Color.white.opacity(0.18), Color.white.opacity(0.02)],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    ),
+                                    lineWidth: 0.9
+                                )
                         )
                 } else {
                     Color.clear
@@ -427,10 +435,10 @@ private struct WorkbenchTopNavigation: View {
 
     private var statusLabel: String {
         switch store.runtimeStatus.state {
-        case .live: "LIVE"
-        case .needsSetup: "SETUP"
-        case .degraded: "DEGRADED"
-        case .unavailable: "OFFLINE"
+        case .live: store.localizedString("status.liveShort", defaultValue: "LIVE")
+        case .needsSetup: store.localizedString("status.setupShort", defaultValue: "SETUP")
+        case .degraded: store.localizedString("status.degradedShort", defaultValue: "DEGRADED")
+        case .unavailable: store.localizedString("status.offlineShort", defaultValue: "OFFLINE")
         }
     }
 
@@ -478,10 +486,11 @@ private struct HomeTopLevelNavigationButton: View {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .stroke(Color.white.opacity(isHovering || isSelected ? 0.22 : 0.1), lineWidth: 1)
             )
-            .shadow(color: .black.opacity(0.3), radius: 11, x: 0, y: 7)
+            .shadow(color: .black.opacity(isHovering ? 0.4 : 0.3), radius: isHovering ? 14 : 11, x: 0, y: isHovering ? 9 : 7)
+            .scaleEffect(isHovering ? 1.02 : 1.0)
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .animation(.easeInOut(duration: 0.18), value: isHovering)
-            .animation(.easeInOut(duration: 0.18), value: isSelected)
+            .animation(.spring(response: 0.28, dampingFraction: 0.65), value: isHovering)
+            .animation(.spring(response: 0.28, dampingFraction: 0.65), value: isSelected)
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
@@ -506,7 +515,9 @@ private struct RuntimeStatusIndicator: View {
                 indicatorContent
             }
         }
-        .help(action == nil ? "Home runtime \(statusLabel)" : "Back to Home — \(statusLabel)")
+        .help(action == nil
+            ? AppLocalization.format("status.homeRuntimeHelp", defaultValue: "Home runtime %@", statusLabel)
+            : AppLocalization.format("status.backHomeHelp", defaultValue: "Back to Home - %@", statusLabel))
     }
 
     private var indicatorContent: some View {

@@ -13,6 +13,9 @@ enum GearHost {
     static let telegramBridgeWindowID = "telegram-bridge"
     static let todoManagerWindowID = "todo-manager"
     static let powerVideoManagerWindowID = "power-video-manager"
+    static let localProjectManagerWindowID = "local-project-manager"
+    static let weChatWatcherWindowID = "wechat-watcher"
+    static let weChatChannelsWindowID = "wechat-channels"
     static let mediaLibraryWindowDescriptor = GearNativeWindowDescriptor(
         gearID: MediaLibraryGearDescriptor.gearID,
         windowID: mediaLibraryWindowID,
@@ -90,6 +93,27 @@ enum GearHost {
         defaultWidth: 1240,
         defaultHeight: 780
     )
+    static let localProjectManagerWindowDescriptor = GearNativeWindowDescriptor(
+        gearID: LocalProjectManagerGearDescriptor.gearID,
+        windowID: localProjectManagerWindowID,
+        title: "Local Project Manager",
+        defaultWidth: 1040,
+        defaultHeight: 720
+    )
+    static let weChatWatcherWindowDescriptor = GearNativeWindowDescriptor(
+        gearID: WeChatWatcherGearDescriptor.gearID,
+        windowID: weChatWatcherWindowID,
+        title: "WeChat Watcher",
+        defaultWidth: 1180,
+        defaultHeight: 760
+    )
+    static let weChatChannelsWindowDescriptor = GearNativeWindowDescriptor(
+        gearID: WeChatChannelsGearDescriptor.gearID,
+        windowID: weChatChannelsWindowID,
+        title: "WeChat Channels Downloader",
+        defaultWidth: 1180,
+        defaultHeight: 760
+    )
     static let nativeWindowDescriptors: [GearNativeWindowDescriptor] = [
         mediaLibraryWindowDescriptor,
         hyperframesStudioWindowDescriptor,
@@ -101,7 +125,10 @@ enum GearHost {
         appIconForgeWindowDescriptor,
         telegramBridgeWindowDescriptor,
         todoManagerWindowDescriptor,
-        powerVideoManagerWindowDescriptor
+        powerVideoManagerWindowDescriptor,
+        localProjectManagerWindowDescriptor,
+        weChatWatcherWindowDescriptor,
+        weChatChannelsWindowDescriptor
     ]
 
     private static let manifestFileName = "gear.json"
@@ -212,6 +239,12 @@ enum GearHost {
             return AnyView(TodoManagerGearModuleView())
         case PowerVideoManagerGearDescriptor.gearID:
             return AnyView(PowerVideoManagerGearModuleView())
+        case LocalProjectManagerGearDescriptor.gearID:
+            return AnyView(LocalProjectManagerGearModuleView())
+        case WeChatWatcherGearDescriptor.gearID:
+            return AnyView(WeChatWatcherGearModuleView())
+        case WeChatChannelsGearDescriptor.gearID:
+            return AnyView(WeChatChannelsGearModuleView())
         default:
             return nil
         }
@@ -245,6 +278,12 @@ enum GearHost {
             return AnyView(TodoManagerGearWindow())
         case PowerVideoManagerGearDescriptor.gearID:
             return AnyView(PowerVideoManagerGearWindow())
+        case LocalProjectManagerGearDescriptor.gearID:
+            return AnyView(LocalProjectManagerGearWindow())
+        case WeChatWatcherGearDescriptor.gearID:
+            return AnyView(WeChatWatcherGearWindow())
+        case WeChatChannelsGearDescriptor.gearID:
+            return AnyView(WeChatChannelsGearWindow())
         default:
             return AnyView(GearUnavailableWindowView(title: displayTitle(for: gearID)))
         }

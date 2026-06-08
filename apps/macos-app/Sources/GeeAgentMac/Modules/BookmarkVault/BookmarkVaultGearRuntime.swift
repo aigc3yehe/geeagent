@@ -113,7 +113,7 @@ struct BookmarkVaultMetadata: Hashable {
 
 enum BookmarkVaultInputParser {
     static func firstURL(in value: String) -> String? {
-        let pattern = #"(?i)\b((?:https?://|www\.)[^\s<>"'，。！？、]+)"#
+        let pattern = "(?i)\\b((?:https?://|www\\.)[^\\s<>\"'\u{FF0C}\u{3002}\u{FF01}\u{FF1F}\u{3001}]+)"
         guard let regex = try? NSRegularExpression(pattern: pattern) else {
             return nil
         }
@@ -126,7 +126,7 @@ enum BookmarkVaultInputParser {
         }
 
         var url = String(value[matchRange])
-            .trimmingCharacters(in: CharacterSet(charactersIn: ".,，。;；!！?？)]}）】"))
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".,\u{FF0C}\u{3002};\u{FF1B}!\u{FF01}?\u{FF1F})]}\u{FF09}\u{3011}"))
         if url.lowercased().hasPrefix("www.") {
             url = "https://\(url)"
         }

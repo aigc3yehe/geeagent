@@ -154,6 +154,23 @@ final class AudioCaptureModelsTests: XCTestCase {
 
         XCTAssertEqual(secondCoordinator.selectedProvider, .localSenseVoice)
     }
+
+    @MainActor
+    func testCoordinatorStatusRefreshesWhenAppLanguageChanges() {
+        let suiteName = "GeeAgentAudioCaptureCoordinatorTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        AppLanguage.save(.en, defaults: defaults)
+        let coordinator = AudioCaptureCoordinator(userDefaults: defaults)
+
+        XCTAssertEqual(coordinator.statusMessage, "Ready.")
+
+        coordinator.setAppLanguage(.ja)
+
+        XCTAssertFalse(coordinator.statusMessage.isEmpty)
+        XCTAssertNotEqual(coordinator.statusMessage, "Ready.")
+    }
 }
 
 private struct MockMicrophonePermissionChecker: MicrophonePermissionChecking {

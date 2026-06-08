@@ -290,6 +290,8 @@ enum ChatAttachmentTransfer {
 }
 
 struct ChatAttachmentDraftStrip: View {
+    @Environment(\.appLanguage) private var appLanguage
+
     var attachments: [ChatAttachmentDraft]
     var prominentBackground = false
     var onRemove: (ChatAttachmentDraft.ID) -> Void
@@ -314,7 +316,7 @@ struct ChatAttachmentDraftStrip: View {
                                 .font(.system(size: 9, weight: .bold))
                         }
                         .buttonStyle(.plain)
-                        .help("Remove attachment")
+                        .help(AppLocalization.string("attachment.removeHelp", defaultValue: "Remove attachment", language: appLanguage))
                     }
                     .padding(.horizontal, 9)
                     .frame(height: attachment.thumbnail == nil ? 28 : 34)

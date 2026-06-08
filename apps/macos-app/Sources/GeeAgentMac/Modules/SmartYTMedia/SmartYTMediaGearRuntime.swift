@@ -159,7 +159,7 @@ struct SmartYTSearchCandidate: Codable, Identifiable, Hashable {
         )
     }
 
-    private static func orientation(width: Int?, height: Int?) -> String? {
+    fileprivate static func orientation(width: Int?, height: Int?) -> String? {
         guard let width, let height, width > 0, height > 0 else {
             return nil
         }
@@ -956,7 +956,24 @@ final class SmartYTMediaGearStore: ObservableObject {
                 } catch {
                     warnings.append("youtube search failed: \(error.localizedDescription)")
                 }
-            case "bilibili", "douyin", "xiaohongshu":
+            case "douyin", "xiaohongshu":
+                do {
+                    let remaining = max(limit - candidates.count, 0)
+                    guard remaining > 0 else { continue }
+                    let results = try await searchChinaShortVideoCandidates(
+                        query: query,
+                        platform: platform,
+                        limit: remaining,
+                        startingIndex: candidates.count
+                    )
+                    candidates.append(contentsOf: results)
+                    if results.isEmpty {
+                        warnings.append("\(platform) search returned no video candidates.")
+                    }
+                } catch {
+                    warnings.append("\(platform) search failed: \(error.localizedDescription)")
+                }
+            case "bilibili":
                 warnings.append("\(platform) search is not implemented yet; no fallback search was attempted.")
             default:
                 warnings.append("\(platform) search is not supported.")
@@ -1626,6 +1643,86 @@ final class SmartYTMediaGearStore: ObservableObject {
         )
     }
 
+    private func searchChinaShortVideoCandidates(
+        query: String,
+        platform: String,
+        limit: Int,
+        startingIndex: Int
+    ) async throws -> [SmartYTSearchCandidate] {
+        switch platform {
+        case "xiaohongshu":
+            return try await searchXiaohongshuCandidates(
+                query: query,
+                limit: limit,
+                startingIndex: startingIndex
+            )
+        case "douyin":
+            return try await searchDouyinCandidates(
+                query: query,
+                limit: limit,
+                startingIndex: startingIndex
+            )
+        default:
+            throw SmartYTMediaError.commandFailed(
+                command: "smartyt.search_candidates",
+                detail: Self.platformSearchUnavailableMessage(platform: platform)
+            )
+        }
+    }
+
+    private func searchXiaohongshuCandidates(
+        query: String,
+        limit: Int,
+        startingIndex: Int
+    ) async throws -> [SmartYTSearchCandidate] {
+        let result = try await runCommand(
+            "python3",
+            arguments: [
+                "-m", "xhs_cli.cli",
+                "search", query,
+                "--type", "video",
+                "--json"
+            ],
+            timeoutSeconds: 120,
+            trackedJobID: nil
+        )
+        guard result.exitCode == 0 else {
+            throw Self.cliFailure(command: "python3 -m xhs_cli.cli search", result: result)
+        }
+        return try Self.parseXiaohongshuSearchCandidates(
+            result.stdout,
+            limit: limit,
+            startingIndex: startingIndex
+        )
+    }
+
+    private func searchDouyinCandidates(
+        query: String,
+        limit: Int,
+        startingIndex: Int
+    ) async throws -> [SmartYTSearchCandidate] {
+        let result = try await runCommand(
+            "python3",
+            arguments: [
+                "-m", "dy_cli.main",
+                "search", query,
+                "--type", "video",
+                "--count", "\(limit)",
+                "--json-output"
+            ],
+            timeoutSeconds: 120,
+            trackedJobID: nil
+        )
+        guard result.exitCode == 0 else {
+            throw Self.cliFailure(command: "python3 -m dy_cli.main search", result: result)
+        }
+        return try Self.parseDouyinSearchCandidates(
+            result.stdout,
+            limit: limit,
+            startingIndex: startingIndex
+        )
+    }
+
     private func download(
         url: String,
         kind: SmartYTDownloadKind,
@@ -1641,6 +1738,14 @@ final class SmartYTMediaGearStore: ObservableObject {
                 return [try await downloadImage(url: url, into: directory)]
             }
         }
+        if Self.platformForURL(url) == "douyin" {
+            return try await downloadDouyinMedia(
+                url: url,
+                kind: kind,
+                into: directory,
+                trackedJobID: trackedJobID
+            )
+        }
         var outputs: [URL] = []
         switch kind {
         case .audio:
@@ -1654,6 +1759,75 @@ final class SmartYTMediaGearStore: ObservableObject {
             outputs.append(try await downloadAudio(url: url, into: directory, cookieFilePath: cookieFilePath, trackedJobID: trackedJobID))
         }
         return outputs
+    }
+
+    private func downloadDouyinMedia(
+        url: String,
+        kind: SmartYTDownloadKind,
+        into directory: URL,
+        trackedJobID: String?
+    ) async throws -> [URL] {
+        switch kind {
+        case .image:
+            throw SmartYTMediaError.missingArtifact("Douyin video URLs cannot be downloaded as direct images.")
+        case .video, .audio, .both:
+            break
+        }
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        if let trackedJobID {
+            updateJobProgress(
+                trackedJobID,
+                fraction: 0.08,
+                label: kind == .audio ? "Downloading Douyin audio with dy-cli..." : "Downloading Douyin video with dy-cli...",
+                persistence: .phase,
+                logLine: "Using dy-cli for Douyin media download."
+            )
+        }
+
+        var arguments = [
+            "-m", "dy_cli.main",
+            "download",
+            "--output-dir", directory.path
+        ]
+        if kind == .audio || kind == .both {
+            arguments.append("--music")
+        }
+        arguments.append(url)
+
+        let result = try await runCommand(
+            "python3",
+            arguments: arguments,
+            timeoutSeconds: nil,
+            trackedJobID: trackedJobID
+        )
+        guard result.exitCode == 0 else {
+            throw Self.cliFailure(command: "python3 -m dy_cli.main download", result: result)
+        }
+
+        let videos = mediaFiles(in: directory, extensions: Self.videoExtensions)
+        let audio = mediaFiles(in: directory, extensions: Self.audioExtensions)
+        switch kind {
+        case .video:
+            guard !videos.isEmpty else {
+                throw SmartYTMediaError.missingArtifact("dy-cli finished but no Douyin video artifact was found.")
+            }
+            return videos
+        case .audio:
+            guard !audio.isEmpty else {
+                throw SmartYTMediaError.missingArtifact("dy-cli finished but no Douyin audio artifact was found.")
+            }
+            return audio
+        case .both:
+            guard !videos.isEmpty else {
+                throw SmartYTMediaError.missingArtifact("dy-cli finished but no Douyin video artifact was found.")
+            }
+            guard !audio.isEmpty else {
+                throw SmartYTMediaError.missingArtifact("dy-cli finished but no Douyin music artifact was found.")
+            }
+            return videos + audio
+        case .image:
+            throw SmartYTMediaError.missingArtifact("Douyin video URLs cannot be downloaded as direct images.")
+        }
     }
 
     private func transcribe(
@@ -2213,6 +2387,30 @@ final class SmartYTMediaGearStore: ObservableObject {
         return .commandFailed(command: command, detail: detail)
     }
 
+    private static func cliFailure(command: String, result: GearCommandResult) -> SmartYTMediaError {
+        let detail = result.combinedOutput.nilIfBlank ?? "Command exited with \(result.exitCode)."
+        let normalized = detail.lowercased()
+        if normalized.contains("no module named xhs_cli") || normalized.contains("no module named dy_cli") {
+            return .commandFailed(
+                command: command,
+                detail: "\(detail)\nInstall SmartYT's Xiaohongshu/Douyin Python CLI dependencies from the Gear dependency setup."
+            )
+        }
+        if normalized.contains("please log in") || normalized.contains("not logged in") || normalized.contains("login") {
+            return .commandFailed(
+                command: command,
+                detail: "\(detail)\nLog in with the platform CLI account flow, then retry the same SmartYT search."
+            )
+        }
+        if normalized.contains("mainland ip") || normalized.contains("domestic ip") || normalized.contains("proxy") {
+            return .commandFailed(
+                command: command,
+                detail: "\(detail)\nConfigure the platform CLI proxy/network route, then retry the same SmartYT action."
+            )
+        }
+        return .commandFailed(command: command, detail: detail)
+    }
+
     private static func smartYTErrorFromMessage(_ message: String) -> SmartYTMediaError? {
         let normalized = message.lowercased()
         if normalized.contains("needs authenticated youtube cookies") || (
@@ -2386,6 +2584,27 @@ final class SmartYTMediaGearStore: ObservableObject {
     }
 
     private static let imageExtensions = ["jpg", "jpeg", "png", "webp", "gif"]
+    private static let videoExtensions: Set<String> = ["mp4", "mov", "mkv", "webm"]
+    private static let audioExtensions: Set<String> = ["mp3", "m4a", "wav", "aac", "opus"]
+
+    private func mediaFiles(in directory: URL, extensions allowedExtensions: Set<String>) -> [URL] {
+        guard let enumerator = fileManager.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+        return enumerator
+            .compactMap { $0 as? URL }
+            .filter { url in
+                guard allowedExtensions.contains(url.pathExtension.lowercased()) else {
+                    return false
+                }
+                return (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            }
+            .sorted { $0.path < $1.path }
+    }
 
     private enum SmartYTProgressPersistenceKind {
         case none
@@ -2783,6 +3002,9 @@ final class SmartYTMediaGearStore: ObservableObject {
             "status": task.status,
             "search_task_id": task.id,
             "task_id": task.id,
+            "query": task.query,
+            "platforms": task.platforms,
+            "limit": task.limit,
             "candidates": task.candidates.map(candidatePayload),
             "warnings": task.warnings,
             "error": task.error ?? NSNull()
@@ -2864,10 +3086,243 @@ final class SmartYTMediaGearStore: ObservableObject {
         ISO8601DateFormatter().string(from: date)
     }
 
+    private static func parseXiaohongshuSearchCandidates(
+        _ stdout: String,
+        limit: Int,
+        startingIndex: Int
+    ) throws -> [SmartYTSearchCandidate] {
+        guard let object = try parseJSONObject(stdout),
+              let data = object["data"] as? [String: Any],
+              let items = data["items"] as? [[String: Any]]
+        else {
+            throw SmartYTMediaError.invalidMetadata("xhs search did not return the expected JSON envelope.")
+        }
+
+        var candidates: [SmartYTSearchCandidate] = []
+        for item in items {
+            guard candidates.count < limit,
+                  let noteID = stringValue(item["id"])?.nilIfBlank,
+                  let noteCard = item["note_card"] as? [String: Any],
+                  stringValue(noteCard["type"]) == "video"
+            else {
+                continue
+            }
+            let token = stringValue(item["xsec_token"])
+                ?? stringValue(noteCard["xsec_token"])
+            let sourceURL = xiaohongshuNoteURL(noteID: noteID, xsecToken: token)
+            let cover = noteCard["cover"] as? [String: Any]
+            let user = noteCard["user"] as? [String: Any]
+            let title = stringValue(noteCard["display_title"])
+                ?? stringValue(noteCard["title"])
+                ?? "Xiaohongshu video"
+            let width = intValue(cover?["width"])
+            let height = intValue(cover?["height"])
+            var rawMetadata = [
+                "provider": "xiaohongshu-cli",
+                "note_id": noteID
+            ]
+            if let token, !token.isEmpty {
+                rawMetadata["xsec_token"] = token
+            }
+            if let likedCount = stringValue((noteCard["interact_info"] as? [String: Any])?["liked_count"]) {
+                rawMetadata["liked_count"] = likedCount
+            }
+
+            candidates.append(SmartYTSearchCandidate(
+                id: String(format: "cand-%03d", startingIndex + candidates.count + 1),
+                platform: "xiaohongshu",
+                title: title,
+                url: sourceURL,
+                sourceURL: sourceURL,
+                thumbnailURL: stringValue(cover?["url_default"]) ?? stringValue(cover?["url_pre"]),
+                previewURL: sourceURL,
+                durationSeconds: nil,
+                width: width,
+                height: height,
+                orientation: SmartYTSearchCandidate.orientation(width: width, height: height),
+                author: stringValue(user?["nickname"]) ?? stringValue(user?["nick_name"]),
+                publishedAt: nil,
+                rawMetadata: rawMetadata
+            ))
+        }
+        return candidates
+    }
+
+    private static func parseDouyinSearchCandidates(
+        _ stdout: String,
+        limit: Int,
+        startingIndex: Int
+    ) throws -> [SmartYTSearchCandidate] {
+        guard let object = try parseJSONObject(stdout) else {
+            throw SmartYTMediaError.invalidMetadata("dy search did not return JSON.")
+        }
+        let payload = (object["data"] as? [String: Any]) ?? object
+        let entries = (payload["data"] as? [[String: Any]]) ?? []
+        var candidates: [SmartYTSearchCandidate] = []
+
+        for entry in entries {
+            guard candidates.count < limit,
+                  let aweme = entry["aweme_info"] as? [String: Any],
+                  let awemeID = stringValue(aweme["aweme_id"])?.nilIfBlank
+            else {
+                continue
+            }
+            let video = aweme["video"] as? [String: Any]
+            let cover = video?["cover"] as? [String: Any]
+            let author = aweme["author"] as? [String: Any]
+            let statistics = aweme["statistics"] as? [String: Any]
+            let sourceURL = "https://www.douyin.com/video/\(awemeID)"
+            let width = intValue(video?["width"])
+            let height = intValue(video?["height"])
+            var rawMetadata = [
+                "provider": "dy-cli",
+                "aweme_id": awemeID
+            ]
+            if let diggCount = stringValue(statistics?["digg_count"]) {
+                rawMetadata["digg_count"] = diggCount
+            }
+            if let shareURL = stringValue(aweme["share_url"]) {
+                rawMetadata["share_url"] = shareURL
+            }
+
+            candidates.append(SmartYTSearchCandidate(
+                id: String(format: "cand-%03d", startingIndex + candidates.count + 1),
+                platform: "douyin",
+                title: stringValue(aweme["desc"]) ?? "Douyin video",
+                url: sourceURL,
+                sourceURL: sourceURL,
+                thumbnailURL: firstString(in: cover?["url_list"]),
+                previewURL: sourceURL,
+                durationSeconds: doubleValue(video?["duration"]).map { $0 / 1000 },
+                width: width,
+                height: height,
+                orientation: SmartYTSearchCandidate.orientation(width: width, height: height),
+                author: stringValue(author?["nickname"]),
+                publishedAt: timestampISO8601(aweme["create_time"]),
+                rawMetadata: rawMetadata
+            ))
+        }
+        return candidates
+    }
+
+    private static func parseJSONObject(_ stdout: String) throws -> [String: Any]? {
+        let trimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        let jsonText: String
+        if trimmed.hasPrefix("{") {
+            jsonText = trimmed
+        } else if let start = trimmed.firstIndex(of: "{"),
+                  let end = trimmed.lastIndex(of: "}"),
+                  start <= end
+        {
+            jsonText = String(trimmed[start...end])
+        } else {
+            jsonText = trimmed
+        }
+        guard let data = jsonText.data(using: .utf8) else {
+            return nil
+        }
+        return try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    private static func xiaohongshuNoteURL(noteID: String, xsecToken: String?) -> String {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "www.xiaohongshu.com"
+        components.path = "/explore/\(noteID)"
+        if let xsecToken, !xsecToken.isEmpty {
+            components.queryItems = [URLQueryItem(name: "xsec_token", value: xsecToken)]
+        }
+        return components.url?.absoluteString ?? "https://www.xiaohongshu.com/explore/\(noteID)"
+    }
+
+    private static func firstString(in value: Any?) -> String? {
+        if let string = value as? String {
+            return string
+        }
+        if let values = value as? [String] {
+            return values.first
+        }
+        if let values = value as? [Any] {
+            return values.compactMap(stringValue).first
+        }
+        return nil
+    }
+
+    private static func stringValue(_ value: Any?) -> String? {
+        if let string = value as? String {
+            return string
+        }
+        if let int = value as? Int {
+            return String(int)
+        }
+        if let double = value as? Double {
+            return String(double)
+        }
+        if let number = value as? NSNumber {
+            return number.stringValue
+        }
+        return nil
+    }
+
+    private static func intValue(_ value: Any?) -> Int? {
+        if let int = value as? Int { return int }
+        if let double = value as? Double { return Int(double) }
+        if let number = value as? NSNumber { return number.intValue }
+        if let string = value as? String { return Int(string) }
+        return nil
+    }
+
+    private static func doubleValue(_ value: Any?) -> Double? {
+        if let double = value as? Double { return double }
+        if let int = value as? Int { return Double(int) }
+        if let number = value as? NSNumber { return number.doubleValue }
+        if let string = value as? String { return Double(string) }
+        return nil
+    }
+
+    private static func timestampISO8601(_ value: Any?) -> String? {
+        guard let timestamp = doubleValue(value), timestamp > 0 else {
+            return nil
+        }
+        return ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: timestamp))
+    }
+
     private static func normalizedPlatform(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
             .replacingOccurrences(of: "youtube.com", with: "youtube")
+            .replacingOccurrences(of: "red note", with: "rednote")
+        switch normalized {
+        case "douyin.com", "www.douyin.com", "v.douyin.com", "iesdouyin.com":
+            return "douyin"
+        case "xiaohongshu.com", "www.xiaohongshu.com", "xhs", "xhslink", "xhslink.com", "red", "rednote":
+            return "xiaohongshu"
+        default:
+            return normalized
+        }
+    }
+
+    private static func platformForURL(_ rawURL: String) -> String? {
+        guard let url = URL(string: rawURL),
+              let host = url.host?.lowercased()
+        else {
+            return nil
+        }
+        if host == "douyin.com"
+            || host.hasSuffix(".douyin.com")
+            || host == "iesdouyin.com"
+            || host.hasSuffix(".iesdouyin.com")
+        {
+            return "douyin"
+        }
+        if host == "xiaohongshu.com"
+            || host.hasSuffix(".xiaohongshu.com")
+            || host == "xhslink.com"
+            || host.hasSuffix(".xhslink.com")
+        {
+            return "xiaohongshu"
+        }
+        return nil
     }
 
     private static func stringArg(_ args: [String: Any], _ key: String) -> String? {
@@ -2875,7 +3330,22 @@ final class SmartYTMediaGearStore: ObservableObject {
     }
 
     private static func stringArrayArg(_ args: [String: Any], _ key: String) -> [String]? {
-        args[key] as? [String]
+        if let values = args[key] as? [String] {
+            return values
+        }
+        if let values = args[key] as? [Any] {
+            return values.compactMap { $0 as? String }
+        }
+        if let value = args[key] as? String {
+            let separators = CharacterSet.whitespacesAndNewlines
+                .union(CharacterSet(charactersIn: ",，;；"))
+            let values = value
+                .components(separatedBy: separators)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            return values.isEmpty ? nil : values
+        }
+        return nil
     }
 
     private static func intArg(_ args: [String: Any], _ key: String) -> Int? {
@@ -2903,6 +3373,17 @@ final class SmartYTMediaGearStore: ObservableObject {
             } else if let bool = entry.value as? Bool {
                 output[entry.key] = bool ? "true" : "false"
             }
+        }
+    }
+
+    private static func platformSearchUnavailableMessage(platform: String) -> String {
+        switch platform {
+        case "douyin":
+            return "douyin keyword search requires the Gear-declared dy-cli dependency and a logged-in Douyin CLI account."
+        case "xiaohongshu":
+            return "xiaohongshu keyword search requires the Gear-declared xiaohongshu-cli dependency and browser cookies."
+        default:
+            return "\(platform) keyword search has no configured stable provider."
         }
     }
 }

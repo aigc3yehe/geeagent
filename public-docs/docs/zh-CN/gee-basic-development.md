@@ -34,6 +34,8 @@ Workspace chat 现在可以把本地图片、文件和文件夹引用作为结�
 
 Settings 暴露一个统一的默认 STT 服务用于音频转写。Chat 语音输入和 Audio Capture 快捷 Bar 会使用同一个已保存 provider；当前可选项是 Local Whisper、Local SenseVoice 和 ElevenLabs。本地后端缺失时会明确失败，不会自动 fallback 到另一个 provider。Audio Capture Bar 可以从菜单栏面板打开，也可以用 Control+Option+A / Shift+Command+A 打开；麦克风和系统音频权限失败会显示 macOS 当前授权状态、bundle id 和正在运行的 app 路径。权限请求会超时失败，而不是让 bar 一直停在 Starting，并会直接提示 stale TCC entry。
 
+GeeAgentMac 主应用默认跟随 macOS 首选语言。Settings > Language 可以把主工作台外壳覆盖为 System、English、简体中文或日本語。这个设置覆盖 GeeAgent 自有的主干界面，例如导航、Home、Chat、Telegram、Tasks/Logs、Automations、Gears catalog 外壳、Agents、Settings、Inspector、审批提示、菜单栏面板、Quick Input 和 Audio Capture。Gear 内部页面、Gear manifest 文案、用户消息、助手回复、runtime 日志、provider/model 名称、文件路径和 runtime 原始错误细节保持原文。
+
 对于 Gear 工作，live SDK run 和 Gee MCP bridge 是必需路径。若 SDK runtime 或 bridge 不可用，GeeAgent 会报告结构化失败，而不是通过另一条 native 路径执行任务。
 
 本地应用控制也是共享的 Gee MCP host path，不是 Gear 或 Telegram 的专用捷径。App Chat/runtime 可以通过 `native_app_control`（`gee.nativeApp.control`）控制受支持的本地 macOS app；V1 暴露 Codex Desktop 的 `new_chat_and_send`，并在 app、权限、目标 UI 元素或发送动作不可用时返回结构化 blocked/failed 状态。

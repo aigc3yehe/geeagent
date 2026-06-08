@@ -29,33 +29,33 @@ struct WorkbenchInspectorView: View {
             }
             .padding()
         }
-        .navigationTitle("Inspector")
+        .navigationTitle(store.localizedString("inspector.title", defaultValue: "Inspector"))
     }
 
     @ViewBuilder
     private var homeInspector: some View {
         if let item = store.selectedHomeItem {
             WorkbenchInspectorCard(title: item.title) {
-                LabeledContent("Type", value: item.kind.title)
-                LabeledContent("Status", value: item.statusLabel)
-                LabeledContent("Action", value: item.actionLabel)
+                LabeledContent(store.localizedString("inspector.label.type", defaultValue: "Type"), value: item.kind.title)
+                LabeledContent(store.localizedString("inspector.label.status", defaultValue: "Status"), value: item.statusLabel)
+                LabeledContent(store.localizedString("inspector.label.action", defaultValue: "Action"), value: item.actionLabel)
                 Text(item.detail)
                     .foregroundStyle(.secondary)
             }
 
-            WorkbenchInspectorCard(title: "Overview") {
-                LabeledContent("Open tasks", value: "\(store.openTasksCount)")
-                LabeledContent("Approvals", value: "\(store.approvalsCount)")
-                LabeledContent("Next automation", value: store.homeSummary.nextAutomationLabel)
-                LabeledContent("Installed gears", value: "\(store.installedApps.count)")
+            WorkbenchInspectorCard(title: store.localizedString("inspector.overview", defaultValue: "Overview")) {
+                LabeledContent(store.localizedString("inspector.label.openTasks", defaultValue: "Open tasks"), value: "\(store.openTasksCount)")
+                LabeledContent(store.localizedString("inspector.label.approvals", defaultValue: "Approvals"), value: "\(store.approvalsCount)")
+                LabeledContent(store.localizedString("inspector.label.nextAutomation", defaultValue: "Next automation"), value: store.homeSummary.nextAutomationLabel)
+                LabeledContent(store.localizedString("inspector.label.installedGears", defaultValue: "Installed gears"), value: "\(store.installedApps.count)")
             }
         }
     }
 
     private var telegramInspector: some View {
         WorkbenchInspectorCard(title: "Telegram") {
-            LabeledContent("Gear", value: "telegram.bridge")
-            LabeledContent("Surface", value: "Conversation log")
+            LabeledContent(store.localizedString("inspector.label.gear", defaultValue: "Gear"), value: "telegram.bridge")
+            LabeledContent(store.localizedString("inspector.label.surface", defaultValue: "Surface"), value: store.localizedString("inspector.surface.conversationLog", defaultValue: "Conversation log"))
         }
     }
 
@@ -63,24 +63,24 @@ struct WorkbenchInspectorView: View {
     private var chatInspector: some View {
         if let conversation = store.selectedDisplayConversation {
             WorkbenchInspectorCard(title: conversation.title) {
-                LabeledContent("Preview", value: conversation.previewText)
-                LabeledContent("Last message", value: conversation.lastActivityLabel)
+                LabeledContent(store.localizedString("inspector.label.preview", defaultValue: "Preview"), value: conversation.previewText)
+                LabeledContent(store.localizedString("inspector.label.lastMessage", defaultValue: "Last message"), value: conversation.lastActivityLabel)
             }
 
-            WorkbenchInspectorCard(title: "Linked Context") {
+            WorkbenchInspectorCard(title: store.localizedString("inspector.linkedContext", defaultValue: "Linked Context")) {
                 if let linkedTaskTitle = conversation.linkedTaskTitle {
-                    LabeledContent("Task", value: linkedTaskTitle)
+                    LabeledContent(store.localizedString("common.task", defaultValue: "Task"), value: linkedTaskTitle)
                 }
                 if let linkedAppName = conversation.linkedAppName {
-                    LabeledContent("App", value: linkedAppName)
+                    LabeledContent(store.localizedString("common.app", defaultValue: "App"), value: linkedAppName)
                 }
-                LabeledContent("Messages", value: "\(conversation.messages.count)")
+                LabeledContent(store.localizedString("inspector.label.messages", defaultValue: "Messages"), value: "\(conversation.messages.count)")
             }
 
             let attachments = inputAttachments(in: conversation)
             if !attachments.isEmpty {
-                WorkbenchInspectorCard(title: "Input Attachments") {
-                    LabeledContent("Count", value: "\(attachments.count)")
+                WorkbenchInspectorCard(title: store.localizedString("inspector.inputAttachments", defaultValue: "Input Attachments")) {
+                    LabeledContent(store.localizedString("inspector.label.count", defaultValue: "Count"), value: "\(attachments.count)")
                     ForEach(attachments) { attachment in
                         Divider()
                         inspectorAttachment(attachment)
@@ -95,9 +95,9 @@ struct WorkbenchInspectorView: View {
     }
 
     private func runtimeRunInspector(_ summary: ConversationRuntimeRunSummary) -> some View {
-        WorkbenchInspectorCard(title: "Runtime Run") {
+        WorkbenchInspectorCard(title: store.localizedString("inspector.runtimeRun", defaultValue: "Runtime Run")) {
             HStack(alignment: .firstTextBaseline) {
-                LabeledContent("Run", value: compactRunID(summary.runID))
+                LabeledContent(store.localizedString("inspector.label.run", defaultValue: "Run"), value: compactRunID(summary.runID))
                 Spacer(minLength: 8)
                 Button {
                     store.refreshSelectedRuntimeRunInspector(force: true)
@@ -106,19 +106,19 @@ struct WorkbenchInspectorView: View {
                         .imageScale(.small)
                 }
                 .buttonStyle(.borderless)
-                .help("Refresh runtime projection")
+                .help(store.localizedString("inspector.refreshHelp", defaultValue: "Refresh runtime projection"))
             }
 
-            LabeledContent("Events", value: runtimeEventRange(summary))
+            LabeledContent(store.localizedString("inspector.label.events", defaultValue: "Events"), value: runtimeEventRange(summary))
             if let lastEventKind = summary.lastEventKind {
-                LabeledContent("Latest", value: compactRuntimeLabel(lastEventKind))
+                LabeledContent(store.localizedString("inspector.label.latest", defaultValue: "Latest"), value: compactRuntimeLabel(lastEventKind))
             }
 
             if store.isLoadingRuntimeRunInspector {
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("Loading projection")
+                    Text(store.localizedString("inspector.loadingProjection", defaultValue: "Loading projection"))
                         .foregroundStyle(.secondary)
                 }
                 .font(.caption)
@@ -146,28 +146,28 @@ struct WorkbenchInspectorView: View {
 
     private func runtimeStateSummary(_ wait: WorkbenchRuntimeRunWaitClassification) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            LabeledContent("State", value: "\(compactRuntimeLabel(wait.waitKind)) · \(compactRuntimeLabel(wait.status))")
+            LabeledContent(store.localizedString("inspector.label.state", defaultValue: "State"), value: "\(compactRuntimeLabel(wait.waitKind)) · \(compactRuntimeLabel(wait.status))")
             Text(wait.detail)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(3)
             if let pendingHostAction = wait.evidence.pendingHostActionIDs.first {
-                LabeledContent("Host action", value: compactRunID(pendingHostAction))
+                LabeledContent(store.localizedString("inspector.label.hostAction", defaultValue: "Host action"), value: compactRunID(pendingHostAction))
             }
             if let pendingTool = wait.evidence.pendingToolUseID {
-                LabeledContent("Tool", value: compactRunID(pendingTool))
+                LabeledContent(store.localizedString("inspector.label.tool", defaultValue: "Tool"), value: compactRunID(pendingTool))
             }
             if let pendingApproval = wait.evidence.pendingApprovalID {
-                LabeledContent("Approval", value: compactRunID(pendingApproval))
+                LabeledContent(store.localizedString("task.status.approval", defaultValue: "Approval"), value: compactRunID(pendingApproval))
             }
         }
     }
 
     private func runtimeProjectionSummary(_ projection: WorkbenchRuntimeRunProjection) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            LabeledContent("Projection", value: "\(projection.rowCount) rows")
+            LabeledContent(store.localizedString("inspector.label.projection", defaultValue: "Projection"), value: rowCountLabel(projection.rowCount))
             if !projection.artifactRefs.isEmpty {
-                LabeledContent("Artifacts", value: artifactSummary(projection.artifactRefs))
+                LabeledContent(store.localizedString("inspector.label.artifacts", defaultValue: "Artifacts"), value: artifactSummary(projection.artifactRefs))
             }
             if projection.hasDiagnostics {
                 Text(runtimeDiagnosticsSummary(projection.diagnostics))
@@ -207,12 +207,12 @@ struct WorkbenchInspectorView: View {
                         .foregroundStyle(.secondary)
                 }
                 if !row.attachmentIDs.isEmpty {
-                    Text("\(row.attachmentIDs.count) attachment\(row.attachmentIDs.count == 1 ? "" : "s")")
+                    Text(attachmentCountLabel(row.attachmentIDs.count))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
                 if !row.artifactIDs.isEmpty {
-                    Text("\(row.artifactIDs.count) artifact\(row.artifactIDs.count == 1 ? "" : "s")")
+                    Text(artifactCountLabel(row.artifactIDs.count))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -274,16 +274,16 @@ struct WorkbenchInspectorView: View {
     private var taskInspector: some View {
         if let task = store.selectedTask {
             WorkbenchInspectorCard(title: task.title) {
-                LabeledContent("Status", value: task.status.title)
-                LabeledContent("Priority", value: task.priorityLabel)
-                LabeledContent("Owner", value: task.ownerLabel)
-                LabeledContent("App", value: task.appName)
-                LabeledContent("Due", value: task.dueLabel)
+                LabeledContent(store.localizedString("inspector.label.status", defaultValue: "Status"), value: task.status.title)
+                LabeledContent(store.localizedString("inspector.label.priority", defaultValue: "Priority"), value: task.priorityLabel)
+                LabeledContent(store.localizedString("inspector.label.owner", defaultValue: "Owner"), value: task.ownerLabel)
+                LabeledContent(store.localizedString("common.app", defaultValue: "App"), value: task.appName)
+                LabeledContent(store.localizedString("inspector.label.due", defaultValue: "Due"), value: task.dueLabel)
             }
 
-            WorkbenchInspectorCard(title: "Execution") {
-                LabeledContent("Updated", value: task.updatedLabel)
-                LabeledContent("Artifacts", value: "\(task.artifactCount)")
+            WorkbenchInspectorCard(title: store.localizedString("inspector.execution", defaultValue: "Execution")) {
+                LabeledContent(store.localizedString("inspector.label.updated", defaultValue: "Updated"), value: task.updatedLabel)
+                LabeledContent(store.localizedString("inspector.label.artifacts", defaultValue: "Artifacts"), value: "\(task.artifactCount)")
                 Text(task.summary)
                     .foregroundStyle(.secondary)
             }
@@ -294,14 +294,14 @@ struct WorkbenchInspectorView: View {
     private var automationInspector: some View {
         if let automation = store.selectedAutomation {
             WorkbenchInspectorCard(title: automation.name) {
-                LabeledContent("Status", value: automation.status.title)
-                LabeledContent("Scope", value: automation.scopeLabel)
-                LabeledContent("Schedule", value: automation.scheduleLabel)
-                LabeledContent("Next run", value: automation.nextRunLabel)
-                LabeledContent("Last run", value: automation.lastRunLabel)
+                LabeledContent(store.localizedString("inspector.label.status", defaultValue: "Status"), value: automation.status.title)
+                LabeledContent(store.localizedString("inspector.label.scope", defaultValue: "Scope"), value: automation.scopeLabel)
+                LabeledContent(store.localizedString("inspector.label.schedule", defaultValue: "Schedule"), value: automation.scheduleLabel)
+                LabeledContent(store.localizedString("inspector.label.nextRun", defaultValue: "Next run"), value: automation.nextRunLabel)
+                LabeledContent(store.localizedString("inspector.label.lastRun", defaultValue: "Last run"), value: automation.lastRunLabel)
             }
 
-            WorkbenchInspectorCard(title: "Run Context") {
+            WorkbenchInspectorCard(title: store.localizedString("inspector.runContext", defaultValue: "Run Context")) {
                 Text(automation.summary)
                     .foregroundStyle(.secondary)
             }
@@ -314,9 +314,9 @@ struct WorkbenchInspectorView: View {
         case .some(.skin(_)):
             if let skin = store.selectedAgentSkin {
                 WorkbenchInspectorCard(title: skin.name) {
-                    LabeledContent("Surface", value: "Agent Skin")
-                    LabeledContent("Tone", value: skin.toneLabel)
-                    LabeledContent("Status", value: skin.activationLabel)
+                    LabeledContent(store.localizedString("inspector.label.surface", defaultValue: "Surface"), value: store.localizedString("inspector.surface.agentSkin", defaultValue: "Agent Skin"))
+                    LabeledContent(store.localizedString("inspector.label.tone", defaultValue: "Tone"), value: skin.toneLabel)
+                    LabeledContent(store.localizedString("inspector.label.status", defaultValue: "Status"), value: skin.activationLabel)
                     Text(skin.summary)
                         .foregroundStyle(.secondary)
                 }
@@ -324,14 +324,14 @@ struct WorkbenchInspectorView: View {
         case .some(.app(_)), .none:
             if let app = store.selectedInstalledApp {
                 WorkbenchInspectorCard(title: app.name) {
-                    LabeledContent("Surface", value: "Installed App")
-                    LabeledContent("Category", value: app.categoryLabel)
-                    LabeledContent("State", value: app.installState.title)
-                    LabeledContent("Version", value: app.versionLabel)
-                    LabeledContent("Health", value: app.healthLabel)
+                    LabeledContent(store.localizedString("inspector.label.surface", defaultValue: "Surface"), value: store.localizedString("inspector.surface.installedApp", defaultValue: "Installed App"))
+                    LabeledContent(store.localizedString("inspector.label.category", defaultValue: "Category"), value: app.categoryLabel)
+                    LabeledContent(store.localizedString("inspector.label.state", defaultValue: "State"), value: app.installState.title)
+                    LabeledContent(store.localizedString("inspector.label.version", defaultValue: "Version"), value: app.versionLabel)
+                    LabeledContent(store.localizedString("inspector.label.health", defaultValue: "Health"), value: app.healthLabel)
                 }
 
-                WorkbenchInspectorCard(title: "Capabilities") {
+                WorkbenchInspectorCard(title: store.localizedString("inspector.capabilities", defaultValue: "Capabilities")) {
                     Text(app.summary)
                         .foregroundStyle(.secondary)
                 }
@@ -343,11 +343,11 @@ struct WorkbenchInspectorView: View {
     private var agentsInspector: some View {
         if let profile = store.selectedAgentProfile {
             WorkbenchInspectorCard(title: profile.name) {
-                LabeledContent("Source", value: profile.source.title)
-                LabeledContent("Appearance", value: profile.appearanceTitle)
-                LabeledContent("Version", value: profile.version)
-                LabeledContent("Skills", value: profile.skillsSummary)
-                LabeledContent("Tools", value: profile.allowedToolsSummary)
+                LabeledContent(store.localizedString("inspector.label.source", defaultValue: "Source"), value: profile.source.title)
+                LabeledContent(store.localizedString("inspector.label.appearance", defaultValue: "Appearance"), value: profile.appearanceTitle)
+                LabeledContent(store.localizedString("inspector.label.version", defaultValue: "Version"), value: profile.version)
+                LabeledContent(store.localizedString("inspector.label.skills", defaultValue: "Skills"), value: profile.skillsSummary)
+                LabeledContent(store.localizedString("inspector.label.tools", defaultValue: "Tools"), value: profile.allowedToolsSummary)
                 Text(profile.personalityPrompt)
                     .foregroundStyle(.secondary)
             }
@@ -385,6 +385,27 @@ struct WorkbenchInspectorView: View {
         return "\(value.prefix(8))…\(value.suffix(6))"
     }
 
+    private func rowCountLabel(_ count: Int) -> String {
+        if count == 1 {
+            return store.localizedFormat("inspector.rows.count.one", defaultValue: "%d row", count)
+        }
+        return store.localizedFormat("inspector.rows.count.other", defaultValue: "%d rows", count)
+    }
+
+    private func attachmentCountLabel(_ count: Int) -> String {
+        if count == 1 {
+            return store.localizedFormat("inspector.attachments.count.one", defaultValue: "%d attachment", count)
+        }
+        return store.localizedFormat("inspector.attachments.count.other", defaultValue: "%d attachments", count)
+    }
+
+    private func artifactCountLabel(_ count: Int) -> String {
+        if count == 1 {
+            return store.localizedFormat("inspector.artifacts.count.one", defaultValue: "%d artifact", count)
+        }
+        return store.localizedFormat("inspector.artifacts.count.other", defaultValue: "%d artifacts", count)
+    }
+
     private func compactRuntimeLabel(_ value: String) -> String {
         value
             .split(separator: "_")
@@ -411,17 +432,17 @@ struct WorkbenchInspectorView: View {
     private func runtimeDiagnosticsSummary(_ diagnostics: WorkbenchRuntimeRunDiagnostics) -> String {
         var parts = [String]()
         if !diagnostics.duplicateEventIDs.isEmpty {
-            parts.append("\(diagnostics.duplicateEventIDs.count) duplicate")
+            parts.append(store.localizedFormat("inspector.diagnostics.duplicate", defaultValue: "%d duplicate", diagnostics.duplicateEventIDs.count))
         }
         if !diagnostics.missingParentEventIDs.isEmpty {
-            parts.append("\(diagnostics.missingParentEventIDs.count) missing parent")
+            parts.append(store.localizedFormat("inspector.diagnostics.missingParent", defaultValue: "%d missing parent", diagnostics.missingParentEventIDs.count))
         }
         if !diagnostics.missingSequenceNumbers.isEmpty {
-            parts.append("\(diagnostics.missingSequenceNumbers.count) missing sequence")
+            parts.append(store.localizedFormat("inspector.diagnostics.missingSequence", defaultValue: "%d missing sequence", diagnostics.missingSequenceNumbers.count))
         }
         if !diagnostics.outOfOrderEventIDs.isEmpty {
-            parts.append("\(diagnostics.outOfOrderEventIDs.count) out of order")
+            parts.append(store.localizedFormat("inspector.diagnostics.outOfOrder", defaultValue: "%d out of order", diagnostics.outOfOrderEventIDs.count))
         }
-        return parts.isEmpty ? "No replay diagnostics" : parts.joined(separator: " · ")
+        return parts.isEmpty ? store.localizedString("inspector.diagnostics.none", defaultValue: "No replay diagnostics") : parts.joined(separator: " · ")
     }
 }

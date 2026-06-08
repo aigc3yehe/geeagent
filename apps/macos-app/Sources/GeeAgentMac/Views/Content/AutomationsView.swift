@@ -17,23 +17,23 @@ struct AutomationsView: View {
             }
             .listStyle(.inset)
         }
-        .navigationTitle("Automations")
+        .navigationTitle(store.localizedString("automations.title", defaultValue: "Automations"))
     }
 
     private var metricsRow: some View {
         HStack(spacing: 12) {
             WorkbenchMetricTile(
-                title: "Active",
+                title: store.localizedString("automation.status.active", defaultValue: "Active"),
                 value: "\(store.automations.filter { $0.status == .active }.count)",
                 systemImage: "play.circle"
             )
             WorkbenchMetricTile(
-                title: "Attention",
+                title: store.localizedString("automation.status.attention", defaultValue: "Attention"),
                 value: "\(store.automations.filter { $0.status == .attention }.count)",
                 systemImage: "exclamationmark.circle"
             )
             WorkbenchMetricTile(
-                title: "Paused",
+                title: store.localizedString("automation.status.paused", defaultValue: "Paused"),
                 value: "\(store.automations.filter { $0.status == .paused }.count)",
                 systemImage: "pause.circle"
             )

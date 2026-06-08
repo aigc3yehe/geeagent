@@ -840,7 +840,7 @@ function firstTwitterStatusUrl(text: string): string | null {
 }
 
 function firstUrl(text: string): string | null {
-  return text.match(/https?:\/\/[^\s,，。！？、；）)】\]}]+/i)?.[0] ?? null;
+  return text.match(/https?:\/\/[^\s,\uFF0C\u3002\uFF01\uFF1F\u3001\uFF1B\uFF09)\u3011\]}]+/i)?.[0] ?? null;
 }
 
 function stableHash(value: string): string {

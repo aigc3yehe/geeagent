@@ -20,6 +20,9 @@ struct MediaLibraryModuleView: View {
     @State private var isChoosingLibrary = false
     @State private var visibleDynamicItemIDs: Set<MediaLibraryItem.ID> = []
     @State private var didRequestInitialLibraryRestore = false
+    @State private var isImmersiveToolbarVisible = true
+    @State private var immersiveToolbarHideToken = 0
+    @State private var lastImmersiveToolbarActivity = Date.distantPast
 
     init(store: MediaLibraryModuleStore = .shared) {
         self.store = store
@@ -259,22 +262,63 @@ struct MediaLibraryModuleView: View {
 
     private var dynamicPreviewIDs: Set<MediaLibraryItem.ID> {
         guard isDynamicShowcaseEnabled else { return [] }
-        return visibleDynamicItemIDs
+        return MediaLibraryDynamicPreviewPolicy.previewItemIDs(
+            visibleItemIDs: visibleDynamicItemIDs,
+            items: store.filteredItems
+        )
     }
 
     private func immersiveSurface(_ library: MediaLibraryInfo) -> some View {
         ZStack(alignment: .bottom) {
             gallery(showFilters: false)
                 .background(Color.black)
-            MediaLibraryFloatingToolbar(
-                thumbnailSize: $store.thumbnailSize,
-                dynamicPlayback: $isDynamicShowcaseEnabled,
-                onRefresh: { Task { await store.refresh() } },
-                onExit: { isImmersive = false }
-            )
-            .padding(.bottom, 18)
+            MediaLibraryImmersiveActivityMonitor {
+                revealImmersiveToolbar()
+            }
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+
+            if isImmersiveToolbarVisible {
+                MediaLibraryFloatingToolbar(
+                    thumbnailSize: $store.thumbnailSize,
+                    dynamicPlayback: $isDynamicShowcaseEnabled,
+                    galleryLayout: $store.galleryLayout,
+                    onRefresh: { Task { await store.refresh() } },
+                    onExit: { isImmersive = false }
+                )
+                .padding(.bottom, 18)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .onHover { isHovering in
+                    if isHovering {
+                        revealImmersiveToolbar()
+                    }
+                }
+            }
         }
         .background(Color.black)
+        .onAppear {
+            revealImmersiveToolbar(force: true)
+        }
+        .task(id: immersiveToolbarHideToken) {
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: 0.18)) {
+                isImmersiveToolbarVisible = false
+            }
+        }
+    }
+
+    private func revealImmersiveToolbar(force: Bool = false) {
+        let now = Date()
+        if !force, isImmersiveToolbarVisible, now.timeIntervalSince(lastImmersiveToolbarActivity) < 0.2 {
+            return
+        }
+
+        lastImmersiveToolbarActivity = now
+        withAnimation(.easeInOut(duration: 0.14)) {
+            isImmersiveToolbarVisible = true
+        }
+        immersiveToolbarHideToken &+= 1
     }
 
     private func toolbar(_ library: MediaLibraryInfo) -> some View {
@@ -422,67 +466,11 @@ struct MediaLibraryModuleView: View {
                         } else if store.filteredItems.isEmpty {
                             emptyGallery
                         } else {
-                            let dynamicPreviewIDs = dynamicPreviewIDs
-                            JustifiedMediaGridLayout(
-                                targetHeight: CGFloat(store.thumbnailSize),
-                                spacing: isImmersive ? 2 : 12
-                            ) {
-                                ForEach(store.filteredItems) { item in
-                                    MediaLibraryItemTile(
-                                        item: item,
-                                        isSelected: store.selectedItemIDs.contains(item.id),
-                                        isFocused: store.focusedItemID == item.id,
-                                        dynamicPlayback: dynamicPreviewIDs.contains(item.id),
-                                        isImmersive: isImmersive,
-                                        onSelect: { preserving in
-                                            store.toggleSelection(for: item, preservingExisting: preserving)
-                                        },
-                                        onToggleStar: {
-                                            Task { await store.toggleStarred(item) }
-                                        },
-                                        onMove: { folderID in
-                                            if !store.selectedItemIDs.contains(item.id) {
-                                                store.selectedItemIDs = [item.id]
-                                            }
-                                            store.focusedItemID = item.id
-                                            Task { await store.moveSelectedItems(to: folderID) }
-                                        },
-                                        onOpen: {
-                                            store.focusedItemID = item.id
-                                            store.openFocusedItem()
-                                        },
-                                        onEditVideo: {
-                                            store.focusedItemID = item.id
-                                            store.selectedItemIDs = [item.id]
-                                            nativePreviewController.openVideoEditor(item)
-                                        },
-                                        onReveal: {
-                                            store.focusedItemID = item.id
-                                            store.selectedItemIDs = [item.id]
-                                            store.revealFocusedItem()
-                                        },
-                                        onDelete: {
-                                            store.focusedItemID = item.id
-                                            store.selectedItemIDs = [item.id]
-                                            Task { await store.deleteSelectedItems() }
-                                        },
-                                        folders: store.folders
-                                    )
-                                    .background(
-                                        MediaLibraryVisibilityReporter(
-                                            itemID: item.id,
-                                            isEnabled: item.isDynamicPreviewable,
-                                            viewportSize: scrollProxy.size,
-                                            coordinateSpaceName: galleryScrollCoordinateSpace,
-                                            onVisibilityChange: updateDynamicVisibility
-                                        )
-                                    )
-                                    .layoutValue(
-                                        key: MediaLibraryAspectRatioKey.self,
-                                        value: mediaAspectRatio(for: item)
-                                    )
-                                }
-                            }
+                            galleryLayoutContainer(
+                                dynamicPreviewIDs: dynamicPreviewIDs,
+                                viewportSize: scrollProxy.size
+                            )
+                            .id(store.galleryLayout)
                             .padding(isImmersive ? 2 : 14)
                         }
                     }
@@ -496,6 +484,9 @@ struct MediaLibraryModuleView: View {
         .onChange(of: store.filteredItems.map(\.id)) { _, ids in
             visibleDynamicItemIDs.formIntersection(Set(ids))
         }
+        .onChange(of: store.galleryLayout) { _, _ in
+            visibleDynamicItemIDs.removeAll()
+        }
     }
 
     private func updateDynamicVisibility(itemID: MediaLibraryItem.ID, isVisible: Bool) {
@@ -505,6 +496,96 @@ struct MediaLibraryModuleView: View {
         } else {
             guard visibleDynamicItemIDs.contains(itemID) else { return }
             visibleDynamicItemIDs.remove(itemID)
+        }
+    }
+
+    @ViewBuilder
+    private func galleryLayoutContainer(
+        dynamicPreviewIDs: Set<MediaLibraryItem.ID>,
+        viewportSize: CGSize
+    ) -> some View {
+        let target = CGFloat(store.thumbnailSize)
+        let spacing: CGFloat = isImmersive ? 3 : 12
+
+        switch store.galleryLayout {
+        case .justified:
+            JustifiedMediaGridLayout(targetHeight: target, spacing: spacing) {
+                galleryTileForEach(
+                    dynamicPreviewIDs: dynamicPreviewIDs,
+                    viewportSize: viewportSize
+                )
+            }
+        case .waterfall:
+            WaterfallMediaGridLayout(targetItemWidth: target, spacing: spacing) {
+                galleryTileForEach(
+                    dynamicPreviewIDs: dynamicPreviewIDs,
+                    viewportSize: viewportSize
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func galleryTileForEach(
+        dynamicPreviewIDs: Set<MediaLibraryItem.ID>,
+        viewportSize: CGSize
+    ) -> some View {
+        ForEach(store.filteredItems) { item in
+            MediaLibraryItemTile(
+                item: item,
+                isSelected: store.selectedItemIDs.contains(item.id),
+                isFocused: store.focusedItemID == item.id,
+                dynamicPlayback: dynamicPreviewIDs.contains(item.id),
+                dynamicShowcaseEnabled: isDynamicShowcaseEnabled,
+                isImmersive: isImmersive,
+                onSelect: { preserving in
+                    store.toggleSelection(for: item, preservingExisting: preserving)
+                },
+                onToggleStar: {
+                    Task { await store.toggleStarred(item) }
+                },
+                onMove: { folderID in
+                    if !store.selectedItemIDs.contains(item.id) {
+                        store.selectedItemIDs = [item.id]
+                    }
+                    store.focusedItemID = item.id
+                    Task { await store.moveSelectedItems(to: folderID) }
+                },
+                onOpen: {
+                    store.focusedItemID = item.id
+                    store.openFocusedItem()
+                },
+                onEditVideo: {
+                    store.focusedItemID = item.id
+                    store.selectedItemIDs = [item.id]
+                    nativePreviewController.openVideoEditor(item)
+                },
+                onReveal: {
+                    store.focusedItemID = item.id
+                    store.selectedItemIDs = [item.id]
+                    store.revealFocusedItem()
+                },
+                onDelete: {
+                    store.focusedItemID = item.id
+                    store.selectedItemIDs = [item.id]
+                    Task { await store.deleteSelectedItems() }
+                },
+                folders: store.folders
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(
+                MediaLibraryVisibilityReporter(
+                    itemID: item.id,
+                    isEnabled: item.isDynamicPreviewable,
+                    viewportSize: viewportSize,
+                    coordinateSpaceName: galleryScrollCoordinateSpace,
+                    onVisibilityChange: updateDynamicVisibility
+                )
+            )
+            .layoutValue(
+                key: MediaLibraryAspectRatioKey.self,
+                value: mediaAspectRatio(for: item)
+            )
         }
     }
 
@@ -545,6 +626,8 @@ struct MediaLibraryModuleView: View {
                 .frame(maxWidth: 260)
 
             Spacer(minLength: 0)
+
+            MediaLibraryLayoutPicker(layout: $store.galleryLayout)
 
             MediaSizeSlider(value: $store.thumbnailSize)
         }
@@ -1132,6 +1215,7 @@ private struct MediaLibraryDropOverlay: View {
 private struct MediaLibraryFloatingToolbar: View {
     @Binding var thumbnailSize: Double
     @Binding var dynamicPlayback: Bool
+    @Binding var galleryLayout: MediaLibraryGalleryLayout
     var onRefresh: () -> Void
     var onExit: () -> Void
 
@@ -1156,6 +1240,8 @@ private struct MediaLibraryFloatingToolbar: View {
             .buttonStyle(EagleIconButtonStyle(isActive: dynamicPlayback))
             .help("Dynamic showcase plays every visible GIF and video; hover any GIF or video to play it immediately.")
 
+            MediaLibraryLayoutPicker(layout: $galleryLayout)
+
             MediaSizeSlider(value: $thumbnailSize)
 
             Button(action: onRefresh) {
@@ -1176,8 +1262,110 @@ private struct MediaLibraryFloatingToolbar: View {
     }
 }
 
+private struct MediaLibraryImmersiveActivityMonitor: NSViewRepresentable {
+    var onActivity: () -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.install(view: view, onActivity: onActivity)
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        context.coordinator.view = view
+        context.coordinator.onActivity = onActivity
+    }
+
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
+        coordinator.uninstall()
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    @MainActor
+    final class Coordinator {
+        weak var view: NSView?
+        var onActivity: (() -> Void)?
+        private var monitor: Any?
+
+        func install(view: NSView, onActivity: @escaping () -> Void) {
+            self.view = view
+            self.onActivity = onActivity
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDown, .rightMouseDown, .scrollWheel]) { [weak self] event in
+                self?.handle(event)
+                return event
+            }
+        }
+
+        func uninstall() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+            monitor = nil
+            view = nil
+            onActivity = nil
+        }
+
+        private func handle(_ event: NSEvent) {
+            guard let window = view?.window, event.window === window else {
+                return
+            }
+            onActivity?()
+        }
+    }
+}
+
 private struct MediaLibraryAspectRatioKey: LayoutValueKey {
     static let defaultValue: CGFloat = 4 / 3
+}
+
+enum MediaLibraryDynamicPreviewPolicy {
+    private static let startupDelayStepNanoseconds: UInt64 = 70_000_000
+    private static let startupDelaySlots: UInt64 = 8
+    private static let videoLeadInThresholdSeconds = 0.25
+
+    static func previewItemIDs(
+        visibleItemIDs: Set<MediaLibraryItem.ID>,
+        items: [MediaLibraryItem]
+    ) -> Set<MediaLibraryItem.ID> {
+        guard !visibleItemIDs.isEmpty else { return [] }
+
+        var previewIDs: Set<MediaLibraryItem.ID> = []
+        for item in items where visibleItemIDs.contains(item.id) && item.isDynamicPreviewable {
+            previewIDs.insert(item.id)
+        }
+        return previewIDs
+    }
+
+    static func startupDelayNanoseconds(for itemID: MediaLibraryItem.ID) -> UInt64 {
+        stableBucket(for: itemID) * startupDelayStepNanoseconds
+    }
+
+    static func isVisibleForDynamicPreview(
+        frame: CGRect,
+        viewportSize: CGSize,
+        isEnabled: Bool
+    ) -> Bool {
+        guard isEnabled else { return false }
+        let viewport = CGRect(origin: .zero, size: viewportSize)
+            .insetBy(dx: -24, dy: -96)
+        return frame.intersects(viewport)
+    }
+
+    static func shouldSkipVideoLeadIn(startSeconds: Double) -> Bool {
+        startSeconds.isFinite && startSeconds > videoLeadInThresholdSeconds
+    }
+
+    private static func stableBucket(for value: String) -> UInt64 {
+        var hash: UInt64 = 5381
+        for byte in value.utf8 {
+            hash = ((hash << 5) &+ hash) &+ UInt64(byte)
+        }
+        return hash % startupDelaySlots
+    }
 }
 
 private struct MediaLibraryVisibilityReporter: View {
@@ -1199,6 +1387,9 @@ private struct MediaLibraryVisibilityReporter: View {
                 .onChange(of: frame) { _, newFrame in
                     report(newFrame)
                 }
+                .onChange(of: viewportSize) { _, _ in
+                    report(frame)
+                }
                 .onChange(of: isEnabled) { _, _ in
                     report(frame)
                 }
@@ -1209,9 +1400,13 @@ private struct MediaLibraryVisibilityReporter: View {
     }
 
     private func report(_ frame: CGRect) {
-        let viewport = CGRect(origin: .zero, size: viewportSize)
-            .insetBy(dx: -24, dy: -96)
-        report(isEnabled && frame.intersects(viewport))
+        report(
+            MediaLibraryDynamicPreviewPolicy.isVisibleForDynamicPreview(
+                frame: frame,
+                viewportSize: viewportSize,
+                isEnabled: isEnabled
+            )
+        )
     }
 
     private func report(_ isVisible: Bool) {
@@ -1321,11 +1516,137 @@ private struct JustifiedMediaCell {
     var width: CGFloat
 }
 
+private struct WaterfallMediaGridLayout: Layout {
+    var targetItemWidth: CGFloat
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard !subviews.isEmpty else { return .zero }
+        let availableWidth = max(proposal.width ?? targetItemWidth * 4, targetItemWidth)
+        let layout = arrange(subviews: subviews, availableWidth: availableWidth)
+        return CGSize(width: availableWidth, height: layout.totalHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard !subviews.isEmpty else { return }
+        let layout = arrange(subviews: subviews, availableWidth: bounds.width)
+        for (index, placement) in layout.placements.enumerated() {
+            subviews[index].place(
+                at: CGPoint(x: bounds.minX + placement.x, y: bounds.minY + placement.y),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: placement.width, height: placement.height)
+            )
+        }
+    }
+
+    private func arrange(subviews: Subviews, availableWidth: CGFloat) -> WaterfallArrangement {
+        let columnLayout = columnLayout(for: availableWidth)
+        var heights = Array(repeating: CGFloat(0), count: columnLayout.count)
+        var placements: [WaterfallPlacement] = []
+        placements.reserveCapacity(subviews.count)
+
+        for subview in subviews {
+            let aspect = max(min(subview[MediaLibraryAspectRatioKey.self], 8), 0.2)
+            let itemHeight = max(columnLayout.width / aspect, 32)
+            let columnIndex = shortestColumnIndex(in: heights)
+            let x = CGFloat(columnIndex) * (columnLayout.width + spacing)
+            let y = heights[columnIndex]
+            placements.append(
+                WaterfallPlacement(x: x, y: y, width: columnLayout.width, height: itemHeight)
+            )
+            heights[columnIndex] = y + itemHeight + spacing
+        }
+
+        let maxHeight = max((heights.max() ?? 0) - spacing, 0)
+        return WaterfallArrangement(placements: placements, totalHeight: maxHeight)
+    }
+
+    private func columnLayout(for availableWidth: CGFloat) -> (count: Int, width: CGFloat) {
+        guard availableWidth > 0 else { return (1, max(targetItemWidth, 64)) }
+        let approximate = (availableWidth + spacing) / (targetItemWidth + spacing)
+        let count = max(1, Int(approximate.rounded()))
+        let totalSpacing = spacing * CGFloat(count - 1)
+        let width = max((availableWidth - totalSpacing) / CGFloat(count), 64)
+        return (count, width)
+    }
+
+    private func shortestColumnIndex(in heights: [CGFloat]) -> Int {
+        var bestIndex = 0
+        var bestHeight = heights[0]
+        for index in heights.indices where heights[index] < bestHeight {
+            bestHeight = heights[index]
+            bestIndex = index
+        }
+        return bestIndex
+    }
+}
+
+private struct WaterfallArrangement {
+    var placements: [WaterfallPlacement]
+    var totalHeight: CGFloat
+}
+
+private struct WaterfallPlacement {
+    var x: CGFloat
+    var y: CGFloat
+    var width: CGFloat
+    var height: CGFloat
+}
+
+private struct MediaLibraryLayoutPicker: View {
+    @Binding var layout: MediaLibraryGalleryLayout
+
+    var body: some View {
+        HStack(spacing: 2) {
+            layoutButton(
+                for: .justified,
+                systemImage: "rectangle.3.group",
+                help: "Equal-height barrel layout"
+            )
+            layoutButton(
+                for: .waterfall,
+                systemImage: "square.grid.3x2",
+                help: "Equal-width waterfall layout"
+            )
+        }
+        .padding(2)
+        .background(EaglePalette.control, in: RoundedRectangle(cornerRadius: MediaLibraryControlMetrics.radius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: MediaLibraryControlMetrics.radius, style: .continuous)
+                .stroke(Color.white.opacity(0.06), lineWidth: 0.6)
+        )
+    }
+
+    private func layoutButton(
+        for value: MediaLibraryGalleryLayout,
+        systemImage: String,
+        help: String
+    ) -> some View {
+        let isActive = layout == value
+        return Button {
+            guard layout != value else { return }
+            layout = value
+        } label: {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(isActive ? Color.white : Color.white.opacity(0.62))
+                .frame(width: 28, height: MediaLibraryControlMetrics.height - 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(isActive ? EaglePalette.accent : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+}
+
 private struct MediaLibraryItemTile: View {
     let item: MediaLibraryItem
     let isSelected: Bool
     let isFocused: Bool
     let dynamicPlayback: Bool
+    let dynamicShowcaseEnabled: Bool
     let isImmersive: Bool
     var onSelect: (Bool) -> Void
     var onToggleStar: () -> Void
@@ -1340,7 +1661,13 @@ private struct MediaLibraryItemTile: View {
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            MediaLibraryPreview(item: item, dynamicPlayback: dynamicPlayback || (isHovering && item.isDynamicPreviewable))
+            MediaLibraryPreview(
+                item: item,
+                dynamicPlayback: dynamicPlayback || (isHovering && item.isDynamicPreviewable),
+                autoplayDelayNanoseconds: dynamicPlayback
+                    ? MediaLibraryDynamicPreviewPolicy.startupDelayNanoseconds(for: item.id)
+                    : 0
+            )
                 .frame(maxWidth: .infinity)
                 .aspectRatio(itemAspectRatio, contentMode: .fit)
                 .background(Color.black.opacity(0.3))
@@ -1369,6 +1696,7 @@ private struct MediaLibraryItemTile: View {
             }
             .padding(10)
             .opacity(overlayOpacity)
+            .accessibilityHidden(hidesAutoplayChrome)
 
             HStack(alignment: .top, spacing: 6) {
                 HStack(spacing: 4) {
@@ -1401,7 +1729,9 @@ private struct MediaLibraryItemTile: View {
             }
             .padding(7)
             .frame(maxHeight: .infinity, alignment: .top)
-            .opacity(isImmersive ? (isHovering ? 1 : 0) : 1)
+            .opacity(topControlsOpacity)
+            .allowsHitTesting(!hidesAutoplayChrome)
+            .accessibilityHidden(hidesAutoplayChrome)
         }
         .clipShape(RoundedRectangle(cornerRadius: tileRadius, style: .continuous))
         .background(tileBackground, in: RoundedRectangle(cornerRadius: tileRadius, style: .continuous))
@@ -1503,14 +1833,28 @@ private struct MediaLibraryItemTile: View {
     }
 
     private var overlayOpacity: Double {
+        if hidesAutoplayChrome {
+            return 0
+        }
         if isImmersive {
             return isHovering ? 1 : 0
         }
         return isHovering || isSelected || isFocused ? 1 : 0.82
     }
 
+    private var topControlsOpacity: Double {
+        if hidesAutoplayChrome {
+            return 0
+        }
+        return isImmersive ? (isHovering ? 1 : 0) : 1
+    }
+
+    private var hidesAutoplayChrome: Bool {
+        !isImmersive && dynamicShowcaseEnabled && item.isDynamicPreviewable
+    }
+
     private var tileRadius: CGFloat {
-        isImmersive ? 2 : 8
+        isImmersive ? 4 : 8
     }
 
     private var tileBackground: Color {
@@ -1541,6 +1885,7 @@ private struct MediaLibraryItemTile: View {
 private struct MediaLibraryPreview: View {
     let item: MediaLibraryItem
     var dynamicPlayback = false
+    var autoplayDelayNanoseconds: UInt64 = 0
 
     var body: some View {
         ZStack {
@@ -1549,7 +1894,10 @@ private struct MediaLibraryPreview: View {
             } else {
                 MediaLibraryThumbnailView(item: item)
                 if dynamicPlayback, item.mediaKind == .video {
-                    MediaLibraryVideoAutoplayView(url: item.fileURL)
+                    MediaLibraryVideoAutoplayView(
+                        url: item.fileURL,
+                        startupDelayNanoseconds: autoplayDelayNanoseconds
+                    )
                 }
             }
 
@@ -1645,39 +1993,22 @@ private struct MediaLibraryAnimatedImageView: NSViewRepresentable {
 
 private struct MediaLibraryVideoAutoplayView: NSViewRepresentable {
     let url: URL
+    let startupDelayNanoseconds: UInt64
 
     func makeNSView(context: Context) -> PlayerContainerView {
         let view = PlayerContainerView()
         view.playerLayer.videoGravity = .resizeAspectFill
         view.playerLayer.masksToBounds = true
+        context.coordinator.attach(to: view)
         return view
     }
 
     func updateNSView(_ view: PlayerContainerView, context: Context) {
-        guard context.coordinator.url != url else {
-            context.coordinator.player?.play()
-            return
-        }
-
-        context.coordinator.tearDown()
-        context.coordinator.url = url
-        view.prepareForPlayback()
-
-        let item = AVPlayerItem(url: url)
-        item.preferredForwardBufferDuration = 1
-        let player = AVQueuePlayer()
-        player.isMuted = true
-        player.automaticallyWaitsToMinimizeStalling = true
-        context.coordinator.player = player
-        context.coordinator.looper = AVPlayerLooper(player: player, templateItem: item)
-        view.playerLayer.player = player
-        context.coordinator.readyForDisplayObservation = view.playerLayer.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak view] layer, _ in
-            guard layer.isReadyForDisplay else { return }
-            DispatchQueue.main.async {
-                view?.showPlayerLayer()
-            }
-        }
-        player.play()
+        context.coordinator.attach(to: view)
+        context.coordinator.configure(
+            url: url,
+            startupDelayNanoseconds: startupDelayNanoseconds
+        )
     }
 
     static func dismantleNSView(_ view: PlayerContainerView, coordinator: Coordinator) {
@@ -1689,18 +2020,194 @@ private struct MediaLibraryVideoAutoplayView: NSViewRepresentable {
         Coordinator()
     }
 
+    @MainActor
     final class Coordinator {
-        var url: URL?
-        var player: AVQueuePlayer?
-        var looper: AVPlayerLooper?
-        var readyForDisplayObservation: NSKeyValueObservation?
+        private weak var view: PlayerContainerView?
+        private var url: URL?
+        private var player: AVQueuePlayer?
+        private var looper: AVPlayerLooper?
+        private var readyForDisplayObservation: NSKeyValueObservation?
+        private var configurationTask: Task<Void, Never>?
+        private var playbackTask: Task<Void, Never>?
+        private var watchdogTask: Task<Void, Never>?
+
+        private struct PlaybackTiming {
+            var startTime: CMTime
+            var loopTimeRange: CMTimeRange?
+        }
+
+        func attach(to view: PlayerContainerView) {
+            self.view = view
+        }
+
+        func configure(url: URL, startupDelayNanoseconds: UInt64) {
+            if self.url == url {
+                if player?.rate == 0 {
+                    schedulePlayback(after: 0)
+                }
+                return
+            }
+
+            tearDown()
+            self.url = url
+            view?.prepareForPlayback()
+            configurationTask = Task { @MainActor [weak self] in
+                if startupDelayNanoseconds > 0 {
+                    try? await Task.sleep(nanoseconds: startupDelayNanoseconds)
+                } else {
+                    await Task.yield()
+                }
+                guard let self, !Task.isCancelled, self.url == url else { return }
+                let asset = AVURLAsset(
+                    url: url,
+                    options: [AVURLAssetPreferPreciseDurationAndTimingKey: false]
+                )
+                let timing = await Self.playbackTiming(for: asset)
+                guard !Task.isCancelled, self.url == url else { return }
+                self.installPlayer(asset: asset, timing: timing)
+            }
+        }
+
+        private static func playbackTiming(for asset: AVURLAsset) async -> PlaybackTiming {
+            do {
+                let tracks = try await asset.loadTracks(withMediaType: .video)
+                guard let videoTrack = tracks.first else {
+                    return PlaybackTiming(startTime: .zero, loopTimeRange: nil)
+                }
+
+                let trackTimeRange = try await videoTrack.load(.timeRange)
+                let startTime = trackTimeRange.start
+                guard shouldSeekToVideoStart(startTime) else {
+                    return PlaybackTiming(startTime: .zero, loopTimeRange: nil)
+                }
+
+                let duration = try await asset.load(.duration)
+                guard duration.isValid, duration.seconds.isFinite, CMTimeCompare(duration, startTime) > 0 else {
+                    return PlaybackTiming(startTime: startTime, loopTimeRange: nil)
+                }
+
+                let loopDuration = CMTimeSubtract(duration, startTime)
+                guard loopDuration.isValid, loopDuration.seconds.isFinite, loopDuration.seconds > 0 else {
+                    return PlaybackTiming(startTime: startTime, loopTimeRange: nil)
+                }
+
+                return PlaybackTiming(
+                    startTime: startTime,
+                    loopTimeRange: CMTimeRange(start: startTime, duration: loopDuration)
+                )
+            } catch {
+                return PlaybackTiming(startTime: .zero, loopTimeRange: nil)
+            }
+        }
+
+        private static func shouldSeekToVideoStart(_ time: CMTime) -> Bool {
+            time.isValid
+                && MediaLibraryDynamicPreviewPolicy.shouldSkipVideoLeadIn(startSeconds: time.seconds)
+        }
+
+        private func installPlayer(asset: AVURLAsset, timing: PlaybackTiming) {
+            let item = AVPlayerItem(asset: asset)
+            item.preferredForwardBufferDuration = 0.5
+
+            let player = AVQueuePlayer()
+            player.isMuted = true
+            player.automaticallyWaitsToMinimizeStalling = false
+            player.allowsExternalPlayback = false
+            player.preventsDisplaySleepDuringVideoPlayback = false
+            player.audiovisualBackgroundPlaybackPolicy = .pauses
+
+            self.player = player
+            if let loopTimeRange = timing.loopTimeRange {
+                looper = AVPlayerLooper(player: player, templateItem: item, timeRange: loopTimeRange)
+            } else {
+                looper = AVPlayerLooper(player: player, templateItem: item)
+            }
+            view?.playerLayer.player = player
+            if let playerLayer = view?.playerLayer {
+                readyForDisplayObservation = playerLayer.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak view] layer, _ in
+                    guard layer.isReadyForDisplay else { return }
+                    DispatchQueue.main.async {
+                        view?.showPlayerLayer()
+                    }
+                }
+            }
+            schedulePlayback(startTime: timing.startTime, after: 0)
+            startPlaybackWatchdog()
+        }
+
+        private func schedulePlayback(startTime: CMTime = .zero, after delayNanoseconds: UInt64) {
+            guard playbackTask == nil else { return }
+            playbackTask = Task { @MainActor [weak self] in
+                if delayNanoseconds > 0 {
+                    try? await Task.sleep(nanoseconds: delayNanoseconds)
+                } else {
+                    await Task.yield()
+                }
+                guard let self, let player = self.player, !Task.isCancelled else { return }
+                if Self.shouldSeekToVideoStart(startTime), CMTimeCompare(player.currentTime(), startTime) < 0 {
+                    _ = await player.seek(
+                        to: startTime,
+                        toleranceBefore: .zero,
+                        toleranceAfter: CMTime(seconds: 0.05, preferredTimescale: 600)
+                    )
+                    guard !Task.isCancelled else { return }
+                }
+                player.playImmediately(atRate: 1)
+                self.playbackTask = nil
+            }
+        }
+
+        private func startPlaybackWatchdog() {
+            watchdogTask?.cancel()
+            watchdogTask = Task { @MainActor [weak self] in
+                var lastTime = self?.currentPlaybackSeconds ?? 0
+                var attempts = 0
+                while !Task.isCancelled, attempts < 8 {
+                    try? await Task.sleep(nanoseconds: 650_000_000)
+                    guard let self, !Task.isCancelled else { return }
+                    let currentTime = self.currentPlaybackSeconds
+                    if currentTime - lastTime > 0.04 {
+                        lastTime = currentTime
+                        attempts = 0
+                        continue
+                    }
+
+                    attempts += 1
+                    self.player?.playImmediately(atRate: 1)
+                }
+            }
+        }
+
+        private var currentPlaybackSeconds: Double {
+            guard let seconds = player?.currentTime().seconds, seconds.isFinite else {
+                return 0
+            }
+            return seconds
+        }
 
         func tearDown() {
+            configurationTask?.cancel()
+            configurationTask = nil
+            playbackTask?.cancel()
+            playbackTask = nil
+            watchdogTask?.cancel()
+            watchdogTask = nil
             readyForDisplayObservation = nil
             player?.pause()
             player?.removeAllItems()
             looper = nil
             player = nil
+            url = nil
+            view?.prepareForPlayback()
+        }
+
+        deinit {
+            configurationTask?.cancel()
+            playbackTask?.cancel()
+            watchdogTask?.cancel()
+            readyForDisplayObservation = nil
+            player?.pause()
+            player?.removeAllItems()
         }
     }
 

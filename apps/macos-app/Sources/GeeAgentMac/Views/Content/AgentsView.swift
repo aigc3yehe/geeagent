@@ -27,7 +27,7 @@ struct AgentsView: View {
                 mainPage
             }
         }
-        .navigationTitle("Agents")
+        .navigationTitle(store.localizedString("agents.title", defaultValue: "Agents"))
         .overlay(alignment: .topTrailing) {
             if let successBanner {
                 AgentsTransientFeedbackView(message: successBanner)
@@ -41,25 +41,25 @@ struct AgentsView: View {
             Alert(
                 title: Text(message.title),
                 message: Text(message.message),
-                dismissButton: .default(Text("OK"))
+                dismissButton: .default(Text(store.localizedString("common.ok", defaultValue: "OK")))
             )
         }
         .confirmationDialog(
-            "Delete AgentProfile?",
+            store.localizedString("agents.deleteDialogTitle", defaultValue: "Delete AgentProfile?"),
             isPresented: Binding(
                 get: { pendingDeleteProfile != nil },
                 set: { if !$0 { pendingDeleteProfile = nil } }
             ),
             presenting: pendingDeleteProfile
         ) { profile in
-            Button("Delete \(profile.name)", role: .destructive) {
+            Button(store.localizedFormat("agents.deleteTitle", defaultValue: "Delete %@", profile.name), role: .destructive) {
                 delete(profile)
             }
-            Button("Cancel", role: .cancel) {
+            Button(store.localizedString("common.cancel", defaultValue: "Cancel"), role: .cancel) {
                 pendingDeleteProfile = nil
             }
         } message: { profile in
-            Text("This removes the local profile folder and the installed runtime copy for \(profile.name).")
+            Text(store.localizedFormat("agents.deleteMessage", defaultValue: "This removes the local profile folder and the installed runtime copy for %@.", profile.name))
         }
     }
 
@@ -157,7 +157,9 @@ struct AgentsView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Button(action: chooseAgentPack) {
-                    Label(store.isImportingAgentPack ? "Importing…" : "Import Agent Definition…", systemImage: "square.and.arrow.down")
+                    Label(store.isImportingAgentPack
+                        ? store.localizedString("agents.importing", defaultValue: "Importing...")
+                        : store.localizedString("agents.importDefinition", defaultValue: "Import Agent Definition..."), systemImage: "square.and.arrow.down")
                         .font(.geeBodyMedium(12))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)
@@ -169,12 +171,12 @@ struct AgentsView: View {
                 Spacer(minLength: 0)
             }
 
-            Text("New profiles can only be added by importing a complete folder or `.zip` package. GeeAgent currently supports `Agent Definition v2`, and each package must include at least `agent.json`, `identity-prompt.md`, `soul.md`, `playbook.md`, and visual assets.")
+            Text(store.localizedString("agents.importDescription", defaultValue: "New profiles can only be added by importing a complete folder or `.zip` package. GeeAgent currently supports `Agent Definition v2`, and each package must include at least `agent.json`, `identity-prompt.md`, `soul.md`, `playbook.md`, and visual assets."))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("After import, GeeAgent copies the full package into the local profile folder and compiles the layered context into the active agent prompt. To change the persona later, edit the files in that folder and then return here and click Reload.")
+            Text(store.localizedString("agents.importAfterDescription", defaultValue: "After import, GeeAgent copies the full package into the local profile folder and compiles the layered context into the active agent prompt. To change the persona later, edit the files in that folder and then return here and click Reload."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -210,7 +212,7 @@ struct AgentsView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .center, spacing: 10) {
-                    Text("Active Persona")
+                    Text(store.localizedString("agents.activePersona", defaultValue: "Active Persona"))
                         .font(.geeDisplaySemibold(12))
                         .foregroundStyle(.secondary)
 
@@ -249,7 +251,7 @@ struct AgentsView: View {
                 Button {
                     detailProfileID = nil
                 } label: {
-                    Label("Back to Profiles", systemImage: "chevron.left")
+                    Label(store.localizedString("common.backToProfiles", defaultValue: "Back to Profiles"), systemImage: "chevron.left")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -257,7 +259,7 @@ struct AgentsView: View {
                 Spacer(minLength: 0)
 
                 if store.activeAgentProfile?.id == profile.id {
-                    WorkbenchStatusBadge(title: "Active", systemImage: "checkmark.circle.fill")
+                    WorkbenchStatusBadge(title: store.localizedString("automation.status.active", defaultValue: "Active"), systemImage: "checkmark.circle.fill")
                 }
             }
 
@@ -297,28 +299,28 @@ struct AgentsView: View {
 
             HStack(spacing: 10) {
                 if store.activeAgentProfile?.id != profile.id {
-                    Button("Set Active") {
+                    Button(store.localizedString("common.setActive", defaultValue: "Set Active")) {
                         store.setActiveAgentProfile(profile)
                     }
                     .buttonStyle(.borderedProminent)
                 }
 
                 if profile.fileState.canReload {
-                    Button("Reload") {
+                    Button(store.localizedString("common.reload", defaultValue: "Reload")) {
                         reload(profile)
                     }
                     .buttonStyle(.bordered)
                 }
 
                 if profile.fileState.workspaceRootPath != nil {
-                    Button("Open Folder") {
+                    Button(store.localizedString("common.openFolder", defaultValue: "Open Folder")) {
                         store.openAgentProfileFolder(profile)
                     }
                     .buttonStyle(.bordered)
                 }
 
                 if profile.fileState.canDelete {
-                    Button("Delete", role: .destructive) {
+                    Button(store.localizedString("common.delete", defaultValue: "Delete"), role: .destructive) {
                         pendingDeleteProfile = profile
                     }
                     .buttonStyle(.bordered)
@@ -331,17 +333,17 @@ struct AgentsView: View {
 
     private func summarySection(_ profile: AgentProfileRecord) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Profile Summary")
+            Text(store.localizedString("agents.profileSummary", defaultValue: "Profile Summary"))
                 .font(.headline)
 
             HStack(spacing: 12) {
                 summaryPill(title: "ID", value: profile.id)
-                summaryPill(title: "Source", value: profile.source.title)
-                summaryPill(title: "Appearance", value: profile.appearanceTitle)
+                summaryPill(title: store.localizedString("agents.source", defaultValue: "Source"), value: profile.source.title)
+                summaryPill(title: store.localizedString("agents.appearance", defaultValue: "Appearance"), value: profile.appearanceTitle)
             }
 
-            summaryRow(title: "Skills", value: profile.skillsSummary)
-            summaryRow(title: "Allowed Tools", value: profile.allowedToolsSummary)
+            summaryRow(title: store.localizedString("agents.skills", defaultValue: "Skills"), value: profile.skillsSummary)
+            summaryRow(title: store.localizedString("agents.allowedTools", defaultValue: "Allowed Tools"), value: profile.allowedToolsSummary)
         }
         .padding(16)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -355,17 +357,17 @@ struct AgentsView: View {
         let sources = store.skillSources.personaSources(for: profile.id)
         return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Skill Sources")
+                Text(store.localizedString("agents.skillSources", defaultValue: "Skill Sources"))
                     .font(.headline)
 
                 Spacer()
 
-                Text("Refreshes on Reload")
+                Text(store.localizedString("agents.refreshesOnReload", defaultValue: "Refreshes on Reload"))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
 
                 Button(action: { choosePersonaSkillSource(profile) }) {
-                    Label("Add Source", systemImage: "plus")
+                    Label(store.localizedString("common.addSource", defaultValue: "Add Source"), systemImage: "plus")
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
@@ -373,7 +375,7 @@ struct AgentsView: View {
             }
 
             if sources.isEmpty {
-                Text("No persona-specific skill sources.")
+                Text(store.localizedString("agents.noPersonaSkills", defaultValue: "No persona-specific skill sources."))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             } else {
@@ -433,7 +435,7 @@ struct AgentsView: View {
                 Image(systemName: "minus.circle")
             }
             .buttonStyle(.borderless)
-            .help("Remove source")
+            .help(store.localizedString("settings.skills.removeSource", defaultValue: "Remove source"))
             .disabled(store.isRemovingSkillSource)
         }
         .padding(10)
@@ -446,7 +448,7 @@ struct AgentsView: View {
 
     private func fileLocationsSection(_ profile: AgentProfileRecord) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("File Locations")
+            Text(store.localizedString("agents.fileLocations", defaultValue: "File Locations"))
                 .font(.headline)
 
             fileLocationRow(
@@ -574,13 +576,13 @@ struct AgentsView: View {
                     .font(.subheadline.weight(.semibold))
                 Spacer(minLength: 0)
                 if let action, let path, !path.isEmpty {
-                    Button("Open", action: action)
+                    Button(AppLocalization.string("common.open", defaultValue: "Open"), action: action)
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                 }
             }
 
-            Text(path ?? "Not available for this profile")
+            Text(path ?? AppLocalization.string("agents.pathUnavailable", defaultValue: "Not available for this profile"))
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
@@ -789,23 +791,23 @@ private struct AgentProfileListCard: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                profileFact(label: "Skills", value: profile.skillsSummary)
-                profileFact(label: "Tools", value: profile.allowedToolsSummary)
-                profileFact(label: "Version", value: "v\(profile.version)")
+                profileFact(label: AppLocalization.string("agents.skills", defaultValue: "Skills"), value: profile.skillsSummary)
+                profileFact(label: AppLocalization.string("agents.tools", defaultValue: "Tools"), value: profile.allowedToolsSummary)
+                profileFact(label: AppLocalization.string("agents.version", defaultValue: "Version"), value: "v\(profile.version)")
             }
 
             HStack(spacing: 10) {
-                Button("View Details", action: viewDetailsAction)
+                Button(AppLocalization.string("agents.viewDetails", defaultValue: "View Details"), action: viewDetailsAction)
                     .buttonStyle(.borderedProminent)
 
-                Button(isActive ? "Active" : "Set Active", action: setActiveAction)
+                Button(isActive ? AppLocalization.string("automation.status.active", defaultValue: "Active") : AppLocalization.string("common.setActive", defaultValue: "Set Active"), action: setActiveAction)
                     .buttonStyle(.bordered)
                     .disabled(isActive)
 
                 Spacer(minLength: 0)
 
                 if let deleteAction {
-                    Button("Delete", role: .destructive, action: deleteAction)
+                    Button(AppLocalization.string("common.delete", defaultValue: "Delete"), role: .destructive, action: deleteAction)
                         .buttonStyle(.bordered)
                 }
             }

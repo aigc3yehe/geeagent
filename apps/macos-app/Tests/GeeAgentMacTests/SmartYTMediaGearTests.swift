@@ -88,6 +88,264 @@ final class SmartYTMediaGearTests: XCTestCase {
     }
 
     @MainActor
+    func testChinaShortVideoSearchUsesLocalPythonCLISearchProviders() async throws {
+        let runner = RecordingSmartYTRunner(responses: [
+            "python3 -m xhs_cli.cli search city night scene --type video --json": [
+                GearCommandResult(
+                    exitCode: 0,
+                    stdout: """
+                    {
+                      "ok": true,
+                      "schema_version": "1",
+                      "data": {
+                        "items": [
+                          {
+                            "id": "69e34cc7000000001a02236e",
+                            "model_type": "note",
+                            "xsec_token": "ABC-token",
+                            "note_card": {
+                              "type": "video",
+                              "display_title": "XHS night city",
+                              "cover": {
+                                "url_default": "https://example.com/xhs.jpg",
+                                "width": 1080,
+                                "height": 1920
+                              },
+                              "user": {
+                                "nickname": "Creator B"
+                              },
+                              "interact_info": {
+                                "liked_count": "170"
+                              }
+                            }
+                          },
+                          {
+                            "id": "ignored-image",
+                            "model_type": "note",
+                            "note_card": { "type": "image", "display_title": "Image result" }
+                          }
+                        ]
+                      }
+                    }
+                    """,
+                    stderr: ""
+                )
+            ],
+            "python3 -m dy_cli.main search city night scene --type video --count 2 --json-output": [
+                GearCommandResult(
+                    exitCode: 0,
+                    stdout: """
+                    Searching: city night scene
+                    {
+                      "ok": true,
+                      "schema_version": "1",
+                      "data": {
+                        "data": [
+                          {
+                            "aweme_info": {
+                              "aweme_id": "7311111111111111111",
+                              "desc": "Douyin night city",
+                              "create_time": 1776504007,
+                              "author": { "nickname": "Creator A" },
+                              "statistics": { "digg_count": 4554 },
+                              "video": {
+                                "duration": 18000,
+                                "width": 1080,
+                                "height": 1920,
+                                "cover": { "url_list": ["https://example.com/douyin.jpg"] }
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                    """,
+                    stderr: ""
+                )
+            ]
+        ])
+        let suiteName = "smartyt-china-search-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.set(Date(), forKey: "geeagent.smartyt.ytdlp.lastMaintenanceAt")
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = SmartYTMediaGearStore(runner: runner, defaults: defaults, dataRoot: try isolatedSmartYTDataRoot())
+
+        let payload = await store.searchCandidatesForAgent(args: [
+            "query": "city night scene",
+            "platforms": "douyin xhs",
+            "limit": 2
+        ])
+
+        XCTAssertEqual(payload["status"] as? String, "succeeded")
+        XCTAssertEqual(payload["query"] as? String, "city night scene")
+        XCTAssertEqual(payload["platforms"] as? [String], ["douyin", "xiaohongshu"])
+        let candidates = try XCTUnwrap(payload["candidates"] as? [[String: Any]])
+        XCTAssertEqual(candidates.count, 2)
+        XCTAssertEqual(candidates[0]["platform"] as? String, "douyin")
+        XCTAssertEqual(candidates[0]["source_url"] as? String, "https://www.douyin.com/video/7311111111111111111")
+        XCTAssertEqual(candidates[0]["duration_seconds"] as? Double, 18)
+        XCTAssertEqual(candidates[1]["platform"] as? String, "xiaohongshu")
+        XCTAssertEqual(
+            candidates[1]["source_url"] as? String,
+            "https://www.xiaohongshu.com/explore/69e34cc7000000001a02236e?xsec_token=ABC-token"
+        )
+        let xhsMetadata = try XCTUnwrap(candidates[1]["raw_metadata"] as? [String: String])
+        XCTAssertEqual(xhsMetadata["provider"], "xiaohongshu-cli")
+
+        let commands = await runner.commandHistory()
+        XCTAssertTrue(commands.contains("python3 -m dy_cli.main search city night scene --type video --count 2 --json-output"))
+        XCTAssertTrue(commands.contains("python3 -m xhs_cli.cli search city night scene --type video --json"))
+        XCTAssertEqual(store.searchTasks.count, 1)
+        XCTAssertEqual(store.searchTasks.first?.status, "succeeded")
+        XCTAssertEqual(store.searchTasks.first?.candidates.count, 2)
+    }
+
+    @MainActor
+    func testDouyinSearchReturnsStructuredLoginFailureWhenCLIIsNotAuthenticated() async throws {
+        let runner = RecordingSmartYTRunner(responses: [
+            "python3 -m dy_cli.main search city night scene --type video --count 2 --json-output": [
+                GearCommandResult(
+                    exitCode: 1,
+                    stdout: "Searching: city night scene\n",
+                    stderr: "Search failed: please log in, then retry the search\n"
+                )
+            ]
+        ])
+        let store = SmartYTMediaGearStore(
+            runner: runner,
+            defaults: try XCTUnwrap(UserDefaults(suiteName: "smartyt-douyin-login-\(UUID().uuidString)")),
+            dataRoot: try isolatedSmartYTDataRoot()
+        )
+
+        let payload = await store.searchCandidatesForAgent(args: [
+            "query": "city night scene",
+            "platforms": ["douyin"],
+            "limit": 2
+        ])
+
+        XCTAssertEqual(payload["status"] as? String, "failed")
+        XCTAssertTrue((payload["error"] as? String ?? "").contains("Log in with the platform CLI account flow"))
+        let candidates = try XCTUnwrap(payload["candidates"] as? [[String: Any]])
+        XCTAssertTrue(candidates.isEmpty)
+    }
+
+    @MainActor
+    func testDouyinSearchReturnsStructuredProxyRecoveryWhenCLIRequiresDomesticRoute() async throws {
+        let runner = RecordingSmartYTRunner(responses: [
+            "python3 -m dy_cli.main search city night scene --type video --count 2 --json-output": [
+                GearCommandResult(
+                    exitCode: 1,
+                    stdout: "Searching: city night scene\n",
+                    stderr: "Search failed: video data is empty (proxy or domestic IP route may be required)\nHint: dy config set api.proxy http://your-proxy:port\n"
+                )
+            ]
+        ])
+        let store = SmartYTMediaGearStore(
+            runner: runner,
+            defaults: try XCTUnwrap(UserDefaults(suiteName: "smartyt-douyin-proxy-\(UUID().uuidString)")),
+            dataRoot: try isolatedSmartYTDataRoot()
+        )
+
+        let payload = await store.searchCandidatesForAgent(args: [
+            "query": "city night scene",
+            "platforms": ["douyin"],
+            "limit": 2
+        ])
+
+        XCTAssertEqual(payload["status"] as? String, "failed")
+        XCTAssertTrue((payload["error"] as? String ?? "").contains("Configure the platform CLI proxy/network route"))
+        let candidates = try XCTUnwrap(payload["candidates"] as? [[String: Any]])
+        XCTAssertTrue(candidates.isEmpty)
+    }
+
+    @MainActor
+    func testDouyinDownloadNowUsesDyCLIDownloadAndReturnsArtifacts() async throws {
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("smartyt-douyin-download-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: output) }
+
+        let command = "python3 -m dy_cli.main download --output-dir \(output.path) https://www.douyin.com/video/7311111111111111111"
+        let runner = RecordingSmartYTRunner(
+            responses: [
+                command: [
+                    GearCommandResult(
+                        exitCode: 0,
+                        stdout: "Download completed\n",
+                        stderr: ""
+                    )
+                ]
+            ],
+            sideEffects: [
+                command: {
+                    try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+                    try? Data("mock douyin video".utf8)
+                        .write(to: output.appendingPathComponent("douyin-video.mp4"))
+                }
+            ]
+        )
+        let suiteName = "smartyt-douyin-download-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.set(Date(), forKey: "geeagent.smartyt.ytdlp.lastMaintenanceAt")
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = SmartYTMediaGearStore(runner: runner, defaults: defaults, dataRoot: try isolatedSmartYTDataRoot())
+
+        let payload = await store.runImmediateAgentDownload(
+            url: "https://www.douyin.com/video/7311111111111111111",
+            downloadKind: .video,
+            outputDirectory: output.path
+        )
+
+        XCTAssertEqual(payload["status"] as? String, "completed")
+        let outputPaths = try XCTUnwrap(payload["output_paths"] as? [String])
+        XCTAssertEqual(outputPaths.count, 1)
+        XCTAssertTrue(outputPaths[0].hasSuffix("douyin-video.mp4"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outputPaths[0]))
+
+        let commands = await runner.commandHistory()
+        XCTAssertTrue(commands.contains(command))
+        XCTAssertFalse(commands.contains { $0.hasPrefix("yt-dlp -f bv*+ba/best") })
+    }
+
+    @MainActor
+    func testDouyinDownloadNowReturnsStructuredProxyRecoveryWhenDyCLIRequiresDomesticRoute() async throws {
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("smartyt-douyin-proxy-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: output) }
+
+        let command = "python3 -m dy_cli.main download --output-dir \(output.path) https://www.douyin.com/video/7311111111111111111"
+        let runner = RecordingSmartYTRunner(responses: [
+            command: [
+                GearCommandResult(
+                    exitCode: 1,
+                    stdout: "",
+                    stderr: "Download failed: video data is empty (proxy or domestic IP route may be required)\n"
+                )
+            ]
+        ])
+        let suiteName = "smartyt-douyin-download-proxy-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.set(Date(), forKey: "geeagent.smartyt.ytdlp.lastMaintenanceAt")
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = SmartYTMediaGearStore(runner: runner, defaults: defaults, dataRoot: try isolatedSmartYTDataRoot())
+
+        let payload = await store.runImmediateAgentDownload(
+            url: "https://www.douyin.com/video/7311111111111111111",
+            downloadKind: .video,
+            outputDirectory: output.path
+        )
+
+        XCTAssertEqual(payload["status"] as? String, "failed")
+        XCTAssertEqual(payload["error_code"] as? String, "gear.smartyt.command_failed")
+        XCTAssertTrue((payload["error"] as? String ?? "").contains("Configure the platform CLI proxy/network route"))
+        let outputPaths = try XCTUnwrap(payload["output_paths"] as? [String])
+        XCTAssertTrue(outputPaths.isEmpty)
+
+        let commands = await runner.commandHistory()
+        XCTAssertTrue(commands.contains(command))
+        XCTAssertFalse(commands.contains { $0.hasPrefix("yt-dlp -f bv*+ba/best") })
+    }
+
+    @MainActor
     func testDirectImageURLsDefaultToImageDownloads() throws {
         let extensionURL = "https://pbs.twimg.com/media/HHFx7HsbsAEQHuH.jpg?name=large"
         let formatURL = "https://pbs.twimg.com/media/HHFx7HsbsAEQHuH?format=jpg&name=large"
@@ -734,11 +992,17 @@ final class SmartYTMediaGearTests: XCTestCase {
 private actor RecordingSmartYTRunner: GearCommandRunning {
     private var responses: [String: [GearCommandResult]]
     private var delays: [String: UInt64]
+    private var sideEffects: [String: @Sendable () async -> Void]
     private var commands: [String] = []
 
-    init(responses: [String: [GearCommandResult]], delays: [String: UInt64] = [:]) {
+    init(
+        responses: [String: [GearCommandResult]],
+        delays: [String: UInt64] = [:],
+        sideEffects: [String: @Sendable () async -> Void] = [:]
+    ) {
         self.responses = responses
         self.delays = delays
+        self.sideEffects = sideEffects
     }
 
     func run(_ command: String, arguments: [String]) async -> GearCommandResult {
@@ -750,6 +1014,9 @@ private actor RecordingSmartYTRunner: GearCommandRunning {
         }
         if let delay = delays[responseKey] {
             try? await Task.sleep(nanoseconds: delay)
+        }
+        if let sideEffect = sideEffects[responseKey] {
+            await sideEffect()
         }
         let result = queue.removeFirst()
         responses[responseKey] = queue

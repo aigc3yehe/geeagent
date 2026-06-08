@@ -348,6 +348,10 @@ enum GeeHostToolRouter {
             return await invokeBookmarkVault(toolID: toolID, capabilityID: capabilityID, args: args)
         case WeSpyReaderGearDescriptor.gearID:
             return await invokeWeSpyReader(toolID: toolID, capabilityID: capabilityID, args: args)
+        case WeChatWatcherGearDescriptor.gearID:
+            return await invokeWeChatWatcher(toolID: toolID, capabilityID: capabilityID, args: args)
+        case WeChatChannelsGearDescriptor.gearID:
+            return await invokeWeChatChannels(toolID: toolID, capabilityID: capabilityID, args: args)
         case MediaGeneratorGearDescriptor.gearID:
             return await invokeMediaGenerator(toolID: toolID, capabilityID: capabilityID, args: args)
         case AppIconForgeGearDescriptor.gearID:
@@ -419,6 +423,71 @@ enum GeeHostToolRouter {
         return .completed(
             toolID: toolID,
             payload: await TelegramBridgeGearStore.shared.runAgentAction(
+                capabilityID: capabilityID,
+                args: args
+            )
+        )
+    }
+
+    private static func invokeWeChatWatcher(
+        toolID: String,
+        capabilityID: String,
+        args: [String: Any]
+    ) async -> WorkbenchToolOutcome {
+        guard [
+            "wechat.auth_status",
+            "wechat.search_accounts",
+            "wechat.watch_account",
+            "wechat.list_watched_accounts",
+            "wechat.check_updates",
+            "wechat.latest_articles"
+        ].contains(capabilityID) else {
+            return .error(
+                toolID: toolID,
+                code: "gear.wechat_watcher.capability_unsupported",
+                message: "wechat.watcher does not support `\(capabilityID)` yet."
+            )
+        }
+        return .completed(
+            toolID: toolID,
+            payload: await WeChatWatcherGearStore.shared.runAgentAction(
+                capabilityID: capabilityID,
+                args: args
+            )
+        )
+    }
+
+    private static func invokeWeChatChannels(
+        toolID: String,
+        capabilityID: String,
+        args: [String: Any]
+    ) async -> WorkbenchToolOutcome {
+        guard [
+            "wechat_channels.auth_status",
+            "wechat_channels.metadata",
+            "wechat_channels.download",
+            "wechat_channels.get_task",
+            "wechat_channels.list_tasks"
+        ].contains(capabilityID) else {
+            return .error(
+                toolID: toolID,
+                code: "gear.wechat_channels.capability_unsupported",
+                message: "wechat.channels does not support `\(capabilityID)` yet."
+            )
+        }
+        if capabilityID == "wechat_channels.metadata" || capabilityID == "wechat_channels.download" {
+            guard stringArg(args, "url") ?? stringArg(args, "share_url") ?? stringArg(args, "sph_url") != nil else {
+                return .error(toolID: toolID, code: "gear.args.url", message: "`url` is required.")
+            }
+        }
+        if capabilityID == "wechat_channels.get_task" {
+            guard stringArg(args, "task_id") ?? stringArg(args, "id") != nil else {
+                return .error(toolID: toolID, code: "gear.args.task_id", message: "`task_id` is required.")
+            }
+        }
+        return .completed(
+            toolID: toolID,
+            payload: await WeChatChannelsGearStore.shared.runAgentAction(
                 capabilityID: capabilityID,
                 args: args
             )
@@ -1222,6 +1291,136 @@ enum GeeHostToolRouter {
 
     private static func argsSchema(gearID: String, capabilityID: String) -> [String: Any]? {
         switch (gearID, capabilityID) {
+        case (WeChatWatcherGearDescriptor.gearID, "wechat.auth_status"):
+            return [
+                "type": "object",
+                "additionalProperties": false,
+                "properties": [:]
+            ]
+        case (WeChatWatcherGearDescriptor.gearID, "wechat.search_accounts"):
+            return [
+                "type": "object",
+                "required": ["query"],
+                "additionalProperties": false,
+                "properties": [
+                    "query": ["type": "string"],
+                    "limit": ["type": "integer", "minimum": 1, "maximum": 50],
+                    "offset": ["type": "integer", "minimum": 0]
+                ]
+            ]
+        case (WeChatWatcherGearDescriptor.gearID, "wechat.watch_account"):
+            return [
+                "type": "object",
+                "required": ["fake_id", "name"],
+                "additionalProperties": false,
+                "properties": [
+                    "fake_id": [
+                        "type": "string",
+                        "description": "WeChat backend fakeid returned by wechat.search_accounts."
+                    ],
+                    "name": ["type": "string"],
+                    "avatar_url": ["type": "string"],
+                    "intro": ["type": "string"],
+                    "enabled": ["type": "boolean"]
+                ]
+            ]
+        case (WeChatWatcherGearDescriptor.gearID, "wechat.list_watched_accounts"):
+            return [
+                "type": "object",
+                "additionalProperties": false,
+                "properties": [:]
+            ]
+        case (WeChatWatcherGearDescriptor.gearID, "wechat.check_updates"):
+            return [
+                "type": "object",
+                "additionalProperties": false,
+                "properties": [
+                    "account_id": [
+                        "type": "string",
+                        "description": "Optional local watch id or backend fakeid. Omit to check all enabled watched accounts."
+                    ],
+                    "limit": ["type": "integer", "minimum": 1, "maximum": 100],
+                    "max_articles": ["type": "integer", "minimum": 1, "maximum": 100]
+                ]
+            ]
+        case (WeChatWatcherGearDescriptor.gearID, "wechat.latest_articles"):
+            return [
+                "type": "object",
+                "required": ["query"],
+                "additionalProperties": false,
+                "properties": [
+                    "query": [
+                        "type": "string",
+                        "description": "WeChat public-account display name or search phrase."
+                    ],
+                    "limit": [
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "description": "Maximum number of latest article records to return. Defaults to 2."
+                    ],
+                    "max_articles": ["type": "integer", "minimum": 1, "maximum": 20],
+                    "search_limit": ["type": "integer", "minimum": 1, "maximum": 20],
+                    "auto_watch": [
+                        "type": "boolean",
+                        "description": "When true, persist the selected account in the local watchlist. Defaults to true."
+                    ],
+                    "watch": ["type": "boolean"]
+                ]
+            ]
+        case (WeChatChannelsGearDescriptor.gearID, "wechat_channels.auth_status"):
+            return [
+                "type": "object",
+                "additionalProperties": false,
+                "properties": [:]
+            ]
+        case (WeChatChannelsGearDescriptor.gearID, "wechat_channels.metadata"):
+            return [
+                "type": "object",
+                "required": ["url"],
+                "additionalProperties": false,
+                "properties": [
+                    "url": [
+                        "type": "string",
+                        "format": "uri",
+                        "description": "Explicit WeChat Channels share URL, such as https://weixin.qq.com/sph/... or a channels.weixin.qq.com finder-preview URL. Short share links use Tencent's official shortUri feed route before any configured Yuanbao session recovery."
+                    ]
+                ]
+            ]
+        case (WeChatChannelsGearDescriptor.gearID, "wechat_channels.download"):
+            return [
+                "type": "object",
+                "required": ["url"],
+                "additionalProperties": false,
+                "properties": [
+                    "url": [
+                        "type": "string",
+                        "format": "uri",
+                        "description": "Explicit WeChat Channels share URL. The Gear downloads only Tencent-returned video URLs and returns degraded no_video_url if metadata resolves without a downloadable stream."
+                    ],
+                    "output_dir": [
+                        "type": "string",
+                        "description": "Optional local directory for the completed video. Defaults to ~/Downloads/WeChat Channels/<task-id>."
+                    ]
+                ]
+            ]
+        case (WeChatChannelsGearDescriptor.gearID, "wechat_channels.get_task"):
+            return [
+                "type": "object",
+                "required": ["task_id"],
+                "additionalProperties": false,
+                "properties": [
+                    "task_id": ["type": "string"]
+                ]
+            ]
+        case (WeChatChannelsGearDescriptor.gearID, "wechat_channels.list_tasks"):
+            return [
+                "type": "object",
+                "additionalProperties": false,
+                "properties": [
+                    "limit": ["type": "integer", "minimum": 1, "maximum": 200]
+                ]
+            ]
         case (TelegramBridgeGearDescriptor.gearID, "telegram_bridge.status"):
             return [
                 "type": "object",
@@ -1421,7 +1620,7 @@ enum GeeHostToolRouter {
                     "platforms": [
                         "type": "array",
                         "items": ["type": "string"],
-                        "description": "Search platforms. Current host execution supports youtube search and returns explicit warnings for unsupported platforms."
+                        "description": "Search platforms. Current host execution supports youtube through yt-dlp, xiaohongshu through xiaohongshu-cli with browser cookies, and douyin through dy-cli when a Douyin account is configured."
                     ],
                     "filters": [
                         "type": "object",

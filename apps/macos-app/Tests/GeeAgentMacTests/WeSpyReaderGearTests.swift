@@ -20,6 +20,20 @@ final class WeSpyReaderGearTests: XCTestCase {
             manifest.agent?.capabilities.map(\.id),
             ["wespy.fetch_article", "wespy.list_album", "wespy.fetch_album"]
         )
+
+        let raw = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let agent = try XCTUnwrap(raw["agent"] as? [String: Any])
+        let capabilities = try XCTUnwrap(agent["capabilities"] as? [[String: Any]])
+        let exportedIDs = capabilities.compactMap { capability -> String? in
+            guard let exports = capability["exports"] as? [String: Any],
+                  let codex = exports["codex"] as? [String: Any],
+                  codex["enabled"] as? Bool == true
+            else {
+                return nil
+            }
+            return capability["id"] as? String
+        }
+        XCTAssertEqual(exportedIDs, ["wespy.fetch_article", "wespy.list_album", "wespy.fetch_album"])
     }
 
     func testWeSpyReaderInputParserRecognizesHTTPAndAlbumURLs() {

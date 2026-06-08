@@ -29,16 +29,16 @@ struct ChatView: View {
                     conversationDetail(conversation)
                 } else if store.isSendingMessage {
                     ContentUnavailableView {
-                        Label("Starting Chat", systemImage: "brain.head.profile")
+                        Label(store.localizedString("chat.starting.title", defaultValue: "Starting Chat"), systemImage: "brain.head.profile")
                     } description: {
-                        Text("Request sent. Waiting for the first agent event…")
+                        Text(store.localizedString("chat.starting.description", defaultValue: "Request sent. Waiting for the first agent event..."))
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ContentUnavailableView(
-                        "No Chat Selected",
+                        store.localizedString("chat.empty.title", defaultValue: "No Chat Selected"),
                         systemImage: "bubble.left",
-                        description: Text("Start a new chat to run work through GeeAgent.")
+                        description: Text(store.localizedString("chat.empty.description", defaultValue: "Start a new chat to run work through GeeAgent."))
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -46,7 +46,7 @@ struct ChatView: View {
             .padding(18)
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
         }
-        .navigationTitle("Chat")
+        .navigationTitle(store.localizedString("chat.title", defaultValue: "Chat"))
         .onDrop(
             of: ChatAttachmentTransfer.fileDropTypes,
             isTargeted: $isAttachmentDropTargeted,
@@ -86,7 +86,7 @@ struct ChatView: View {
     private var conversationColumn: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Chat")
+                Text(store.localizedString("chat.title", defaultValue: "Chat"))
                     .font(.geeDisplaySemibold(18))
 
                 Spacer()
@@ -94,7 +94,7 @@ struct ChatView: View {
                 Button {
                     store.createConversation()
                 } label: {
-                    Label("New", systemImage: "plus")
+                    Label(store.localizedString("chat.new", defaultValue: "New"), systemImage: "plus")
                         .font(.geeDisplaySemibold(11))
                         .padding(.horizontal, 11)
                         .padding(.vertical, 7)
@@ -130,7 +130,7 @@ struct ChatView: View {
                             Button(role: .destructive) {
                                 store.deleteConversation(conversation.id)
                             } label: {
-                                Label("Delete Chat", systemImage: "trash")
+                                Label(store.localizedString("chat.deleteChat", defaultValue: "Delete Chat"), systemImage: "trash")
                             }
                             .disabled(!store.canMutateRuntime || store.isDeletingConversation)
                         }
@@ -232,12 +232,12 @@ struct ChatView: View {
 
             Spacer(minLength: 0)
 
-            Text("What would you like to do?")
+            Text(store.localizedString("chat.prompt", defaultValue: "What would you like to do?"))
                 .font(.geeDisplaySemibold(22))
                 .foregroundStyle(.primary.opacity(0.92))
 
             if store.isSendingMessage {
-                TransientAgentActivityCard(label: "Request sent. GeeAgent is starting the run…")
+                TransientAgentActivityCard(label: store.localizedString("chat.activity.starting", defaultValue: "Request sent. GeeAgent is starting the run..."))
                     .frame(maxWidth: 720)
             }
 
@@ -266,7 +266,7 @@ struct ChatView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Attach files or folders")
+                .help(store.localizedString("chat.attachHelp", defaultValue: "Attach files or folders"))
                 .disabled(store.isSendingMessage || !store.canSendMessages)
 
                 Button {
@@ -281,15 +281,15 @@ struct ChatView: View {
                 .buttonStyle(.plain)
                 .help(
                     store.audioCapture.isChatVoiceInputActive
-                        ? "Stop voice input"
-                        : "Start voice input with \(store.audioCapture.selectedProvider.title)"
+                        ? store.localizedString("chat.voice.stop", defaultValue: "Stop voice input")
+                        : store.localizedFormat("chat.voice.start", defaultValue: "Start voice input with %@", store.audioCapture.selectedProvider.title)
                 )
                 .disabled(store.isSendingMessage || !store.canSendMessages)
 
                 TextField(
                     "",
                     text: $draftMessage,
-                    prompt: Text("Ask GeeAgent to chat or run a simple task")
+                    prompt: Text(store.localizedString("chat.composer.placeholder", defaultValue: "Ask GeeAgent to chat or run a simple task"))
                         .foregroundStyle(.secondary.opacity(0.72))
                 )
                 .textFieldStyle(.plain)
@@ -312,7 +312,9 @@ struct ChatView: View {
                     Button {
                         store.stopActiveChatRun()
                     } label: {
-                        Label(store.isStoppingMessage ? "Stopping" : "Stop", systemImage: "stop.fill")
+                        Label(store.isStoppingMessage
+                            ? store.localizedString("common.stopping", defaultValue: "Stopping")
+                            : store.localizedString("common.stop", defaultValue: "Stop"), systemImage: "stop.fill")
                             .font(.geeDisplaySemibold(11))
                             .frame(height: 38)
                             .padding(.horizontal, 13)
@@ -324,12 +326,14 @@ struct ChatView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(store.isStoppingMessage)
-                    .help(store.isStoppingMessage ? "Stopping the current run" : "Stop the current run")
+                    .help(store.isStoppingMessage
+                        ? store.localizedString("chat.stop.stoppingHelp", defaultValue: "Stopping the current run")
+                        : store.localizedString("chat.stop.help", defaultValue: "Stop the current run"))
                 } else {
                     Button {
                         sendDraftMessage()
                     } label: {
-                        Label("Send", systemImage: "arrow.up")
+                        Label(store.localizedString("chat.send", defaultValue: "Send"), systemImage: "arrow.up")
                             .font(.geeDisplaySemibold(11))
                             .frame(height: 38)
                             .padding(.horizontal, 13)
@@ -361,12 +365,19 @@ struct ChatView: View {
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.black.opacity(0.08))
+                .fill(Color.black.opacity(0.18))
+                .shadow(color: .black.opacity(0.15), radius: 12, x: 0, y: -4)
         )
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(
-                    isAttachmentDropTargeted ? Color.accentColor.opacity(0.7) : Color.white.opacity(0.08),
+                    LinearGradient(
+                        colors: isAttachmentDropTargeted 
+                            ? [Color.accentColor.opacity(0.8), Color.accentColor.opacity(0.5)]
+                            : [Color.white.opacity(0.15), Color.white.opacity(0.03)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
                     lineWidth: isAttachmentDropTargeted ? 1.2 : 0.8
                 )
         }
@@ -523,31 +534,31 @@ struct ChatView: View {
             EmptyView()
         case .needsSetup:
             InlineStatusCard(
-                title: "Chat needs setup",
+                title: store.localizedString("chat.runtime.needsSetup", defaultValue: "Chat needs setup"),
                 detail: store.runtimeStatus.detail,
                 systemImage: store.runtimeStatus.state.systemImage,
                 tint: .orange,
-                actionLabel: "Open Settings"
+                actionLabel: store.localizedString("chat.runtime.openSettings", defaultValue: "Open Settings")
             ) {
                 store.openSection(.settings)
             }
         case .degraded:
             InlineStatusCard(
-                title: "Chat is degraded",
+                title: store.localizedString("chat.runtime.degraded", defaultValue: "Chat is degraded"),
                 detail: store.runtimeStatus.detail,
                 systemImage: store.runtimeStatus.state.systemImage,
                 tint: .yellow,
-                actionLabel: "Open Settings"
+                actionLabel: store.localizedString("chat.runtime.openSettings", defaultValue: "Open Settings")
             ) {
                 store.openSection(.settings)
             }
         case .unavailable:
             InlineStatusCard(
-                title: "Runtime unavailable",
+                title: store.localizedString("chat.runtime.unavailable", defaultValue: "Runtime unavailable"),
                 detail: store.runtimeStatus.detail,
                 systemImage: store.runtimeStatus.state.systemImage,
                 tint: .red,
-                actionLabel: "Open Settings"
+                actionLabel: store.localizedString("chat.runtime.openSettings", defaultValue: "Open Settings")
             ) {
                 store.openSection(.settings)
             }
@@ -558,11 +569,11 @@ struct ChatView: View {
     private var errorCard: some View {
         if let chatErrorMessage = store.chatErrorMessage {
             InlineStatusCard(
-                title: "Couldn’t finish that request",
+                title: store.localizedString("chat.error.couldNotFinish", defaultValue: "Couldn’t finish that request"),
                 detail: chatErrorMessage,
                 systemImage: "exclamationmark.triangle.fill",
                 tint: .red,
-                actionLabel: "Dismiss"
+                actionLabel: store.localizedString("chat.error.dismiss", defaultValue: "Dismiss")
             ) {
                 store.dismissError()
             }
@@ -575,6 +586,8 @@ struct ChatView: View {
 private struct ConversationRow: View {
     var conversation: ConversationThread
     var isSelected: Bool
+
+    @State private var isHovering = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -610,17 +623,30 @@ private struct ConversationRow: View {
         .padding(.vertical, 9)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(isSelected ? Color.accentColor.opacity(0.16) : Color.white.opacity(0.035))
+                .fill(isSelected ? Color.accentColor.opacity(0.16) : (isHovering ? Color.white.opacity(0.06) : Color.white.opacity(0.035)))
         )
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(isSelected ? Color.accentColor.opacity(0.28) : Color.white.opacity(0.06), lineWidth: 0.8)
+                .stroke(
+                    LinearGradient(
+                        colors: isSelected 
+                            ? [Color.accentColor.opacity(0.38), Color.accentColor.opacity(0.18)]
+                            : [Color.white.opacity(isHovering ? 0.18 : 0.08), Color.white.opacity(0.02)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.8
+                )
         }
+        .scaleEffect(isHovering && !isSelected ? 1.01 : 1.0)
+        .onHover { isHovering = $0 }
+        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isHovering)
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
     }
 
     private var previewText: String {
         let trimmed = conversation.displayPreviewText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "No messages yet." : trimmed
+        return trimmed.isEmpty ? AppLocalization.string("chat.noMessages", defaultValue: "No messages yet.") : trimmed
     }
 }
 

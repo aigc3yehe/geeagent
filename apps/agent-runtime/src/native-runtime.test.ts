@@ -2397,6 +2397,7 @@ api_key = "saved-xenodia-key"
     assert.equal(requiresGeeGearBridgeFirst("how do I use image-2 to generate images?"), false);
     assert.equal(requiresGeeGearBridgeFirst("open the media generator"), true);
     assert.equal(requiresGeeGearBridgeFirst("create a todo to review the launch checklist tomorrow"), true);
+    assert.equal(requiresGeeGearBridgeFirst("watch this WeChat public account for new article updates"), true);
     assert.equal(requiresGeeGearBridgeFirst("explain how reminder emails work"), false);
     assert.equal(
       routeLocalGearIntent("use the generator with image-2, 3:4, 2k, prompt: macaron toy house style"),

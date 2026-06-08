@@ -28,9 +28,9 @@ struct TelegramConversationsView: View {
                     threadDetail(thread)
                 } else {
                     ContentUnavailableView(
-                        "No Telegram Conversations",
+                        AppLocalization.string("telegram.emptyTitle", defaultValue: "No Telegram Conversations"),
                         systemImage: "paperplane",
-                        description: Text("Messages will appear after a configured conversation bot receives an allowed Telegram message.")
+                        description: Text(AppLocalization.string("telegram.emptyDescription", defaultValue: "Messages will appear after a configured conversation bot receives an allowed Telegram message."))
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -38,7 +38,7 @@ struct TelegramConversationsView: View {
             .padding(18)
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
         }
-        .navigationTitle("Telegram")
+        .navigationTitle(AppLocalization.string("nav.telegram", defaultValue: "Telegram"))
         .onAppear {
             telegramStore.loadConfig()
             normalizeSelection()
@@ -52,7 +52,7 @@ struct TelegramConversationsView: View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Telegram")
+                    Text(AppLocalization.string("nav.telegram", defaultValue: "Telegram"))
                         .font(.geeDisplaySemibold(18))
                     Text(telegramStore.lastStatusMessage)
                         .font(.geeBody(11))
@@ -72,7 +72,7 @@ struct TelegramConversationsView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Refresh Telegram conversations")
+                .help(AppLocalization.string("telegram.refreshHelp", defaultValue: "Refresh Telegram conversations"))
             }
             .padding(.horizontal)
             .padding(.vertical, 12)

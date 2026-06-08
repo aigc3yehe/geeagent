@@ -668,7 +668,22 @@ describe("Codex plugin package generation", () => {
       result.files.includes("skills/gee-capabilities/references/telegram.bridge.md"),
       true,
     );
+    assert.equal(
+      result.files.includes("skills/gee-capabilities/references/wespy.reader.md"),
+      true,
+    );
+    assert.equal(
+      result.files.includes("skills/gee-capabilities/references/wechat.watcher.md"),
+      true,
+    );
+    assert.equal(
+      result.files.includes("skills/gee-capabilities/references/wechat.channels.md"),
+      true,
+    );
     assert.equal(result.files.includes("gears/telegram.bridge/gear.json"), true);
+    assert.equal(result.files.includes("gears/wespy.reader/gear.json"), true);
+    assert.equal(result.files.includes("gears/wechat.watcher/gear.json"), true);
+    assert.equal(result.files.includes("gears/wechat.channels/gear.json"), true);
 
     const plugin = JSON.parse(
       await readFile(join(pluginRoot, ".codex-plugin", "plugin.json"), "utf8"),
@@ -720,6 +735,10 @@ describe("Codex plugin package generation", () => {
     assert.match(index, /telegram\.bridge\/telegram_push\.send_message/);
     assert.match(index, /telegram\.bridge\/telegram_push\.send_file/);
     assert.match(index, /media\.generator\/media_generator\.create_task/);
+    assert.match(index, /wespy\.reader\/wespy\.fetch_article/);
+    assert.match(index, /wespy\.reader\/wespy\.fetch_album/);
+    assert.match(index, /wechat\.watcher\/wechat\.latest_articles/);
+    assert.match(index, /wechat\.channels\/wechat_channels\.download/);
 
     const telegram = await readFile(
       join(pluginRoot, "skills", "gee-capabilities", "references", "telegram.bridge.md"),
@@ -729,6 +748,40 @@ describe("Codex plugin package generation", () => {
     assert.match(telegram, /telegram\.bridge\/telegram_push\.send_file/);
     assert.match(telegram, /idempotency_key/);
     assert.match(telegram, /configured push-only Telegram channels/i);
+
+    const wespy = await readFile(
+      join(pluginRoot, "skills", "gee-capabilities", "references", "wespy.reader.md"),
+      "utf8",
+    );
+    assert.match(wespy, /wespy\.reader\/wespy\.fetch_article/);
+    assert.match(wespy, /wespy\.reader\/wespy\.list_album/);
+    assert.match(wespy, /wespy\.reader\/wespy\.fetch_album/);
+    assert.match(wespy, /do not run the WeSpy sidecar from Codex/i);
+
+    const wechat = await readFile(
+      join(pluginRoot, "skills", "gee-capabilities", "references", "wechat.watcher.md"),
+      "utf8",
+    );
+    assert.match(wechat, /wechat\.watcher\/wechat\.latest_articles/);
+    assert.match(wechat, /query/);
+    assert.match(wechat, /Do not substitute official websites/i);
+
+    const wechatChannels = await readFile(
+      join(pluginRoot, "skills", "gee-capabilities", "references", "wechat.channels.md"),
+      "utf8",
+    );
+    assert.match(wechatChannels, /wechat\.channels\/wechat_channels\.metadata/);
+    assert.match(wechatChannels, /wechat\.channels\/wechat_channels\.download/);
+    assert.match(wechatChannels, /third-party parser sites/i);
+
+    const smartYT = await readFile(
+      join(pluginRoot, "skills", "gee-capabilities", "references", "smartyt.media.md"),
+      "utf8",
+    );
+    assert.match(smartYT, /smartyt\.media\/smartyt\.search_candidates/);
+    assert.match(smartYT, /smartyt\.media\/smartyt\.download_now/);
+    assert.match(smartYT, /Douyin/i);
+    assert.match(smartYT, /Xiaohongshu/i);
 
     const bundledTelegramManifest = JSON.parse(
       await readFile(join(pluginRoot, "gears", "telegram.bridge", "gear.json"), "utf8"),
@@ -746,6 +799,86 @@ describe("Codex plugin package generation", () => {
         "telegram_push.list_channels",
         "telegram_push.send_file",
         "telegram_push.send_message",
+      ],
+    );
+
+    const bundledWeSpyManifest = JSON.parse(
+      await readFile(join(pluginRoot, "gears", "wespy.reader", "gear.json"), "utf8"),
+    ) as {
+      schema: string;
+      id: string;
+      agent: { capabilities: Array<{ id: string }> };
+    };
+    assert.equal(bundledWeSpyManifest.schema, "gee.gear.v1");
+    assert.equal(bundledWeSpyManifest.id, "wespy.reader");
+    assert.deepEqual(
+      bundledWeSpyManifest.agent.capabilities.map((capability) => capability.id),
+      [
+        "wespy.fetch_album",
+        "wespy.fetch_article",
+        "wespy.list_album",
+      ],
+    );
+
+    const bundledWeChatManifest = JSON.parse(
+      await readFile(join(pluginRoot, "gears", "wechat.watcher", "gear.json"), "utf8"),
+    ) as {
+      schema: string;
+      id: string;
+      agent: { capabilities: Array<{ id: string }> };
+    };
+    assert.equal(bundledWeChatManifest.schema, "gee.gear.v1");
+    assert.equal(bundledWeChatManifest.id, "wechat.watcher");
+    assert.deepEqual(
+      bundledWeChatManifest.agent.capabilities.map((capability) => capability.id),
+      [
+        "wechat.auth_status",
+        "wechat.check_updates",
+        "wechat.latest_articles",
+        "wechat.list_watched_accounts",
+        "wechat.search_accounts",
+        "wechat.watch_account",
+      ],
+    );
+
+    const bundledWeChatChannelsManifest = JSON.parse(
+      await readFile(join(pluginRoot, "gears", "wechat.channels", "gear.json"), "utf8"),
+    ) as {
+      schema: string;
+      id: string;
+      agent: { capabilities: Array<{ id: string }> };
+    };
+    assert.equal(bundledWeChatChannelsManifest.schema, "gee.gear.v1");
+    assert.equal(bundledWeChatChannelsManifest.id, "wechat.channels");
+    assert.deepEqual(
+      bundledWeChatChannelsManifest.agent.capabilities.map((capability) => capability.id),
+      [
+        "wechat_channels.auth_status",
+        "wechat_channels.download",
+        "wechat_channels.get_task",
+        "wechat_channels.list_tasks",
+        "wechat_channels.metadata",
+      ],
+    );
+
+    const bundledSmartYTManifest = JSON.parse(
+      await readFile(join(pluginRoot, "gears", "smartyt.media", "gear.json"), "utf8"),
+    ) as {
+      schema: string;
+      id: string;
+      agent: { capabilities: Array<{ id: string }> };
+    };
+    assert.equal(bundledSmartYTManifest.schema, "gee.gear.v1");
+    assert.equal(bundledSmartYTManifest.id, "smartyt.media");
+    assert.deepEqual(
+      bundledSmartYTManifest.agent.capabilities.map((capability) => capability.id),
+      [
+        "smartyt.download",
+        "smartyt.download_now",
+        "smartyt.get_task",
+        "smartyt.list_tasks",
+        "smartyt.search_candidates",
+        "smartyt.sniff",
       ],
     );
 

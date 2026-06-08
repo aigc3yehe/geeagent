@@ -98,6 +98,30 @@ struct GearHostNativeWindowScenes: Scene {
             width: GearHost.powerVideoManagerWindowDescriptor.defaultWidth,
             height: GearHost.powerVideoManagerWindowDescriptor.defaultHeight
         )
+
+        Window(GearHost.localProjectManagerWindowDescriptor.title, id: GearHost.localProjectManagerWindowDescriptor.windowID) {
+            GearHost.makeNativeWindowView(for: GearHost.localProjectManagerWindowDescriptor.gearID)
+        }
+        .defaultSize(
+            width: GearHost.localProjectManagerWindowDescriptor.defaultWidth,
+            height: GearHost.localProjectManagerWindowDescriptor.defaultHeight
+        )
+
+        Window(GearHost.weChatWatcherWindowDescriptor.title, id: GearHost.weChatWatcherWindowDescriptor.windowID) {
+            GearHost.makeNativeWindowView(for: GearHost.weChatWatcherWindowDescriptor.gearID)
+        }
+        .defaultSize(
+            width: GearHost.weChatWatcherWindowDescriptor.defaultWidth,
+            height: GearHost.weChatWatcherWindowDescriptor.defaultHeight
+        )
+
+        Window(GearHost.weChatChannelsWindowDescriptor.title, id: GearHost.weChatChannelsWindowDescriptor.windowID) {
+            GearHost.makeNativeWindowView(for: GearHost.weChatChannelsWindowDescriptor.gearID)
+        }
+        .defaultSize(
+            width: GearHost.weChatChannelsWindowDescriptor.defaultWidth,
+            height: GearHost.weChatChannelsWindowDescriptor.defaultHeight
+        )
     }
 }
 
