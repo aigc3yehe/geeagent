@@ -1156,7 +1156,7 @@ private func isApprovalExplanation(_ message: ConversationMessage) -> Bool {
 private func stripHardStageConclusionPrefix(_ content: String) -> String {
     content
         .replacingOccurrences(
-            of: #"(?m)^\s*(Stage conclusion|Stage summary)\s*[:：]\s*"#,
+            of: #"(?m)^\s*(Stage conclusion|Stage summary)\s*:\s*"#,
             with: "",
             options: .regularExpression
         )

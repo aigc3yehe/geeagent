@@ -32,12 +32,13 @@ V1 は実用的であるべきで、過度に複雑にしない。V1 の焦点�
 - `Gear app`：Gears catalog から開く full application。複雑な gear は GeeAgent main window の中に埋め込むのではなく、独立した macOS window を開くべきである。
 - `Gear widget`：Home に表示される小さな情報 component。例は BTC price、CPU / memory monitoring。
 - `Gear package`：gear id と同じ名前の folder。`gear.json`、README、assets、scripts、setup metadata、source、app files を含む。
-- `GearHost`：GeeAgent 内で gear の discovery、validation、import、preparation、open、state tracking を担当する layer。future agent bridge へ ready capability list も提供する。
+- `GearHost`：GeeAgent 内で gear の discovery、validation、import、preparation、open、state tracking を担当する layer。personal Agent Gateway へ ready capability list も提供する。
 - `GearKit`：GearHost、first-party native gears、future adapters が共有する stable contract。concrete app business concepts を含めてはいけない。
 - `gear.json`：gear manifest。最小 discovery file であり、catalog metadata、dependency setup、future agent capabilities の宣言元である。
 - `Dependency preflight`：gear を open または render する前に required dependencies、versions、permissions を確認する process。
-- `Capability`：future root agent が呼び出せる manifest-declared operation。capability は declaration であり、別個の global agent tool ではない。
-- `Codex plugin projection`：GeeAgent が生成する Codex-compatible package と Gee MCP export bridge。Codex が明示的に export された GeeAgent capabilities を discover and invoke できるようにする。これは Gear の export view であり、Gear package、native Gear UI、GearHost、GeeAgent runtime semantics を置き換えない。
+- `Capability`：GeeAgent または allowed external personal agent が呼び出せる manifest-declared operation。capability は declaration であり、別個の global agent tool ではない。
+- `Personal Agent Gateway`：local personal agents が structured GearHost/runtime paths を通じて allowed GeeAgent capabilities を discover、inspect、invoke、open できる neutral MCP-facing export layer。
+- `Codex plugin projection`：GeeAgent が生成する Codex-compatible package と Gee MCP export bridge。Personal Agent Gateway の first compatibility view として残る。これは Gear の export view であり、Gear package、native Gear UI、GearHost、GeeAgent runtime semantics を置き換えない。
 
 ## 現在の実装状態
 
@@ -124,6 +125,8 @@ apps/macos-app/Sources/GeeAgentMac/Views/Content/HomeWidgetsView.swift
 - first-party `media.library` と `hyperframes.studio` は native windows として開ける。
 - `media.generator` は現在の first-party Gear app である。Native media generation surface を提供し、image generation と video generation は global Xenodia provider channel を使い、models list、generation task creation、task state read の structured agent capabilities を公開する。
 - `gee.app.openSurface`、progressive Gear capability disclosure、shared Gear invocation の first V1 host bridge surface がある。
+- agent runtime には neutral `agent-gateway-mcp` stdio server と、`agent-gateway-status`、`agent-gateway-client-status`、`agent-gateway-search-capabilities`、`agent-gateway-describe-capability` developer commands がある。MCP surface は `gee_status`、`gee_search_capabilities`、`gee_describe_capability`、`gee_run_capability`、`gee_get_run`、`gee_prepare_gear`、`gee_open_surface` を expose する。Codex はまず同じ shared-store invocation queue を使い、manifest policy はすでに `codex`、`claude_code`、`workbuddy`、`gee_internal` clients を区別する。`agent-gateway-client-status` は Codex、Claude Code、WorkBuddy/OpenClaw 用の read-only stdio MCP configuration material を返し、external connection state が unverified であることを report し、これらの tools の settings を自動では書き込まない。
+- Settings は Personal Agent Gateway/MCP status、per-agent MCP configuration material、installed Gear dependency diagnostics を表示する。App startup は Gear dependencies を background で check するが install はしない。Settings の Prepare action は、user が明示的に選んだ場合だけ Gear dependency setup を実行する入口である。
 - `bookmark.vault` は現在の first-party Gear app である。任意の text または URL を `gear-data/bookmark.vault` に保存し、media URL は `smartyt.media` と同じ `yt-dlp` metadata family で enrich する。Twitter/X tweet URL は embed metadata path を先に使い、その他の site は basic web metadata fetch に fallback する。
 - `wespy.reader` は現在の first-party Gear app である。MIT licensed WeSpy Python package を wrap し、WeChat public-account articles、WeChat albums、general article pages を Markdown-first local task files に保存する。Explicit URL article and album capabilities は Gee MCP bridge 経由で Codex からも使える。
 - `wechat.watcher` は現在の first-party Gear app である。Authenticated WeChat Official Account backend session を Keychain に保存し、WeChat の authenticated backend search で public-account records を検索し、explicit watchlist records を `fakeid` keyed で `gear-data/wechat.watcher` に保存し、watched accounts の newly published article URLs を check する。`wespy.reader` を補完する Gear であり、account updates を discover するが、V1 では Markdown article bodies を download しない。`wechat.latest_articles` は explicit public-account name を受け取る Codex bridge call 向けに export される。Codex は Gee MCP/GearHost 経由で live Gear に name search、returned `fakeid` の使用、必要に応じた watchlist write、article URL return を実行させる必要があり、official website、search engine、profile page scraping、local script で代替してはならない。
@@ -148,7 +151,7 @@ apps/macos-app/Sources/GeeAgentMac/Views/Content/HomeWidgetsView.swift
 - Gear package folders はまだ full implementation boundary ではない。
 - third-party gear import はまだ実装されていない。
 - every Gear capability に対する full agent-runtime SDK/MCP tool injection はまだ完了していない。
-- external Codex coverage は意図的に狭い。`exports.codex.enabled: true` を明示した capabilities だけが Codex から見える。Additional provider generation、download、import、user-file、高 side-effect capabilities は、approval、artifact、failure semantics が end to end で audit されるまで hidden または explicitly disabled のままにする。
+- external-agent coverage は explicit に保たれる。Capabilities は `exports.agent_gateway` で specific client set に opt in でき、migration-era `exports.codex.enabled: true` declarations は Codex、Claude Code、WorkBuddy/OpenClaw-compatible agents 向けの Agent Gateway compatibility exports として共有される。Additional provider generation、download、import、user-file、高 side-effect capabilities は、approval、artifact、failure semantics が end to end で audit されるまで hidden または explicitly disabled のままにする。
 - `telegram.bridge` は production daemon management と broader setup polish がまだ必要だが、現在の bridge は native GearHost push text and file delivery、local app-data token lookup、push-channel creation、main-window-safe app-started polling、Telegram command menu、inline buttons、bounded project grouping、pagination、Track/Untrack project lists、explicit send confirmation、long conversation/push splitting、Codex Desktop-visible session filtering を備えた Codex remote commands、runtime direct-chat ingress、`/new` conversation reset、Telegram 内 runtime failure reply、allowlist user-ID fetch、contextual Gee Direct local-file sending を含む。
 - `GearKit` と `GearHost` はまだ separate SwiftPM targets には分割されていない。
 

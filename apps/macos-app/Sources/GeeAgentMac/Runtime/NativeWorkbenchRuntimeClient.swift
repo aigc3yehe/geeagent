@@ -713,7 +713,6 @@ enum AssistantTranscriptSanitizer {
             .lowercased()
 
         guard normalizedLastLine == "sources:"
-            || normalizedLastLine == "sources："
             || normalizedLastLine == "sources"
         else {
             return cleanedContent.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1063,6 +1062,30 @@ private final class AgentRuntimeProcess {
 
     func clearProviderAPIKey(providerID: String) throws -> ProviderSecretSettings {
         try ProviderSecretStore().clearAPIKey(providerID: providerID)
+    }
+
+    func loadAgentGatewayStatus() throws -> AgentGatewayStatusRecord {
+        let data = try run(arguments: ["agent-gateway-status"])
+        do {
+            return try decoder.decode(AgentGatewayStatusRecord.self, from: data)
+        } catch {
+            let raw = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+            throw RuntimeProcessError.runtimeInvocation(
+                "The agent runtime returned invalid JSON while loading Agent Gateway status: \(raw)"
+            )
+        }
+    }
+
+    func loadAgentGatewayClientStatus() throws -> AgentGatewayClientStatusProjection {
+        let data = try run(arguments: ["agent-gateway-client-status"])
+        do {
+            return try decoder.decode(AgentGatewayClientStatusProjection.self, from: data)
+        } catch {
+            let raw = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+            throw RuntimeProcessError.runtimeInvocation(
+                "The agent runtime returned invalid JSON while loading Agent Gateway client status: \(raw)"
+            )
+        }
     }
 
     func saveChatRoutingSettings(_ settings: ChatRoutingSettings) throws -> RuntimeSnapshotDTO {
@@ -2083,6 +2106,18 @@ final class NativeWorkbenchRuntimeClient: WorkbenchAttachmentRuntimeClient, @unc
     func clearProviderAPIKey(providerID: String) async throws -> ProviderSecretSettings {
         try await runOffMainThread {
             try self.runtime.clearProviderAPIKey(providerID: providerID)
+        }
+    }
+
+    func loadAgentGatewayStatus() async throws -> AgentGatewayStatusRecord {
+        try await runOffMainThread {
+            try self.runtime.loadAgentGatewayStatus()
+        }
+    }
+
+    func loadAgentGatewayClientStatus() async throws -> AgentGatewayClientStatusProjection {
+        try await runOffMainThread {
+            try self.runtime.loadAgentGatewayClientStatus()
         }
     }
 

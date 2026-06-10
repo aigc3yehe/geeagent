@@ -14,6 +14,12 @@ Keep files small and role-specific:
   calls that GeeAgentMac drains through GearHost.
 - `codex-mcp-server.ts`: Codex-facing MCP stdio surface for the export projection.
 - `codex-plugin.ts`: local `geeagent-codex` plugin package generator.
+- `agent-gateway.ts`: neutral manifest-backed capability projection for personal
+  local agents.
+- `agent-gateway-clients.ts`: read-only MCP configuration/status material for
+  Codex, Claude Code, and WorkBuddy/OpenClaw.
+- `agent-gateway-mcp-server.ts`: shared stdio MCP surface for personal local
+  agents.
 - `store/`: persisted runtime state, snapshot projection, reducers, and small
   file adapters.
 - `store/run-replay.ts`: read-only run replay export, replay projection,

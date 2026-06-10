@@ -26,6 +26,12 @@ struct SettingsView: View {
                 providerKeysPanel
                     .padding(.horizontal)
 
+                AgentGatewaySettingsPanel(store: store)
+                    .padding(.horizontal)
+
+                GearDependenciesSettingsPanel(store: store)
+                    .padding(.horizontal)
+
                 audioTranscriptionPanel
                     .padding(.horizontal)
 
@@ -47,6 +53,12 @@ struct SettingsView: View {
                 store.loadChatRoutingSettings()
             }
             store.loadProviderSecretSettings()
+            store.refreshAgentGatewayStatus()
+            store.refreshAgentGatewayClientStatus()
+            store.loadCachedGearDependencyDiagnostics()
+            if store.gearDependencyRecords.isEmpty {
+                store.refreshGearDependencyDiagnostics()
+            }
         }
         .onChange(of: store.chatRoutingSettings) { _, _ in
             syncRoutingDraft()
@@ -928,6 +940,570 @@ private struct SettingsFeedbackMessage: Identifiable {
     let id = UUID()
     var title: String
     var message: String
+}
+
+private struct AgentGatewaySettingsPanel: View {
+    @Bindable var store: WorkbenchStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            header
+
+            Text(store.localizedString("settings.agentGateway.description", defaultValue: "Shared MCP/stdio status for local personal agents that call GeeAgent Gear capabilities."))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            SettingsMetricGrid(rows: metricRows)
+
+            if let error = store.agentGatewayStatusErrorMessage {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let error = store.agentGatewayClientStatusErrorMessage {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let clientStatus = store.agentGatewayClientStatus {
+                AgentGatewayClientIntegrationList(
+                    store: store,
+                    clients: clientStatus.clients.sorted { $0.priority < $1.priority }
+                )
+            }
+
+            HStack {
+                Text(store.localizedString("settings.agentGateway.currentClient", defaultValue: "Default client priority: Codex, then Claude Code, then WorkBuddy."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Button(store.localizedString("common.reload", defaultValue: "Reload")) {
+                    store.refreshAgentGatewayStatus()
+                    store.refreshAgentGatewayClientStatus()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(store.isLoadingAgentGatewayStatus || store.isLoadingAgentGatewayClientStatus)
+            }
+        }
+        .settingsPanelChrome()
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Label(store.localizedString("settings.agentGateway.title", defaultValue: "Personal Agent Gateway"), systemImage: "point.3.connected.trianglepath.dotted")
+                .font(.geeDisplaySemibold(18))
+
+            Spacer()
+
+            if store.isLoadingAgentGatewayStatus || store.isLoadingAgentGatewayClientStatus {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Text(badgeTitle)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(tint)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(tint.opacity(0.12), in: Capsule())
+            }
+        }
+    }
+
+    private var metricRows: [(String, String)] {
+        [
+            (
+                store.localizedString("settings.agentGateway.standard", defaultValue: "Standard"),
+                store.agentGatewayStatus?.standard ?? store.localizedString("common.notLoaded", defaultValue: "Not loaded")
+            ),
+            (
+                store.localizedString("settings.agentGateway.tools", defaultValue: "MCP tools"),
+                toolsSummary
+            ),
+            (
+                store.localizedString("settings.agentGateway.clients", defaultValue: "Clients"),
+                clientsSummary
+            ),
+            (
+                store.localizedString("settings.agentGateway.transport", defaultValue: "Transport"),
+                transportSummary
+            )
+        ]
+    }
+
+    private var badgeTitle: String {
+        store.agentGatewayStatus?.statusTitle
+            ?? (store.agentGatewayStatusErrorMessage == nil
+                ? store.localizedString("common.notLoaded", defaultValue: "Not loaded")
+                : store.localizedString("common.failed", defaultValue: "Failed"))
+    }
+
+    private var tint: Color {
+        guard let status = store.agentGatewayStatus?.status else {
+            return store.agentGatewayStatusErrorMessage == nil ? .secondary : .orange
+        }
+        switch status {
+        case "success": return .green
+        case "degraded": return .yellow
+        case "failed": return .red
+        default: return .secondary
+        }
+    }
+
+    private var toolsSummary: String {
+        guard let status = store.agentGatewayStatus else {
+            return store.localizedString("common.notLoaded", defaultValue: "Not loaded")
+        }
+        return store.localizedFormat(
+            "settings.agentGateway.toolsSummary",
+            defaultValue: "%d available, %d live bridge",
+            status.availableMcpTools.count,
+            status.bridgeRequiredTools.count
+        )
+    }
+
+    private var clientsSummary: String {
+        if let clients = store.agentGatewayClientStatus?.clients, !clients.isEmpty {
+            return clients
+                .sorted { $0.priority < $1.priority }
+                .map(\.title)
+                .joined(separator: " -> ")
+        }
+        return store.agentGatewayStatus?.supportedClients.joined(separator: ", ")
+            ?? store.localizedString("common.notLoaded", defaultValue: "Not loaded")
+    }
+
+    private var transportSummary: String {
+        guard let status = store.agentGatewayStatus else {
+            return store.localizedString("common.notLoaded", defaultValue: "Not loaded")
+        }
+        let httpPolicy = status.transportPolicy.httpLocalOnly
+            ? store.localizedString("settings.agentGateway.localOnly", defaultValue: "local-only")
+            : store.localizedString("settings.agentGateway.networkAllowed", defaultValue: "network allowed")
+        return store.localizedFormat(
+            "settings.agentGateway.transportSummary",
+            defaultValue: "stdio %@, HTTP %@ (%@)",
+            status.transportPolicy.stdio,
+            status.transportPolicy.streamableHttp,
+            httpPolicy
+        )
+    }
+}
+
+private struct AgentGatewayClientIntegrationList: View {
+    @Bindable var store: WorkbenchStore
+    var clients: [AgentGatewayClientIntegrationRecord]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(clients) { client in
+                AgentGatewayClientIntegrationRow(store: store, client: client)
+            }
+        }
+    }
+}
+
+private struct AgentGatewayClientIntegrationRow: View {
+    @Bindable var store: WorkbenchStore
+    var client: AgentGatewayClientIntegrationRecord
+    @State private var copyFeedbackActive = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(client.title)
+                    .font(.caption.weight(.semibold))
+
+                Text(client.integrationStateTitle)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.green)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Color.green.opacity(0.12), in: Capsule())
+
+                Text(client.connectionStateTitle)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Color.secondary.opacity(0.12), in: Capsule())
+
+                Spacer(minLength: 8)
+
+                Text(client.transport.uppercased())
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+            }
+
+            Text(client.configTargets.joined(separator: " / "))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            if let snippet = client.configSnippets.first {
+                HStack(alignment: .top, spacing: 8) {
+                    Text(snippet.body)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.primary)
+                        .lineLimit(4)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Button {
+                        store.copyMessageContent(snippet.body)
+                        copyFeedbackActive = true
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 1_200_000_000)
+                            copyFeedbackActive = false
+                        }
+                    } label: {
+                        Image(systemName: copyFeedbackActive ? "checkmark" : "doc.on.doc")
+                    }
+                    .buttonStyle(.borderless)
+                    .help(copyFeedbackActive
+                          ? store.localizedString("common.copied", defaultValue: "Copied")
+                          : store.localizedString("common.copy", defaultValue: "Copy"))
+                }
+                .padding(8)
+                .background(Color.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+        }
+        .padding(10)
+        .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        }
+    }
+}
+
+private struct GearDependenciesSettingsPanel: View {
+    @Bindable var store: WorkbenchStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            header
+
+            Text(store.localizedString("settings.gearDependencies.description", defaultValue: "GeeAgent checks each installed Gear's required dependencies at startup. Missing runtimes, tools, models, and data stay outside the app bundle and are installed only when you choose Prepare."))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 10) {
+                DependencySummaryPill(
+                    title: store.localizedString("common.ready", defaultValue: "Ready"),
+                    value: "\(readyCount)",
+                    tint: .green
+                )
+                DependencySummaryPill(
+                    title: store.localizedString("settings.gearDependencies.needsSetup", defaultValue: "Needs setup"),
+                    value: "\(needsSetupCount)",
+                    tint: .orange
+                )
+                DependencySummaryPill(
+                    title: store.localizedString("settings.gearDependencies.total", defaultValue: "Installed"),
+                    value: "\(store.gearDependencyRecords.count)",
+                    tint: .secondary
+                )
+            }
+
+            if store.gearDependencyRecords.isEmpty {
+                Text(store.localizedString("settings.gearDependencies.empty", defaultValue: "No installed Gear dependency manifests were found."))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(store.gearDependencyRecords) { record in
+                        GearDependencySettingsRow(store: store, record: record)
+                    }
+                }
+            }
+
+            if let error = store.gearDependencyErrorMessage {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Text(footerText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Button(store.localizedString("settings.gearDependencies.checkAgain", defaultValue: "Check Again")) {
+                    store.refreshGearDependencyDiagnostics()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(store.isCheckingGearDependencies)
+            }
+        }
+        .settingsPanelChrome()
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Label(store.localizedString("settings.gearDependencies.title", defaultValue: "Gear Dependencies"), systemImage: "wrench.and.screwdriver")
+                .font(.geeDisplaySemibold(18))
+
+            Spacer()
+
+            if store.isCheckingGearDependencies {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Text(badgeTitle)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(tint)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(tint.opacity(0.12), in: Capsule())
+            }
+        }
+    }
+
+    private var readyCount: Int {
+        store.gearDependencyRecords.filter { $0.state == .ready }.count
+    }
+
+    private var needsSetupCount: Int {
+        store.gearDependencyRecords.filter { record in
+            switch record.state {
+            case .needsSetup, .installFailed, .unsupported:
+                return true
+            case .unknown:
+                return record.hasRequiredDependencies
+            case .checking, .installing, .ready:
+                return false
+            }
+        }.count
+    }
+
+    private var badgeTitle: String {
+        if needsSetupCount > 0 {
+            return store.localizedFormat(
+                "settings.gearDependencies.missingCount",
+                defaultValue: "%d need setup",
+                needsSetupCount
+            )
+        }
+        if store.gearDependencyRecords.isEmpty {
+            return store.localizedString("common.notLoaded", defaultValue: "Not loaded")
+        }
+        return store.localizedString("common.ready", defaultValue: "Ready")
+    }
+
+    private var tint: Color {
+        if needsSetupCount > 0 {
+            return .orange
+        }
+        return store.gearDependencyRecords.isEmpty ? .secondary : .green
+    }
+
+    private var footerText: String {
+        if store.isCheckingGearDependencies {
+            return store.localizedString("settings.gearDependencies.checking", defaultValue: "Checking installed Gear dependencies...")
+        }
+        if let latest = store.gearDependencyRecords.compactMap({ $0.snapshot?.updatedAt }).max() {
+            return store.localizedFormat(
+                "settings.gearDependencies.lastChecked",
+                defaultValue: "Last checked %@",
+                latest.formatted(date: .omitted, time: .shortened)
+            )
+        }
+        return store.localizedString("settings.gearDependencies.notChecked", defaultValue: "Dependency scan has not completed yet.")
+    }
+}
+
+private struct GearDependencySettingsRow: View {
+    @Bindable var store: WorkbenchStore
+    var record: GearDependencyStatusRecord
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: record.state.systemImage)
+                .foregroundStyle(tint)
+                .frame(width: 18)
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Text(record.gearName)
+                        .font(.subheadline.weight(.semibold))
+                    Text(record.state.title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(tint)
+                }
+
+                Text(detailText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+
+                if let detail = record.snapshot?.detail, !detail.isEmpty, record.state != .ready {
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            if isPreparing {
+                ProgressView()
+                    .controlSize(.small)
+            }
+
+            Button(buttonTitle) {
+                store.prepareGearDependencies(gearID: record.gearID)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(!canPrepare || isPreparing || store.isCheckingGearDependencies)
+        }
+        .padding(10)
+        .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.1), Color.white.opacity(0.02)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.8
+                )
+        }
+    }
+
+    private var isPreparing: Bool {
+        store.preparingGearDependencyIDs.contains(record.gearID)
+    }
+
+    private var buttonTitle: String {
+        record.state == .installFailed
+            ? store.localizedString("common.retry", defaultValue: "Retry")
+            : store.localizedString("settings.gearDependencies.prepare", defaultValue: "Prepare")
+    }
+
+    private var canPrepare: Bool {
+        record.hasRequiredDependencies &&
+            (record.state == .needsSetup || record.state == .installFailed || record.state == .unknown)
+    }
+
+    private var tint: Color {
+        switch record.state {
+        case .ready:
+            return .green
+        case .checking, .installing:
+            return .blue
+        case .needsSetup, .unknown:
+            return .orange
+        case .installFailed, .unsupported:
+            return .red
+        }
+    }
+
+    private var detailText: String {
+        guard record.hasRequiredDependencies else {
+            return store.localizedString("settings.gearDependencies.noRequiredDependencies", defaultValue: "No required external dependencies.")
+        }
+        if record.missingDependencyIDs.isEmpty, record.state == .ready {
+            return store.localizedFormat(
+                "settings.gearDependencies.requiredReady",
+                defaultValue: "%d required dependencies ready.",
+                record.requiredDependencyIDs.count
+            )
+        }
+        if !record.missingDependencyIDs.isEmpty {
+            return store.localizedFormat(
+                "settings.gearDependencies.missingList",
+                defaultValue: "Missing: %@",
+                record.missingDependencyIDs.joined(separator: ", ")
+            )
+        }
+        return store.localizedFormat(
+            "settings.gearDependencies.requiredList",
+            defaultValue: "Required: %@",
+            record.requiredDependencyIDs.joined(separator: ", ")
+        )
+    }
+}
+
+private struct SettingsMetricGrid: View {
+    var rows: [(String, String)]
+
+    var body: some View {
+        Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
+            ForEach(rows.indices, id: \.self) { index in
+                GridRow {
+                    Text(rows[index].0)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(rows[index].1)
+                        .font(.caption)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+    }
+}
+
+private struct DependencySummaryPill: View {
+    var title: String
+    var value: String
+    var tint: Color
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(value)
+                .font(.caption.weight(.bold))
+            Text(title)
+                .font(.caption.weight(.semibold))
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(tint.opacity(0.12), in: Capsule())
+    }
+}
+
+private extension View {
+    func settingsPanelChrome() -> some View {
+        padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(.regularMaterial.opacity(0.78))
+                    .shadow(color: .black.opacity(0.15), radius: 10, x: 0, y: 5)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.18), Color.white.opacity(0.04)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.8
+                    )
+            }
+    }
 }
 
 private struct TerminalPermissionRuleRow: View {

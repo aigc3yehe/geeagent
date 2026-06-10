@@ -5,6 +5,16 @@ import {
   type ChatRoutingSettings,
 } from "../chat-runtime.js";
 import {
+  agentGatewayStatus,
+  describeAgentGatewayCapability,
+  parseAgentGatewayOptions,
+  searchAgentGatewayCapabilities,
+} from "./agent-gateway.js";
+import {
+  agentGatewayClientStatus,
+  parseAgentGatewayClientStatusOptions,
+} from "./agent-gateway-clients.js";
+import {
   codexExportStatus,
   describeCodexExportCapability,
   listCodexExportCapabilities,
@@ -230,6 +240,23 @@ export async function handleNativeRuntimeCommand(
     case "codex-export-describe-capability":
       assertArgCount(command, args, 1);
       return stringify(await describeCodexExportCapability(parseCodexExportOptions(args[0])));
+    case "agent-gateway-status":
+      assertMaxArgCount(command, args, 1);
+      return stringify(agentGatewayStatus(parseAgentGatewayOptions(args[0])));
+    case "agent-gateway-client-status": {
+      assertMaxArgCount(command, args, 1);
+      const options = {
+        ...parseAgentGatewayClientStatusOptions(args[0]),
+        config_dir: configDir,
+      };
+      return stringify(agentGatewayClientStatus(options));
+    }
+    case "agent-gateway-search-capabilities":
+      assertArgCount(command, args, 1);
+      return stringify(await searchAgentGatewayCapabilities(parseAgentGatewayOptions(args[0])));
+    case "agent-gateway-describe-capability":
+      assertArgCount(command, args, 1);
+      return stringify(await describeAgentGatewayCapability(parseAgentGatewayOptions(args[0])));
     case "codex-export-generate-plugin":
       assertArgCount(command, args, 1);
       return stringify(await generateCodexPluginPackage(parseCodexPluginGenerationOptions(args[0])));
@@ -409,6 +436,12 @@ function parseBoolean(raw: string): boolean {
 function assertArgCount(command: string, args: string[], expected: number): void {
   if (args.length !== expected) {
     throw new Error(`${command} expects ${expected} argument(s)`);
+  }
+}
+
+function assertMaxArgCount(command: string, args: string[], max: number): void {
+  if (args.length > max) {
+    throw new Error(`${command} expects at most ${max} argument(s)`);
   }
 }
 

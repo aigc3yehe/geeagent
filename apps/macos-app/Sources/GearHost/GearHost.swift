@@ -293,6 +293,12 @@ enum GearHost {
         gearManifests().first { $0.id == gearID }
     }
 
+    static func installedGearManifests() -> [GearManifest] {
+        gearManifests()
+            .filter { isGearInstalled(gearID: $0.id) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
     private static func isGearInstalled(gearID: String) -> Bool {
         dedupedGearScanResults().contains { $0.record.id == gearID && $0.record.installState == .installed }
     }

@@ -32,12 +32,13 @@ V1 要保持实用，不做过度复杂的平台设计。V1 的重点是本地�
 - `Gear app`：可以从 Gears 页面打开的完整应用。复杂 gear 应该打开独立 macOS 窗口，而不是嵌在 GeeAgent 主窗口里。
 - `Gear widget`：显示在 Home 上的小型信息组件，例如 BTC 价格、CPU / 内存监控。
 - `Gear package`：一个以 gear id 命名的文件夹，里面包含 `gear.json`、README、资源、脚本、setup 元数据、源码或 app 文件。
-- `GearHost`：GeeAgent 内部负责发现、校验、导入、依赖准备、打开 gear、管理状态、暴露能力列表的平台管理层。
+- `GearHost`：GeeAgent 内部负责发现、校验、导入、依赖准备、打开 gear、管理状态，并向个人 Agent Gateway 暴露 ready capability list 的平台管理层。
 - `GearKit`：GearHost、第一方 native gears 和未来 adapter 共享的稳定 contract。它不应该包含具体 app 业务概念。
 - `gear.json`：Gear manifest。它是 package 的最小发现文件，也是 catalog 展示、依赖准备和未来 agent capability 的声明入口。
 - `Dependency preflight`：打开或启用 gear 前检查依赖是否存在、版本是否满足、权限是否允许的过程。
-- `Capability`：gear 在 manifest 里声明的可被未来 root agent 调用的能力。capability 是声明，不是单独的全局 agent tool。
-- `Codex plugin projection`：GeeAgent 生成的 Codex-compatible package 和 Gee MCP export bridge，让 Codex 可以发现并调用被明确导出的 GeeAgent capabilities。它是 Gear 的导出视图，不替代 Gear package、native Gear UI、GearHost 或 GeeAgent runtime 语义。
+- `Capability`：gear 在 manifest 里声明的、可被 GeeAgent 或被允许的外部个人 agent 调用的能力。capability 是声明，不是单独的全局 agent tool。
+- `Personal Agent Gateway`：面向 MCP 的中性导出层，让本地个人 agent 可以通过结构化 GearHost/runtime 路径发现、检查、调用和打开被允许的 GeeAgent capabilities。
+- `Codex plugin projection`：GeeAgent 生成的 Codex-compatible package 和 Gee MCP export bridge，作为 Personal Agent Gateway 的第一层兼容视图继续存在。它是 Gear 的导出视图，不替代 Gear package、native Gear UI、GearHost 或 GeeAgent runtime 语义。
 
 ## 当前实现状态
 
@@ -124,6 +125,8 @@ apps/macos-app/Sources/GeeAgentMac/Views/Content/HomeWidgetsView.swift
 - 第一方 `media.library` 和 `hyperframes.studio` 已经可以作为 native window 打开。
 - `media.generator` 是当前第一方 Gear app。它提供原生媒体生成界面，图片和视频生成都通过全局 Xenodia 渠道执行，并向 agent 暴露列出模型、创建生成任务、读取任务状态的结构化能力。
 - 已经有第一版 V1 host bridge surface：`gee.app.openSurface`、渐进式 Gear capability disclosure 和统一 Gear invocation。
+- agent runtime 现在包含中性的 `agent-gateway-mcp` stdio server，以及 `agent-gateway-status`、`agent-gateway-client-status`、`agent-gateway-search-capabilities`、`agent-gateway-describe-capability` 开发命令。MCP surface 暴露 `gee_status`、`gee_search_capabilities`、`gee_describe_capability`、`gee_run_capability`、`gee_get_run`、`gee_prepare_gear` 和 `gee_open_surface`。Codex、Claude Code、WorkBuddy/OpenClaw-compatible agents 使用同一个 shared-store invocation queue 和同一 capability surface。现有 `exports.codex.enabled: true` capability 声明会作为 Agent Gateway 兼容导出处理，除非 capability 声明了更具体的 `exports.agent_gateway` client policy。`agent-gateway-client-status` 会只读返回 Codex、Claude Code、WorkBuddy/OpenClaw 的 stdio MCP 配置材料；它会标明外部连接尚未验证，并且不会自动写入这些工具的设置。
+- Settings 会显示 Personal Agent Gateway/MCP 状态、逐 agent MCP 配置材料，以及已安装 Gear 的依赖诊断。App 启动会在后台检查 Gear 依赖但不会安装；Settings 里的 Prepare 动作是用户明确选择后才会运行的 Gear 依赖安装入口。
 - `bookmark.vault` 是当前第一方 Gear app。它把任意文本或 URL 保存到 `gear-data/bookmark.vault`，媒体 URL 使用与 `smartyt.media` 同一类 `yt-dlp` 元数据能力，Twitter/X 推文 URL 先走嵌入元数据路径，其他网站则回退到基础网页元数据 fetch。
 - `wespy.reader` 是当前第一方 Gear app。它封装 MIT 许可的 WeSpy Python package，把微信公众号文章、微信公众号专辑和通用文章页面抓取成 Markdown 优先的本地 task 文件。它的显式 URL 文章和专辑能力可以通过 Gee MCP bridge 暴露给 Codex 使用。
 - `wechat.watcher` 是当前第一方 Gear app。它把已认证的微信公众号后台 session 存入 Keychain，通过微信已登录后台搜索公众号记录，把显式 watchlist 按 `fakeid` 存入 `gear-data/wechat.watcher`，并检查已关注账号的新文章 URL。它和 `wespy.reader` 互补：V1 负责发现账号更新，不下载 Markdown 正文。`wechat.latest_articles` 会通过 Codex bridge 导出给明确提供公众号名称的调用；Codex 必须通过 Gee MCP/GearHost 让 live Gear 按名称搜索微信后台、使用返回的 `fakeid`、按需写入 watchlist 并返回文章 URL，不能用官网、搜索引擎、profile 页面抓取或本地脚本替代。
@@ -148,7 +151,7 @@ apps/macos-app/Sources/GeeAgentMac/Views/Content/HomeWidgetsView.swift
 - Gear package 文件夹还不是完整实现边界。
 - 第三方 gear import 还没有落地。
 - 面向所有 Gear capabilities 的完整 agent-runtime SDK/MCP tool injection 还没有完成。
-- 外部 Codex 覆盖范围仍然有意保持很窄。只有显式设置 `exports.codex.enabled: true` 的 capability 对 Codex 可见；更多 provider 生成、下载、导入、用户文件和高副作用能力会保持隐藏或显式禁用，直到它们的 approval、artifact 和 failure 语义完成端到端审计。
+- 外部 agent 覆盖范围仍然保持显式。Capability 可以通过 `exports.agent_gateway` 限定具体 client set；迁移期间的 `exports.codex.enabled: true` 声明会作为 Agent Gateway 兼容导出共享给 Codex、Claude Code 和 WorkBuddy/OpenClaw-compatible agents。更多 provider 生成、下载、导入、用户文件和高副作用能力会保持隐藏或显式禁用，直到它们的 approval、artifact 和 failure 语义完成端到端审计。
 - `telegram.bridge` 仍需要生产 daemon 管理和更完整的设置体验打磨，但当前 bridge 已包含原生 GearHost push 文本和文件投递、本地 app-data token lookup、push-channel 创建、主窗口安全的延后 app-started polling、带 Telegram 命令菜单、inline buttons、有界 project 聚合、分页、Track/Untrack 项目列表、显式发送确认、长对话/push 拆分和 Codex Desktop 可见会话过滤的 Codex remote commands、runtime 直连对话入口、`/new` 对话重置、Telegram 内 runtime 失败回信、allowlist user-ID 获取，以及 Gee Direct 上下文相关的本地文件发送。
 - `GearKit` / `GearHost` 还没有拆成独立 SwiftPM targets。
 

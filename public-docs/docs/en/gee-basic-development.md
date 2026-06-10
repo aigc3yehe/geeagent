@@ -10,7 +10,7 @@ This section will document basic GeeAgent development workflows, project structu
 
 When system behavior changes, update related public documentation in English, Simplified Chinese, and Japanese.
 
-When Gear or capability behavior changes, also check whether the Codex plugin projection, Gee MCP export schema, generated skills, generated capability reference files, or plugin metadata need to change. If no Codex export update is needed for a substantial Gear change, say so in the work summary.
+When Gear or capability behavior changes, also check whether the personal Agent Gateway, Codex compatibility projection, Gee MCP export schema, generated skills, generated capability reference files, or plugin metadata need to change. If no external-agent export update is needed for a substantial Gear change, say so in the work summary.
 
 ## Runtime Context Spine
 
@@ -20,13 +20,13 @@ In the current first slice, GeeAgent injects the runtime bootstrap instructions 
 
 ## Runtime Foundation
 
-GeeAgent's runtime foundation comes from the Phase 3 Runtime Workbench and now carries forward inside Phase 4 product deepening. The active direction is to make conversation, task, tool, approval, Gear, artifact, and context-budget surfaces projections over one append-only runtime event truth.
+GeeAgent's runtime foundation comes from the Phase 3 Runtime Workbench and now carries forward inside Phase 5 personal-agent Gear platform work. The active direction is to make conversation, task, tool, approval, Gear, artifact, external-agent invocation, and context-budget surfaces projections over one append-only runtime event truth.
 
-Phase 3 is not marked complete. GeeAgent has a validated runtime-trust slice, including stable run identity, same-run continuation, typed transcript events, strict Gear evidence, bounded artifact/context handling, replay projection, run-state classification, and minimum inspector projection covered by golden replay plus macOS projection tests. That foundation continues to be refined during Phase 4 product use.
+Phase 3 is not marked complete. GeeAgent has a validated runtime-trust slice, including stable run identity, same-run continuation, typed transcript events, strict Gear evidence, bounded artifact/context handling, replay projection, run-state classification, and minimum inspector projection covered by golden replay plus macOS projection tests. That foundation continues to be refined during Phase 5 product use.
 
-## Phase 4 Product Deepening
+## Phase 5 Personal Agent Gear Platform
 
-Phase 4 is a broad product-deepening stage. GeeAgent will be improved and enriched through real use across the whole system, including both the agent system and the Gear modules. Work in this stage should be driven by dogfood evidence, user workflows, reliability gaps, and product opportunities rather than a narrow runtime-only checklist.
+Phase 5 extends Phase 4 product deepening by making Gear capabilities available to personal local agents, not only to GeeAgent's internal runtime or Codex. The current implementation adds a neutral Agent Gateway MCP surface for Codex, Claude Code, and WorkBuddy/OpenClaw-compatible agents. Legacy `exports.codex.enabled: true` declarations are treated as Agent Gateway compatibility exports unless a capability declares a more specific `exports.agent_gateway` client policy.
 
 Assistant text now starts moving through transcript events as live deltas instead of only appearing after final completion. Tool and Gear completion failures must preserve the real failed or degraded run state. GeeAgent must not switch to another execution path or make an unfinished runtime continuation look completed.
 
@@ -36,7 +36,9 @@ Settings exposes one default STT service for audio transcription. Chat voice inp
 
 The GeeAgentMac main app follows the macOS preferred language by default. Settings > Language can override the main workbench shell to System, English, Simplified Chinese, or Japanese. This applies to GeeAgent-owned main surfaces such as navigation, Home, Chat, Telegram, Tasks/Logs, Automations, the Gears catalog shell, Agents, Settings, Inspector, approval prompts, menu-bar panels, Quick Input, and Audio Capture. Gear-internal screens, Gear manifest text, user messages, assistant replies, runtime logs, provider/model names, file paths, and raw runtime error details remain in their source language.
 
-For Gear work, the live SDK run and Gee MCP bridge are the required path. If the SDK runtime or bridge is not live, GeeAgent reports the structured failure instead of executing the task through an alternate native route.
+For Gear work, the live SDK run and Gee MCP bridge are the required path. External agents use the neutral Agent Gateway tools such as `gee_status`, `gee_search_capabilities`, `gee_describe_capability`, `gee_run_capability`, `gee_get_run`, `gee_prepare_gear`, and `gee_open_surface`; the older Codex projection remains a compatibility view. If the SDK runtime, Gateway, or bridge is not live, GeeAgent reports the structured failure instead of executing the task through an alternate native route.
+
+Settings now shows the Personal Agent Gateway/MCP status, per-client MCP configuration material for Codex, Claude Code, and WorkBuddy/OpenClaw, and installed Gear dependency diagnostics. The client rows distinguish configuration availability from verified connection state and do not write external agent settings automatically. Startup and manual checks only inspect declared dependencies and write readiness snapshots; dependency installation happens only after the user chooses a Gear-specific Prepare action.
 
 Native app control is also a shared Gee MCP host path rather than a Gear- or Telegram-specific shortcut. App Chat/runtime can call `native_app_control` (`gee.nativeApp.control`) for supported local macOS apps; V1 exposes Codex Desktop `new_chat_and_send` and returns structured blocked/failed states when the app, permission, target UI element, or send action is unavailable.
 

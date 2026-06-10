@@ -10,7 +10,7 @@
 
 当系统行为发生变化时，需要同步更新英文、简体中文、日文三种公开文档中相关的表述。
 
-当 Gear 或 capability 行为发生变化时，也需要检查 Codex plugin projection、Gee MCP export schema、生成的 skills、生成的 capability reference 文件或 plugin metadata 是否需要同步更新。如果一次实质性 Gear 改动不需要更新 Codex export，应在工作总结里明确说明。
+当 Gear 或 capability 行为发生变化时，也需要检查个人 Agent Gateway、Codex compatibility projection、Gee MCP export schema、生成的 skills、生成的 capability reference 文件或 plugin metadata 是否需要同步更新。如果一次实质性 Gear 改动不需要更新 external-agent export，应在工作总结里明确说明。
 
 ## Runtime Context Spine
 
@@ -20,13 +20,13 @@ GeeAgent 的 runtime context spine 是当前减少重复 prompt 历史、同时�
 
 ## Runtime Foundation
 
-GeeAgent 的 runtime foundation 来自 Phase 3 Runtime Workbench，现在会在 Phase 4 产品深化阶段继续演进。当前方向是让 conversation、task、tool、approval、Gear、artifact 和 context-budget 等界面，都成为同一个 append-only runtime event truth 的投影。
+GeeAgent 的 runtime foundation 来自 Phase 3 Runtime Workbench，现在会在 Phase 5 个人 agent Gear 平台阶段继续演进。当前方向是让 conversation、task、tool、approval、Gear、artifact、external-agent invocation 和 context-budget 等界面，都成为同一个 append-only runtime event truth 的投影。
 
-Phase 3 不标记为完成。GeeAgent 已经具备一个经过验证的 runtime-trust slice，包括稳定 run identity、same-run continuation、typed transcript events、严格 Gear evidence、有边界的 artifact/context 处理、replay projection、run-state classification，以及由 golden replay tests 加 macOS projection tests 覆盖的最小 inspector projection。这套 foundation 会在 Phase 4 的实际产品使用中继续修正和深化。
+Phase 3 不标记为完成。GeeAgent 已经具备一个经过验证的 runtime-trust slice，包括稳定 run identity、same-run continuation、typed transcript events、严格 Gear evidence、有边界的 artifact/context 处理、replay projection、run-state classification，以及由 golden replay tests 加 macOS projection tests 覆盖的最小 inspector projection。这套 foundation 会在 Phase 5 的实际产品使用中继续修正和深化。
 
-## Phase 4 产品深化
+## Phase 5 个人 Agent Gear 平台
 
-Phase 4 是一个宽泛的产品深化阶段。GeeAgent 会在实际使用中持续优化和丰富整个系统，包括 agent 系统和 Gear 两大模块。这个阶段的工作应由 dogfood 证据、用户工作流、可靠性缺口和产品机会驱动，而不是由狭窄的 runtime-only checklist 驱动。
+Phase 5 在 Phase 4 产品深化之上继续推进，让 Gear capability 面向个人本地 agent，而不只面向 GeeAgent 内部 runtime 或 Codex。当前实现新增中性的 Agent Gateway MCP surface，面向 Codex、Claude Code 和 WorkBuddy/OpenClaw-compatible agents。旧的 `exports.codex.enabled: true` 声明会作为 Agent Gateway 兼容导出处理，除非 capability 声明了更具体的 `exports.agent_gateway` client policy。
 
 Assistant 文本现在开始通过 transcript event 以 live delta 的形式进入前端，而不是只在最终完成后一次性出现。Tool 和 Gear completion 失败时必须保留真实的 failed 或 degraded run state；GeeAgent 不能切换到另一条执行路径，也不能把没有完成的 runtime continuation 伪装成 completed。
 
@@ -36,7 +36,9 @@ Settings 暴露一个统一的默认 STT 服务用于音频转写。Chat 语音�
 
 GeeAgentMac 主应用默认跟随 macOS 首选语言。Settings > Language 可以把主工作台外壳覆盖为 System、English、简体中文或日本語。这个设置覆盖 GeeAgent 自有的主干界面，例如导航、Home、Chat、Telegram、Tasks/Logs、Automations、Gears catalog 外壳、Agents、Settings、Inspector、审批提示、菜单栏面板、Quick Input 和 Audio Capture。Gear 内部页面、Gear manifest 文案、用户消息、助手回复、runtime 日志、provider/model 名称、文件路径和 runtime 原始错误细节保持原文。
 
-对于 Gear 工作，live SDK run 和 Gee MCP bridge 是必需路径。若 SDK runtime 或 bridge 不可用，GeeAgent 会报告结构化失败，而不是通过另一条 native 路径执行任务。
+对于 Gear 工作，live SDK run 和 Gee MCP bridge 是必需路径。外部 agent 通过中性的 Agent Gateway tools 使用能力，例如 `gee_status`、`gee_search_capabilities`、`gee_describe_capability`、`gee_run_capability`、`gee_get_run`、`gee_prepare_gear` 和 `gee_open_surface`；旧的 Codex projection 保留为兼容视图。若 SDK runtime、Gateway 或 bridge 不可用，GeeAgent 会报告结构化失败，而不是通过另一条 native 路径执行任务。
+
+Settings 现在会显示 Personal Agent Gateway/MCP 状态、Codex、Claude Code、WorkBuddy/OpenClaw 的逐 client MCP 配置材料，以及已安装 Gear 的依赖诊断。client 行会区分“配置可用”和“连接已验证”状态，并且不会自动写入外部 agent 设置。启动检测和手动检查只检查 manifest 声明的依赖并写入 readiness snapshot；只有用户对某个 Gear 明确选择 Prepare 后，才会执行依赖安装。
 
 本地应用控制也是共享的 Gee MCP host path，不是 Gear 或 Telegram 的专用捷径。App Chat/runtime 可以通过 `native_app_control`（`gee.nativeApp.control`）控制受支持的本地 macOS app；V1 暴露 Codex Desktop 的 `new_chat_and_send`，并在 app、权限、目标 UI 元素或发送动作不可用时返回结构化 blocked/failed 状态。
 

@@ -56,6 +56,123 @@ struct ProviderSecretStatus: Codable, Hashable, Identifiable, Sendable {
     }
 }
 
+struct AgentGatewayStatusRecord: Codable, Hashable, Sendable {
+    struct TransportPolicy: Codable, Hashable, Sendable {
+        var stdio: String
+        var streamableHttp: String
+        var httpLocalOnly: Bool
+    }
+
+    var status: String
+    var standard: String
+    var bridgeState: String
+    var implementedTools: [String]
+    var plannedTools: [String]
+    var availableMcpTools: [String]
+    var bridgeRequiredTools: [String]
+    var supportedClients: [String]
+    var defaultClient: String
+    var transportPolicy: TransportPolicy
+
+    var statusTitle: String {
+        switch status {
+        case "success": "Ready"
+        case "degraded": "Degraded"
+        case "failed": "Failed"
+        default: status.capitalized
+        }
+    }
+}
+
+struct AgentGatewayClientStatusProjection: Codable, Hashable, Sendable {
+    var status: String
+    var standard: String
+    var clientCount: Int
+    var defaultPriority: [String]
+    var supportedClients: [String]
+    var runtimeEntrypoint: String
+    var configDir: String?
+    var clients: [AgentGatewayClientIntegrationRecord]
+}
+
+struct AgentGatewayClientIntegrationRecord: Codable, Hashable, Identifiable, Sendable {
+    struct MCPServer: Codable, Hashable, Sendable {
+        var name: String
+        var command: String
+        var args: [String]
+    }
+
+    struct ConfigSnippet: Codable, Hashable, Identifiable, Sendable {
+        var id: String { "\(label)-\(format)" }
+
+        var label: String
+        var format: String
+        var body: String
+    }
+
+    var id: String { clientId }
+    var clientID: String { clientId }
+
+    var clientId: String
+    var title: String
+    var priority: Int
+    var integrationState: String
+    var connectionState: String
+    var transport: String
+    var installPolicy: String
+    var fallbackAttempted: Bool
+    var mcpServer: MCPServer
+    var configTargets: [String]
+    var configSnippets: [ConfigSnippet]
+    var notes: [String]
+
+    var integrationStateTitle: String {
+        switch integrationState {
+        case "configuration_available": "Config ready"
+        default: integrationState.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    var connectionStateTitle: String {
+        switch connectionState {
+        case "not_verified": "Not verified"
+        default: connectionState.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    var installPolicyTitle: String {
+        switch installPolicy {
+        case "manual_user_action_required": "Manual setup"
+        default: installPolicy.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+}
+
+struct GearDependencyStatusRecord: Hashable, Identifiable, Sendable {
+    var id: String { gearID }
+
+    var gearID: String
+    var gearName: String
+    var requiredDependencyIDs: [String]
+    var snapshot: GearPreparationSnapshot?
+    var isEnabled: Bool
+
+    var hasRequiredDependencies: Bool {
+        !requiredDependencyIDs.isEmpty
+    }
+
+    var state: GearPreparationState {
+        if let snapshot {
+            return snapshot.state
+        }
+        return hasRequiredDependencies ? .unknown : .ready
+    }
+
+    var missingDependencyIDs: [String] {
+        snapshot?.missingDependencyIDs ?? []
+    }
+}
+
 enum WorkbenchSection: String, CaseIterable, Identifiable {
     case home
     case chat
@@ -1097,7 +1214,7 @@ private func conversationPreviewCandidate(_ content: String) -> String {
     }
 
     if trimmed.range(
-        of: #"(?im)^\s*(Stage complete|Stage completed)\s*[:：]"#,
+        of: #"(?im)^\s*(Stage complete|Stage completed)\s*:"#,
         options: .regularExpression
     ) != nil {
         return ""

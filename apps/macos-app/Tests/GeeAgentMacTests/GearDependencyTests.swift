@@ -146,6 +146,54 @@ final class GearDependencyTests: XCTestCase {
         )
     }
 
+    func testPreparationServiceInspectDoesNotInstallMissingRecipeDependencies() async throws {
+        let data = Data("""
+        {
+          "schema": "gee.gear.v1",
+          "id": "sample.gear",
+          "name": "Sample Gear",
+          "description": "Dependency test gear.",
+          "developer": "Gee",
+          "version": "0.1.0",
+          "entry": { "type": "native", "native_id": "sample.gear" },
+          "dependencies": {
+            "install_strategy": "on_open",
+            "items": [
+              {
+                "id": "node",
+                "kind": "runtime",
+                "scope": "global",
+                "required": true,
+                "detect": { "command": "node", "args": ["--version"], "min_version": "22.0.0" },
+                "installer": { "type": "recipe", "id": "brew.install.node" }
+              }
+            ]
+          }
+        }
+        """.utf8)
+        let manifest = try JSONDecoder().decode(GearManifest.self, from: data)
+        let runner = RecordingMissingNodeRunner()
+        let suiteName = "gear-inspect-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let service = GearPreparationService(
+            runner: runner,
+            store: GearPreparationStore(defaults: defaults)
+        )
+
+        let snapshot = await service.inspect(
+            manifest: manifest.resolvingAssets(relativeTo: URL(fileURLWithPath: "/tmp/sample.gear"))
+        )
+
+        XCTAssertEqual(snapshot.state, .needsSetup)
+        XCTAssertEqual(snapshot.missingDependencyIDs, ["node"])
+        let cachedSnapshot = await service.cachedSnapshot(for: "sample.gear")
+        XCTAssertEqual(cachedSnapshot?.state, .needsSetup)
+        let commands = await runner.commandHistory()
+        XCTAssertTrue(commands.contains("command -v node"))
+        XCTAssertFalse(commands.contains("brew install node"))
+    }
+
     func testPreparationServiceInstallsWeSpyPythonRecipe() async throws {
         let data = Data("""
         {
@@ -261,6 +309,25 @@ private struct FakeGearCommandRunner: GearCommandRunning {
     func run(_ command: String, arguments: [String]) async -> GearCommandResult {
         let key = ([command] + arguments).joined(separator: " ")
         return responses[key] ?? GearCommandResult(exitCode: 127, stdout: "", stderr: "missing fake response: \(key)")
+    }
+}
+
+private actor RecordingMissingNodeRunner: GearCommandRunning {
+    private var commands: [String] = []
+
+    func run(_ command: String, arguments: [String]) async -> GearCommandResult {
+        let key = ([command] + arguments).joined(separator: " ")
+        commands.append(key)
+        switch key {
+        case "command -v node":
+            return GearCommandResult(exitCode: 1, stdout: "", stderr: "")
+        default:
+            return GearCommandResult(exitCode: 127, stdout: "", stderr: "unexpected command: \(key)")
+        }
+    }
+
+    func commandHistory() -> [String] {
+        commands
     }
 }
 

@@ -929,6 +929,143 @@ struct PreviewWorkbenchRuntimeClient: WorkbenchAttachmentRuntimeClient {
         return settings
     }
 
+    func loadAgentGatewayStatus() async throws -> AgentGatewayStatusRecord {
+        AgentGatewayStatusRecord(
+            status: "success",
+            standard: "gee.agent_gateway.v0.1",
+            bridgeState: "manifest_projection_external_invocation_queue",
+            implementedTools: [
+                "gee_status",
+                "gee_search_capabilities",
+                "gee_describe_capability",
+                "gee_run_capability",
+                "gee_get_run",
+                "gee_prepare_gear",
+                "gee_open_surface"
+            ],
+            plannedTools: [],
+            availableMcpTools: [
+                "gee_status",
+                "gee_search_capabilities",
+                "gee_describe_capability",
+                "gee_run_capability",
+                "gee_get_run",
+                "gee_prepare_gear",
+                "gee_open_surface"
+            ],
+            bridgeRequiredTools: ["gee_run_capability", "gee_open_surface"],
+            supportedClients: ["codex", "claude_code", "workbuddy", "gee_internal"],
+            defaultClient: "codex",
+            transportPolicy: AgentGatewayStatusRecord.TransportPolicy(
+                stdio: "implemented",
+                streamableHttp: "planned",
+                httpLocalOnly: true
+            )
+        )
+    }
+
+    func loadAgentGatewayClientStatus() async throws -> AgentGatewayClientStatusProjection {
+        let runtimeEntrypoint = "/Users/example/Library/Application Support/GeeAgent/runtime/native-runtime/index.mjs"
+        let configDir = "/Users/example/Library/Application Support/GeeAgent"
+        let clients: [AgentGatewayClientIntegrationRecord] = [
+            previewAgentGatewayClient(
+                clientID: "codex",
+                title: "Codex",
+                priority: 1,
+                runtimeEntrypoint: runtimeEntrypoint,
+                configDir: configDir
+            ),
+            previewAgentGatewayClient(
+                clientID: "claude_code",
+                title: "Claude Code",
+                priority: 2,
+                runtimeEntrypoint: runtimeEntrypoint,
+                configDir: configDir
+            ),
+            previewAgentGatewayClient(
+                clientID: "workbuddy",
+                title: "WorkBuddy / OpenClaw",
+                priority: 3,
+                runtimeEntrypoint: runtimeEntrypoint,
+                configDir: configDir
+            )
+        ]
+        return AgentGatewayClientStatusProjection(
+            status: "success",
+            standard: "gee.agent_gateway.v0.1",
+            clientCount: clients.count,
+            defaultPriority: clients.map(\.clientID),
+            supportedClients: ["codex", "claude_code", "workbuddy", "gee_internal"],
+            runtimeEntrypoint: runtimeEntrypoint,
+            configDir: configDir,
+            clients: clients
+        )
+    }
+
+    private func previewAgentGatewayClient(
+        clientID: String,
+        title: String,
+        priority: Int,
+        runtimeEntrypoint: String,
+        configDir: String
+    ) -> AgentGatewayClientIntegrationRecord {
+        let args = [
+            runtimeEntrypoint,
+            "agent-gateway-mcp",
+            "--client",
+            clientID,
+            "--config-dir",
+            configDir
+        ]
+        return AgentGatewayClientIntegrationRecord(
+            clientId: clientID,
+            title: title,
+            priority: priority,
+            integrationState: "configuration_available",
+            connectionState: "not_verified",
+            transport: "stdio",
+            installPolicy: "manual_user_action_required",
+            fallbackAttempted: false,
+            mcpServer: AgentGatewayClientIntegrationRecord.MCPServer(
+                name: "geeagent",
+                command: "node",
+                args: args
+            ),
+            configTargets: ["MCP server configuration"],
+            configSnippets: [
+                AgentGatewayClientIntegrationRecord.ConfigSnippet(
+                    label: "MCP server JSON",
+                    format: "json",
+                    body: previewMCPConfigBody(command: "node", args: args)
+                )
+            ],
+            notes: [
+                "Preview data only. Real Settings data is loaded from the native runtime."
+            ]
+        )
+    }
+
+    private func previewMCPConfigBody(command: String, args: [String]) -> String {
+        let object: [String: Any] = [
+            "mcpServers": [
+                "geeagent": [
+                    "command": command,
+                    "args": args
+                ]
+            ]
+        ]
+        guard
+            let data = try? JSONSerialization.data(
+                withJSONObject: object,
+                options: [.prettyPrinted, .sortedKeys]
+            ),
+            let raw = String(data: data, encoding: .utf8)
+        else {
+            return "\(command) \(args.joined(separator: " "))"
+        }
+        return raw
+    }
+
     func invokeTool(_ invocation: ToolInvocation) async throws -> WorkbenchToolOutcome {
         // Preview client: fake out the most common v1 calls so UI builds that
         // depend on this client aren't dead-ended.

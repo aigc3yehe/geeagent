@@ -202,7 +202,7 @@ function maybeDegradeStaleRunningInvocation(
     recovery: {
       kind: "manual_retry_required",
       message:
-        "This invocation will not be retried automatically because it may have already executed side effects. Inspect the Gear state, then start a new Codex invocation if needed.",
+        "This invocation will not be retried automatically because it may have already executed side effects. Inspect the Gear state, then start a new external Gee invocation if needed.",
     },
     fallback_attempted: false,
   };

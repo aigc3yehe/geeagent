@@ -3338,7 +3338,7 @@ final class SmartYTMediaGearStore: ObservableObject {
         }
         if let value = args[key] as? String {
             let separators = CharacterSet.whitespacesAndNewlines
-                .union(CharacterSet(charactersIn: ",，;；"))
+                .union(CharacterSet(charactersIn: ",;"))
             let values = value
                 .components(separatedBy: separators)
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }

@@ -1,4 +1,5 @@
 import { handleNativeRuntimeCommand } from "./commands.js";
+import { runAgentGatewayMcpServer } from "./agent-gateway-mcp-server.js";
 import { runCodexMcpServer } from "./codex-mcp-server.js";
 import { runNativeRuntimeServer } from "./server.js";
 import { shutdownSdkRuntime } from "./sdk-turn-runner.js";
@@ -8,12 +9,14 @@ type ParsedArgs = {
   args: string[];
   configDir?: string;
   parentPid?: number;
+  client?: string;
 };
 
 function parseArgs(rawArgs: string[]): ParsedArgs {
   const args: string[] = [];
   let configDir: string | undefined;
   let parentPid: number | undefined;
+  let client: string | undefined;
 
   for (let index = 0; index < rawArgs.length; index += 1) {
     const value = rawArgs[index];
@@ -30,6 +33,11 @@ function parseArgs(rawArgs: string[]): ParsedArgs {
       index += 1;
       continue;
     }
+    if (value === "--client") {
+      client = rawArgs[index + 1];
+      index += 1;
+      continue;
+    }
     args.push(value);
   }
 
@@ -38,6 +46,7 @@ function parseArgs(rawArgs: string[]): ParsedArgs {
     args: args.slice(1),
     configDir,
     parentPid,
+    client,
   };
 }
 
@@ -56,6 +65,8 @@ function printUsage(): void {
       "codex-export-status, codex-export-list-capabilities, " +
       "codex-export-describe-capability, codex-export-generate-plugin, " +
       "codex-export-install-plugin, " +
+      "agent-gateway-status, agent-gateway-client-status, agent-gateway-search-capabilities, " +
+      "agent-gateway-describe-capability, agent-gateway-mcp, " +
       "codex-external-invocation-complete, " +
       "invoke-tool, codex-mcp, serve\n",
   );
@@ -88,6 +99,17 @@ async function main(): Promise<void> {
       throw new Error("codex-mcp does not accept positional arguments");
     }
     await runCodexMcpServer({ configDir: parsed.configDir });
+    return;
+  }
+
+  if (parsed.command === "agent-gateway-mcp") {
+    if (parsed.args.length > 0) {
+      throw new Error("agent-gateway-mcp does not accept positional arguments");
+    }
+    await runAgentGatewayMcpServer({
+      configDir: parsed.configDir,
+      client: parsed.client,
+    });
     return;
   }
 

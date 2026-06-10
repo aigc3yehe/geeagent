@@ -79,6 +79,8 @@ protocol WorkbenchRuntimeClient: Sendable {
         apiKey: String
     ) async throws -> ProviderSecretSettings
     func clearProviderAPIKey(providerID: String) async throws -> ProviderSecretSettings
+    func loadAgentGatewayStatus() async throws -> AgentGatewayStatusRecord
+    func loadAgentGatewayClientStatus() async throws -> AgentGatewayClientStatusProjection
     func projectRuntimeRun(_ runID: String) async throws -> WorkbenchRuntimeRunProjection
     func classifyRuntimeRunWait(_ runID: String) async throws -> WorkbenchRuntimeRunWaitClassification
 
@@ -316,6 +318,18 @@ extension WorkbenchRuntimeClient {
         _ = runID
         throw RuntimeProcessError.unsupported(
             "This runtime client does not support runtime run wait classification."
+        )
+    }
+
+    func loadAgentGatewayStatus() async throws -> AgentGatewayStatusRecord {
+        throw RuntimeProcessError.unsupported(
+            "This runtime client does not support Agent Gateway status."
+        )
+    }
+
+    func loadAgentGatewayClientStatus() async throws -> AgentGatewayClientStatusProjection {
+        throw RuntimeProcessError.unsupported(
+            "This runtime client does not support Agent Gateway client status."
         )
     }
 

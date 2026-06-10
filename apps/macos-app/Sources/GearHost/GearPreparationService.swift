@@ -20,6 +20,40 @@ actor GearPreparationService {
         store.load(gearID: gearID)
     }
 
+    func inspect(
+        manifest: GearManifest,
+        progress: (@Sendable (GearPreparationSnapshot) async -> Void)? = nil
+    ) async -> GearPreparationSnapshot {
+        let checking = GearPreparationSnapshot(
+            gearID: manifest.id,
+            state: .checking,
+            summary: "Checking dependencies...",
+            detail: nil,
+            missingDependencyIDs: [],
+            updatedAt: Date()
+        )
+        store.save(checking)
+        await progress?(checking)
+
+        let missing = await missingDependencies(for: manifest)
+        let snapshot: GearPreparationSnapshot
+        if missing.isEmpty {
+            snapshot = GearPreparationSnapshot.ready(gearID: manifest.id, summary: "Dependencies ready.")
+        } else {
+            snapshot = GearPreparationSnapshot(
+                gearID: manifest.id,
+                state: .needsSetup,
+                summary: missingSummary(missing),
+                detail: missing.map(\.summary).joined(separator: "\n"),
+                missingDependencyIDs: missing.map(\.item.id),
+                updatedAt: Date()
+            )
+        }
+        store.save(snapshot)
+        await progress?(snapshot)
+        return snapshot
+    }
+
     func prepareIfNeeded(
         manifest: GearManifest,
         progress: (@Sendable (GearPreparationSnapshot) async -> Void)? = nil

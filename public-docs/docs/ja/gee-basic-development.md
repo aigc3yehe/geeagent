@@ -10,7 +10,7 @@
 
 system behavior が変わる場合、English、Simplified Chinese、Japanese の関連する公開 docs を同期して更新します。
 
-Gear または capability behavior が変わる場合、Codex plugin projection、Gee MCP export schema、generated skills、generated capability reference files、plugin metadata も更新が必要か確認します。Substantial Gear change に Codex export update が不要な場合は、work summary でそれを明示します。
+Gear または capability behavior が変わる場合、personal Agent Gateway、Codex compatibility projection、Gee MCP export schema、generated skills、generated capability reference files、plugin metadata も更新が必要か確認します。Substantial Gear change に external-agent export update が不要な場合は、work summary でそれを明示します。
 
 ## Runtime Context Spine
 
@@ -20,13 +20,13 @@ GeeAgent の runtime context spine は、product behavior を維持しながら 
 
 ## Runtime Foundation
 
-GeeAgent の runtime foundation は Phase 3 Runtime Workbench から来ており、現在は Phase 4 product deepening の中で carry forward されます。現在の方向性は、conversation、task、tool、approval、Gear、artifact、context-budget の各 surface を、単一の append-only runtime event truth の projection として扱うことです。
+GeeAgent の runtime foundation は Phase 3 Runtime Workbench から来ており、現在は Phase 5 personal-agent Gear platform work の中で carry forward されます。現在の方向性は、conversation、task、tool、approval、Gear、artifact、external-agent invocation、context-budget の各 surface を、単一の append-only runtime event truth の projection として扱うことです。
 
-Phase 3 は complete として mark しません。GeeAgent には、stable run identity、same-run continuation、typed transcript events、strict Gear evidence、bounded artifact/context handling、replay projection、run-state classification、golden replay tests と macOS projection tests で covered された minimum inspector projection を含む、validated runtime-trust slice があります。この foundation は Phase 4 の product use の中で継続的に refinement されます。
+Phase 3 は complete として mark しません。GeeAgent には、stable run identity、same-run continuation、typed transcript events、strict Gear evidence、bounded artifact/context handling、replay projection、run-state classification、golden replay tests と macOS projection tests で covered された minimum inspector projection を含む、validated runtime-trust slice があります。この foundation は Phase 5 の product use の中で継続的に refinement されます。
 
-## Phase 4 Product Deepening
+## Phase 5 Personal Agent Gear Platform
 
-Phase 4 は広い product-deepening stage です。GeeAgent は実際の利用を通じて、agent system と Gear modules の両方を含む system 全体を改善し、豊かにしていきます。この stage の work は、narrow runtime-only checklist ではなく、dogfood evidence、user workflows、reliability gaps、product opportunities によって進めます。
+Phase 5 は Phase 4 product deepening を拡張し、Gear capabilities を GeeAgent internal runtime や Codex だけでなく personal local agents にも提供します。現在の implementation は neutral Agent Gateway MCP surface を追加し、Codex、Claude Code、WorkBuddy/OpenClaw-compatible agents を対象にします。Legacy `exports.codex.enabled: true` declarations は、capability がより specific な `exports.agent_gateway` client policy を宣言しない限り Agent Gateway compatibility exports として扱われます。
 
 Assistant text は、最終完了後にだけ表示されるのではなく、transcript event の live delta として frontend に流れ始めます。Tool と Gear completion の失敗は、実際の failed または degraded run state を保持する必要があります。GeeAgent は別の execution path に切り替えたり、未完了の runtime continuation を completed に見せたりしてはいけません。
 
@@ -36,7 +36,9 @@ Settings は audio transcription 用の default STT service を 1 つ公開し�
 
 GeeAgentMac の main app はデフォルトで macOS の優先言語に従います。Settings > Language では main workbench shell を System、English、簡体中文、または日本語に上書きできます。この設定は navigation、Home、Chat、Telegram、Tasks/Logs、Automations、Gears catalog shell、Agents、Settings、Inspector、approval prompt、menu-bar panel、Quick Input、Audio Capture など GeeAgent が所有する main surface に適用されます。Gear internal screens、Gear manifest text、user messages、assistant replies、runtime logs、provider/model names、file paths、raw runtime error details は元の言語のままです。
 
-Gear work では live SDK run と Gee MCP bridge が必須 path です。SDK runtime または bridge が live でない場合、GeeAgent は alternate native route で task を実行せず、structured failure を報告します。
+Gear work では live SDK run と Gee MCP bridge が必須 path です。External agents は `gee_status`、`gee_search_capabilities`、`gee_describe_capability`、`gee_run_capability`、`gee_get_run`、`gee_prepare_gear`、`gee_open_surface` などの neutral Agent Gateway tools で capabilities を使います。Older Codex projection は compatibility view として残ります。SDK runtime、Gateway、または bridge が live でない場合、GeeAgent は alternate native route で task を実行せず、structured failure を報告します。
+
+Settings は Personal Agent Gateway/MCP status、Codex、Claude Code、WorkBuddy/OpenClaw の per-client MCP configuration material、installed Gear の dependency diagnostics も表示します。Client rows は configuration availability と verified connection state を区別し、external agent settings を自動では書き込みません。Startup check と manual check は manifest で宣言された dependencies を inspect し readiness snapshot を書き込むだけです。Dependency installation は、user が Gear-specific Prepare action を明示的に選んだ後にだけ実行されます。
 
 Native app control も shared Gee MCP host path であり、Gear や Telegram 固有の shortcut ではありません。App Chat/runtime は `native_app_control`（`gee.nativeApp.control`）で supported local macOS app を control できます。V1 は Codex Desktop の `new_chat_and_send` を公開し、app、permission、target UI element、send action が unavailable な場合は structured blocked/failed state を返します。
 

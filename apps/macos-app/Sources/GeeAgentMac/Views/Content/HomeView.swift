@@ -945,7 +945,7 @@ struct HomeView: View {
     private var homeConversationSummaryPreview: String {
         let normalized = homeConversationSummaryText
             .replacingOccurrences(
-                of: #"(?m)^\s*(Stage conclusion|Stage summary)\s*[:：]\s*"#,
+                of: #"(?m)^\s*(Stage conclusion|Stage summary)\s*:\s*"#,
                 with: "",
                 options: .regularExpression
             )

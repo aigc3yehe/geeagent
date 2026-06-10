@@ -2987,7 +2987,6 @@ final class MediaGeneratorGearStore: ObservableObject {
         }
         let normalized = string
             .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "：", with: ":")
         switch normalized.lowercased() {
         case "auto":
             return .auto

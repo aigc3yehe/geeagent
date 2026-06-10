@@ -80,6 +80,16 @@ final class WorkbenchStore {
     var providerSecretSettings = ProviderSecretSettings.defaultSettings
     var isLoadingProviderSecretSettings = false
     var savingProviderSecretIDs: Set<String> = []
+    var agentGatewayStatus: AgentGatewayStatusRecord?
+    var agentGatewayClientStatus: AgentGatewayClientStatusProjection?
+    var isLoadingAgentGatewayStatus = false
+    var isLoadingAgentGatewayClientStatus = false
+    var agentGatewayStatusErrorMessage: String?
+    var agentGatewayClientStatusErrorMessage: String?
+    var gearDependencyRecords: [GearDependencyStatusRecord] = []
+    var isCheckingGearDependencies = false
+    var gearDependencyErrorMessage: String?
+    var preparingGearDependencyIDs: Set<String> = []
     var selectedRuntimeRunProjection: WorkbenchRuntimeRunProjection?
     var selectedRuntimeRunWait: WorkbenchRuntimeRunWaitClassification?
     var runtimeRunInspectorErrorMessage: String?
@@ -200,6 +210,7 @@ final class WorkbenchStore {
         expireLoadedHostActionIntents(snapshot.hostActionIntents, loadedSnapshot: snapshot)
         applyExternalInvocations(snapshot.externalInvocations)
         startExternalInvocationPolling()
+        scheduleStartupGearDependencyCheck()
     }
 
     func shutdownRuntime() {
@@ -951,6 +962,146 @@ final class WorkbenchStore {
                     self?.lastErrorMessage = error.localizedDescription
                     self?.savingProviderSecretIDs.remove(providerID)
                 }
+            }
+        }
+    }
+
+    func refreshAgentGatewayStatus() {
+        guard !isLoadingAgentGatewayStatus else {
+            return
+        }
+
+        isLoadingAgentGatewayStatus = true
+        agentGatewayStatusErrorMessage = nil
+        let runtimeClient = self.runtimeClient
+
+        Task { [weak self, runtimeClient] in
+            do {
+                let status = try await runtimeClient.loadAgentGatewayStatus()
+                await MainActor.run {
+                    self?.agentGatewayStatus = status
+                    self?.isLoadingAgentGatewayStatus = false
+                }
+            } catch {
+                await MainActor.run {
+                    self?.agentGatewayStatusErrorMessage = error.localizedDescription
+                    self?.isLoadingAgentGatewayStatus = false
+                }
+            }
+        }
+    }
+
+    func refreshAgentGatewayClientStatus() {
+        guard !isLoadingAgentGatewayClientStatus else {
+            return
+        }
+
+        isLoadingAgentGatewayClientStatus = true
+        agentGatewayClientStatusErrorMessage = nil
+        let runtimeClient = self.runtimeClient
+
+        Task { [weak self, runtimeClient] in
+            do {
+                let status = try await runtimeClient.loadAgentGatewayClientStatus()
+                await MainActor.run {
+                    self?.agentGatewayClientStatus = status
+                    self?.isLoadingAgentGatewayClientStatus = false
+                }
+            } catch {
+                await MainActor.run {
+                    self?.agentGatewayClientStatusErrorMessage = error.localizedDescription
+                    self?.isLoadingAgentGatewayClientStatus = false
+                }
+            }
+        }
+    }
+
+    func loadCachedGearDependencyDiagnostics() {
+        Task { [weak self] in
+            let manifests = await Task.detached(priority: .utility) {
+                GearHost.installedGearManifests()
+            }.value
+            var snapshots: [String: GearPreparationSnapshot] = [:]
+            for manifest in manifests {
+                if let snapshot = await GearPreparationService.shared.cachedSnapshot(for: manifest.id) {
+                    snapshots[manifest.id] = snapshot
+                }
+            }
+
+            await MainActor.run {
+                self?.gearDependencyRecords = Self.gearDependencyRecords(
+                    manifests: manifests,
+                    snapshots: snapshots
+                )
+            }
+        }
+    }
+
+    func refreshGearDependencyDiagnostics() {
+        guard !isCheckingGearDependencies else {
+            return
+        }
+
+        let existingSnapshots = Dictionary(
+            uniqueKeysWithValues: gearDependencyRecords.compactMap { record in
+                record.snapshot.map { (record.gearID, $0) }
+            }
+        )
+        isCheckingGearDependencies = true
+        gearDependencyErrorMessage = nil
+
+        Task { [weak self, existingSnapshots] in
+            let manifests = await Task.detached(priority: .utility) {
+                GearHost.installedGearManifests()
+            }.value
+            var snapshots: [String: GearPreparationSnapshot] = [:]
+
+            await MainActor.run {
+                self?.gearDependencyRecords = Self.gearDependencyRecords(
+                    manifests: manifests,
+                    snapshots: existingSnapshots
+                )
+            }
+
+            for manifest in manifests {
+                let snapshot = await GearPreparationService.shared.inspect(manifest: manifest) { snapshot in
+                    await MainActor.run {
+                        self?.updateGearDependencyRecord(gearID: manifest.id, snapshot: snapshot)
+                    }
+                }
+                snapshots[manifest.id] = snapshot
+            }
+
+            await MainActor.run {
+                self?.gearDependencyRecords = Self.gearDependencyRecords(
+                    manifests: manifests,
+                    snapshots: snapshots
+                )
+                self?.isCheckingGearDependencies = false
+            }
+        }
+    }
+
+    func prepareGearDependencies(gearID: String) {
+        guard !preparingGearDependencyIDs.contains(gearID),
+              let manifest = GearHost.manifest(gearID: gearID)
+        else {
+            return
+        }
+
+        preparingGearDependencyIDs.insert(gearID)
+        gearDependencyErrorMessage = nil
+
+        Task { [weak self, manifest] in
+            let snapshot = await GearPreparationService.shared.prepareIfNeeded(manifest: manifest) { snapshot in
+                await MainActor.run {
+                    self?.updateGearDependencyRecord(gearID: manifest.id, snapshot: snapshot)
+                }
+            }
+
+            await MainActor.run {
+                self?.updateGearDependencyRecord(gearID: manifest.id, snapshot: snapshot)
+                self?.preparingGearDependencyIDs.remove(manifest.id)
             }
         }
     }
@@ -2991,6 +3142,42 @@ final class WorkbenchStore {
     private func stopLiveSnapshotPolling() {
         liveSnapshotPollingTask?.cancel()
         liveSnapshotPollingTask = nil
+    }
+
+    private func scheduleStartupGearDependencyCheck() {
+        loadCachedGearDependencyDiagnostics()
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            await MainActor.run {
+                self?.refreshGearDependencyDiagnostics()
+            }
+        }
+    }
+
+    private static func gearDependencyRecords(
+        manifests: [GearManifest],
+        snapshots: [String: GearPreparationSnapshot]
+    ) -> [GearDependencyStatusRecord] {
+        manifests.map { manifest in
+            GearDependencyStatusRecord(
+                gearID: manifest.id,
+                gearName: manifest.name,
+                requiredDependencyIDs: manifest.dependencies?.items.filter(\.required).map(\.id) ?? [],
+                snapshot: snapshots[manifest.id],
+                isEnabled: GearHost.isEnabled(gearID: manifest.id)
+            )
+        }
+    }
+
+    private func updateGearDependencyRecord(
+        gearID: String,
+        snapshot: GearPreparationSnapshot
+    ) {
+        guard let index = gearDependencyRecords.firstIndex(where: { $0.gearID == gearID }) else {
+            return
+        }
+        gearDependencyRecords[index].snapshot = snapshot
+        gearDependencyRecords[index].isEnabled = GearHost.isEnabled(gearID: gearID)
     }
 
     private func startExternalInvocationPolling() {
